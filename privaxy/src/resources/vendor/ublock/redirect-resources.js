@@ -1,6 +1,6 @@
 /*******************************************************************************
 
-    uBlock Origin - a browser extension to block requests.
+    uBlock Origin - a comprehensive, efficient content blocker
     Copyright (C) 2015-present Raymond Hill
 
     This program is free software: you can redistribute it and/or modify
@@ -71,7 +71,7 @@ export default new Map([
         data: 'text',
     } ],
     [ 'empty', {
-        data: 'text',   // Important!
+        data: 'text',
     } ],
     [ 'fingerprint2.js', {
         data: 'text',
@@ -98,24 +98,30 @@ export default new Map([
         alias: 'google-analytics.com/inpage_linkid.js',
     } ],
     [ 'google-ima.js', {
+        alias: 'google-ima3',
     } ],
     [ 'googlesyndication_adsbygoogle.js', {
-        alias: 'googlesyndication.com/adsbygoogle.js',
+        alias: [
+            'googlesyndication.com/adsbygoogle.js',
+            'googlesyndication-adsbygoogle',
+        ],
         data: 'text',
     } ],
     [ 'googletagservices_gpt.js', {
-        alias: 'googletagservices.com/gpt.js',
+        alias: [
+            'googletagservices.com/gpt.js',
+            'googletagservices-gpt',
+        ],
         data: 'text',
     } ],
     [ 'hd-main.js', {
     } ],
-    [ 'ligatus_angular-tag.js', {
-        alias: 'ligatus.com/*/angular-tag.js',
+    [ 'nobab.js', {
+        alias: [ 'bab-defuser.js', 'prevent-bab.js' ],
+        data: 'text',
     } ],
-    [ 'mxpnl_mixpanel.js', {
-    } ],
-    [ 'monkeybroker.js', {
-        alias: 'd3pkae9owd2lcf.cloudfront.net/mb105.js',
+    [ 'nobab2.js', {
+        data: 'text',
     } ],
     [ 'noeval.js', {
         data: 'text',
@@ -142,14 +148,21 @@ export default new Map([
     [ 'noop-0.5s.mp3', {
     } ],
     [ 'noop-1s.mp4', {
-        alias: 'noopmp4-1s',
+        alias: [ 'noopmp4-1s', 'abp-resource:blank-mp4' ],
         data: 'blob',
+    } ],
+    [ 'noop.css', {
+        data: 'text',
     } ],
     [ 'noop.html', {
         alias: 'noopframe',
     } ],
     [ 'noop.js', {
         alias: [ 'noopjs', 'abp-resource:blank-js' ],
+        data: 'text',
+    } ],
+    [ 'noop.json', {
+        alias: [ 'noopjson' ],
         data: 'text',
     } ],
     [ 'noop.txt', {
@@ -164,7 +177,7 @@ export default new Map([
         alias: 'widgets.outbrain.com/outbrain.js',
     } ],
     [ 'popads.js', {
-        alias: 'popads.net.js',
+        alias: [ 'popads.net.js', 'prevent-popads-net.js' ],
         data: 'text',
     } ],
     [ 'popads-dummy.js', {

@@ -7,6 +7,14 @@
  * - Avoid JS syntax not supported by older browser versions
  * - Add missing shim event
  * - Modified to avoid jshint warnings as per uBO's config
+ * - Added `OmidVerificationVendor` to `ima`
+ * - Have `AdError.getInnerError()` return `null`
+ * - Have `AdDisplayContainer` constructor add DIV element to container
+ * - Added missing event dispatcher functionality
+ * - Corrected return type of `Ad.getUniversalAdIds()`
+ * - Corrected typo in `UniversalAdIdInfo.getAdIdValue()` method name
+ * - Corrected dispatch of LOAD event when preloading is enabled
+ * - Corrected dispatch of CONTENT_PAUSE/RESUME_REQUESTED events
  * 
  * Related issue:
  * - https://github.com/uBlockOrigin/uBlock-issues/issues/2158
@@ -228,9 +236,15 @@ if (!window.google || !window.google.ima || !window.google.ima.VERSION) {
     };
   })();
 
-  let ima = {};
+  const ima = {};
 
   class AdDisplayContainer {
+    constructor(containerElement) {
+      const divElement = document.createElement("div");
+      divElement.style.setProperty("display", "none", "important");
+      divElement.style.setProperty("visibility", "collapse", "important");
+      containerElement.appendChild(divElement);
+    }
     destroy() {}
     initialize() {}
   }
@@ -300,6 +314,12 @@ if (!window.google || !window.google.ima || !window.google.ima.VERSION) {
     setSessionId(/*s*/) {}
     setVpaidAllowed(/*a*/) {}
     setVpaidMode(/*m*/) {}
+
+    // https://github.com/uBlockOrigin/uBlock-issues/issues/2265#issuecomment-1637094149
+    getDisableFlashAds() {
+    }
+    setDisableFlashAds() {
+    }
   }
   ImaSdkSettings.CompanionBackfillMode = {
     ALWAYS: "always",
@@ -317,8 +337,9 @@ if (!window.google || !window.google.ima || !window.google.ima.VERSION) {
     }
 
     _dispatch(e) {
-      const listeners = this.listeners.get(e.type) || [];
-      for (const listener of Array.from(listeners)) {
+      let listeners = this.listeners.get(e.type);
+      listeners = listeners ? Array.from(listeners.values()) : [];
+      for (const listener of listeners) {
         try {
           listener(e);
         } catch (r) {
@@ -327,17 +348,30 @@ if (!window.google || !window.google.ima || !window.google.ima.VERSION) {
       }
     }
 
-    addEventListener(t, c) {
-      if (!this.listeners.has(t)) {
-        this.listeners.set(t, new Set());
+    addEventListener(types, c, options, context) {
+      if (!Array.isArray(types)) {
+        types = [types];
       }
-      this.listeners.get(t).add(c);
+
+      for (const t of types) {
+        if (!this.listeners.has(t)) {
+          this.listeners.set(t, new Map());
+        }
+        this.listeners.get(t).set(c, c.bind(context || this));
+      }
     }
 
-    removeEventListener(t, c) {
-      const typeSet = this.listeners.get(t);
-      if (!typeSet) { return; }
-      typeSet.delete(c);
+    removeEventListener(types, c) {
+      if (!Array.isArray(types)) {
+        types = [types];
+      }
+
+      for (const t of types) {
+        const typeSet = this.listeners.get(t);
+        if (typeSet) {
+          typeSet.delete(c);
+        }
+      }
     }
   }
 
@@ -380,6 +414,7 @@ if (!window.google || !window.google.ima || !window.google.ima.VERSION) {
     constructor() {
       super();
       this.volume = 1;
+      this._enablePreloading = false;
     }
     collapse() {}
     configureAdsManager() {}
@@ -405,7 +440,11 @@ if (!window.google || !window.google.ima || !window.google.ima.VERSION) {
     getVolume() {
       return this.volume;
     }
-    init(/*w, h, m, e*/) {}
+    init(/*w, h, m, e*/) {
+      if (this._enablePreloading) {
+        this._dispatch(new ima.AdEvent(AdEvent.Type.LOADED));
+      }
+    }
     isCustomClickTrackingUsed() {
       return false;
     }
@@ -425,13 +464,14 @@ if (!window.google || !window.google.ima || !window.google.ima.VERSION) {
         for (const type of [
           AdEvent.Type.LOADED,
           AdEvent.Type.STARTED,
-          AdEvent.Type.CONTENT_RESUME_REQUESTED,
+          AdEvent.Type.CONTENT_PAUSE_REQUESTED,
           AdEvent.Type.AD_BUFFERING,
           AdEvent.Type.FIRST_QUARTILE,
           AdEvent.Type.MIDPOINT,
           AdEvent.Type.THIRD_QUARTILE,
           AdEvent.Type.COMPLETE,
           AdEvent.Type.ALL_ADS_COMPLETED,
+          AdEvent.Type.CONTENT_RESUME_REQUESTED,
         ]) {
           try {
             this._dispatch(new ima.AdEvent(type));
@@ -545,7 +585,7 @@ if (!window.google || !window.google.ima || !window.google.ima.VERSION) {
       return "unknown";
     }
     getUniversalAdIds() {
-      return [""];
+      return [new UniversalAdIdInfo()];
     }
     getUniversalAdIdValue() {
       return "unknown";
@@ -607,7 +647,9 @@ if (!window.google || !window.google.ima || !window.google.ima.VERSION) {
     getErrorCode() {
       return this.errorCode;
     }
-    getInnerError() {}
+    getInnerError() {
+        return null;
+    }
     getMessage() {
       return this.message;
     }
@@ -709,7 +751,10 @@ if (!window.google || !window.google.ima || !window.google.ima.VERSION) {
     constructor(type) {
       this.type = type;
     }
-    getAdsManager() {
+    getAdsManager(c, settings) {
+      if (settings && settings.enablePreloading) {
+        manager._enablePreloading = true;
+      }
       return manager;
     }
     getUserRequestContext() {
@@ -755,7 +800,7 @@ if (!window.google || !window.google.ima || !window.google.ima.VERSION) {
     getAdIdRegistry() {
       return "";
     }
-    getAdIsValue() {
+    getAdIdValue() {
       return "";
     }
   }
@@ -782,6 +827,12 @@ if (!window.google || !window.google.ima || !window.google.ima.VERSION) {
       DOMAIN: "domain",
       FULL: "full",
       LIMITED: "limited",
+    },
+    OmidVerificationVendor: {
+      1: "OTHER",
+      2: "GOOGLE",
+      GOOGLE: 2,
+      OTHER: 1
     },
     settings: new ImaSdkSettings(),
     UiElements: {
