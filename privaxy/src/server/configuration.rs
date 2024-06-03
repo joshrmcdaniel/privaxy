@@ -364,7 +364,7 @@ impl Configuration {
         };
 
         match fs::read(&configuration_file_path).await {
-            Ok(bytes) => Ok(toml::from_slice(&bytes)?),
+            Ok(bytes) => Ok(toml::from_str(std::str::from_utf8(&bytes)?)?),
             Err(err) => {
                 log::debug!("Configuration file not found, creating one");
 
