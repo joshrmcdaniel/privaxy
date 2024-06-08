@@ -14,15 +14,16 @@ This reverts it back to [v0.3.1](https://github.com/Barre/privaxy/tree/v0.3.1), 
 newer updates, an improved UI, and server-friendly configuration. To skip to the differences,
 [see here](#differences)
 
+See pending features [here](#todo)
+
 **TODO: more screencaps**
 
 <div align="center">
-<!-- <img width="868" alt="dashboard" src="https://user-images.githubusercontent.com/45085843/210057822-f8a1e355-1b4d-4c48-a8c6-d72388e3b648.png">
-<img width="912" alt="requests" src="https://user-images.githubusercontent.com/45085843/210057831-6c6b4aac-245c-4964-9d34-bcbd87d00a5f.png"> -->
+<img width="912" alt="dashboard" src="./images/dashboard.png">
+<img width="912" alt="requests" src="./images/requests.png">
 <img width="912" alt="filters" src="./images/filters.png">
 <img width="912" alt="filterlists" src="./images/filterlist.png">
-<img width="868" alt="custom_fiters" src="https://user-images.githubusercontent.com/45085843/210057820-d666baa5-4f63-45ca-ad2d-9eca95590100.png">
-<img width="666" alt="taskbar" src="https://user-images.githubusercontent.com/45085843/210057833-df002cfd-aecf-4d67-bdd6-225ac3d6b980.png">
+<img alt="addfilter" src="./images/addfilter.png">
 </div>
 
 ## About
@@ -52,6 +53,30 @@ Privaxy is also way more capable than DNS-based blockers as it is able to operat
 - Very low resource usage.
   - Around 50MB of memory with approximately 320 000 filters enabled.
   - Able to filter thousands of requests per second on a small machine.
+
+
+## TODO
+
+- Web GUI
+  - [x] Ability to add custom filters
+  - [x] [filterlists.com](https://filterlists.com) integration
+  - [ ] Authentication to the web gui
+  - [ ] TLS support on the web gui
+  - [ ] Authentication to the web gui
+  - [ ] Update root certificate
+  - [ ] Change bind settings
+- Backend
+  - [x] Bind to different addresses and ports
+  - [x] Specify path or CA cert in config
+  - [x] Update ublock dependencies
+  - [x] Patch NotValidBefore on generated certificates
+  - [ ] Fix cloudflare/robot checks
+  - [ ] Update dependencies
+  - [ ] Implement systemctl signal handling
+  - [ ] Figure out which syntaxes the adblock engine supports
+  - [ ] Improve logging
+- Future
+  - Add DNS resolutions; incoporate DNS level blocking
 
 ## Installation
 
