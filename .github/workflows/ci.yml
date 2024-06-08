@@ -126,8 +126,9 @@ jobs:
           command: build
           working-directory: .
           args: --release --target ${{ matrix.target }} --bin privaxy --target-dir target
+      - name: Build deb
+        run: cargo install cargo-deb && cargo deb --target ${{ matrix.target }} --target-dir target
       - uses: actions/upload-artifact@v3
-        if: matrix.os != 'windows-latest'
         with:
           name: privaxy-${{ matrix.target }}
           path: |
