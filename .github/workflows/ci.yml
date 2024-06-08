@@ -127,7 +127,11 @@ jobs:
           working-directory: .
           args: --release --target ${{ matrix.target }} --bin privaxy --target-dir target
       - name: Build deb
-        run: cargo install cargo-deb && cargo deb -p privaxy --target ${{ matrix.target }} --target-dir target
+        run: cargo install cargo-deb && cargo deb -p privaxy --target ${{ matrix.target }} -o target/${{ matrix.target }}/release
+      - uses: actions/upload-artifact@v3           
+        with:
+          name: privaxy-deb-${{ matrix.target }}
+          path: target/${{ matrix.target }}/release/privaxy_*.deb
       - uses: actions/upload-artifact@v3
         with:
           name: privaxy-${{ matrix.target }}
