@@ -94,15 +94,14 @@ impl Rewriter {
                     // to inject style and scripts before the implicit
                     // close.
                     element!("html, body", |element| {
-                        
                         if let Some(handlers) = element.end_tag_handlers() {
                             handlers.push(Box::new(move |end| {
                                 end.remove();
                                 Ok(())
                             }))
-                        } 
+                        }
                         Ok(())
-                    })
+                    }),
                 ],
                 ..Settings::default()
             },
