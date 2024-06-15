@@ -5,20 +5,29 @@ use std::convert::Infallible;
 use warp::filters::BoxedFilter;
 
 async fn get_filters() -> Result<Box<dyn warp::Reply>, Infallible> {
+    log::debug!("Getting filters");
     match filterlists_api::get_filters().await {
         Ok(filters) => Ok(Box::new(warp::reply::json(&filters))),
-        Err(err) => Ok(Box::new(super::get_error_response(err))),
+        Err(err) => {
+            log::error!("Failed to get filters: {err}");
+            Ok(Box::new(super::get_error_response(err)))
+        }
     }
 }
 
 async fn get_filter(id: u64) -> Result<Box<dyn warp::Reply>, Infallible> {
+    log::debug!("Getting filter {id}");
     match filterlists_api::get_filter_information(filterlists_api::FilterArgs::U64(id)).await {
         Ok(filter) => Ok(Box::new(warp::reply::json(&filter))),
-        Err(err) => Ok(Box::new(super::get_error_response(err))),
+        Err(err) => {
+            log::error!("Failed to get filter: {err}");
+            Ok(Box::new(super::get_error_response(err)))
+        }
     }
 }
 
 async fn get_syntaxes() -> Result<Box<dyn warp::Reply>, Infallible> {
+    log::debug!("Getting syntaxes");
     match filterlists_api::get_syntaxes().await {
         Ok(syntaxes) => Ok(Box::new(warp::reply::json(&syntaxes))),
         Err(err) => Ok(Box::new(super::get_error_response(err))),
@@ -26,6 +35,7 @@ async fn get_syntaxes() -> Result<Box<dyn warp::Reply>, Infallible> {
 }
 
 async fn get_languages() -> Result<Box<dyn warp::Reply>, Infallible> {
+    log::debug!("Getting languages");
     match filterlists_api::get_languages().await {
         Ok(languages) => Ok(Box::new(warp::reply::json(&languages))),
         Err(err) => Ok(Box::new(super::get_error_response(err))),
@@ -33,6 +43,7 @@ async fn get_languages() -> Result<Box<dyn warp::Reply>, Infallible> {
 }
 
 async fn get_tags() -> Result<Box<dyn warp::Reply>, Infallible> {
+    log::debug!("Getting tags");
     match filterlists_api::get_tags().await {
         Ok(tags) => Ok(Box::new(warp::reply::json(&tags))),
         Err(err) => Ok(Box::new(super::get_error_response(err))),
@@ -40,6 +51,7 @@ async fn get_tags() -> Result<Box<dyn warp::Reply>, Infallible> {
 }
 
 async fn get_licenses() -> Result<Box<dyn warp::Reply>, Infallible> {
+    log::debug!("Getting licenses");
     match filterlists_api::get_licenses().await {
         Ok(licenses) => Ok(Box::new(warp::reply::json(&licenses))),
         Err(err) => Ok(Box::new(super::get_error_response(err))),
