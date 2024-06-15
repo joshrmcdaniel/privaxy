@@ -28,7 +28,7 @@ impl Component for Requests {
     fn create(ctx: &Context<Self>) -> Self {
         let message_callback = ctx.link().callback(|message: Message| message);
 
-        let ws = WebSocket::open(&format!("ws://{}/events", get_api_host())).unwrap();
+        let ws = WebSocket::open("/api/events").unwrap();
         let (_write, mut read) = ws.split();
 
         let (abort_handle, abort_registration) = AbortHandle::new_pair();

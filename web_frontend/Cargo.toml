@@ -5,7 +5,6 @@ edition = "2021"
 
 
 [dependencies]
-filterlists-api = { path = "../filterlists-api", features = ["reqwasm"] }
 yew = "0.19.3"
 yew-router = "0.16.0"
 serde_json = "1.0.81"
@@ -23,3 +22,6 @@ web-sys = { version = "0.3.69", features = ["InputEvent",  "InputEventInit", "Ht
 reqwasm = "0.5.0"
 serde_with = "3.8.1"
 url = "2.5.0"
+readonly = "0.2.12"
+thiserror = "1.0.61"
+filterlists-api = { path = "../filterlists-api" }

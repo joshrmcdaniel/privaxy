@@ -122,7 +122,7 @@ impl Component for AddFilterComponent {
                         url: parsed_url,
                     };
 
-                    let request = Request::post(&format!("http://{}/filters", get_api_host()))
+                    let request = Request::post("/api/filters")
                         .header("Content-Type", "application/json")
                         .body(serde_json::to_string(&request_body).unwrap());
 
@@ -371,7 +371,7 @@ impl Component for Filters {
             }
             Message::Load => {
                 log::debug!("Retrieving filters..");
-                let request = Request::get(&format!("http://{}/filters", get_api_host()));
+                let request = Request::get("/api/filters");
                 log::debug!("Request: {:?}", request);
                 let message_callback = ctx.link().callback(|message: Message| message);
                 log::debug!("Message callback: {:?}", message_callback);
@@ -411,7 +411,7 @@ impl Component for Filters {
                     })
                     .collect::<Vec<_>>();
 
-                let request = Request::put(&format!("http://{}/filters", get_api_host()))
+                let request = Request::put("/api/filters")
                     .header("Content-Type", "application/json")
                     .body(serde_json::to_string(&request_body).unwrap());
 

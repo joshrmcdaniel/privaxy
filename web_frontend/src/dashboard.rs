@@ -37,7 +37,7 @@ impl Component for Dashboard {
         let future = Abortable::new(
             async move {
                 loop {
-                    let ws = match WebSocket::open(&format!("ws://{}/statistics", get_api_host())) {
+                    let ws = match WebSocket::open("/api/statistics") {
                         Ok(ws) => ws,
                         Err(_err) => {
                             log::warn!("Unable to connect to websocket, trying again.");

@@ -54,7 +54,7 @@ pub fn switch_settings(route: &SettingsRoute) -> Html {
         SettingsRoute::Exclusions => {
             set_title("Settings - Exclusions");
 
-            let resource_url = format!("http://{}/exclusions", get_api_host());
+            let resource_url = "/api/exclusions";
 
             let description = html! {<div class="text-gray-600">
                     <p>
@@ -70,7 +70,7 @@ pub fn switch_settings(route: &SettingsRoute) -> Html {
         SettingsRoute::CustomFilters => {
             set_title("Settings - Custom Filters");
 
-            let resource_url = format!("http://{}/custom-filters", get_api_host());
+            let resource_url = "/api/custom-filters";
 
             let description = html! {
                 <p class="text-gray-600">

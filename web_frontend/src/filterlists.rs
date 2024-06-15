@@ -1,6 +1,7 @@
 use crate::filters::{AddFilterRequest, Filter, FilterConfiguration, FilterGroup};
 use crate::save_button::BASE_BUTTON_CSS;
 use crate::{get_api_host, save_button, submit_banner};
+use filterlists_api;
 use reqwasm::http::Request;
 use url::Url;
 use wasm_bindgen_futures::spawn_local;
@@ -8,7 +9,6 @@ use web_sys::HtmlInputElement;
 use yew::prelude::*;
 use yew::InputEvent;
 use yew::{html, Component, Context, Html};
-
 pub enum SearchFilterMessage {
     Open,
     Close,
@@ -38,8 +38,6 @@ pub struct SearchFilterList {
     results_per_page: usize,
     active_filters: FilterConfiguration,
 }
-
-use filterlists_api;
 
 const FILTER_TAG_GROUPS: [&'static str; 4] = ["ads", "privacy", "malware", "social"];
 
@@ -77,13 +75,14 @@ impl Component for SearchFilterList {
             SearchFilterMessage::Close => self.is_open = false,
             SearchFilterMessage::FilterChanged(query) => self.filter_query = query,
             SearchFilterMessage::AddFilter(filter) => {
-                let parsed_url = match Url::parse(&filter.primary_view_url.clone().unwrap()) {
-                    Ok(url) => url,
-                    Err(err) => {
-                        log::error!("Failed to parse URL: {}", err);
-                        return false;
-                    }
-                };
+                let parsed_url =
+                    match Url::parse(&filter.primary_view_url.clone().unwrap_or_default()) {
+                        Ok(url) => url,
+                        Err(err) => {
+                            log::error!("Failed to parse URL: {}", err);
+                            return false;
+                        }
+                    };
                 let group: FilterGroup = self
                     .tags
                     .clone()
@@ -104,7 +103,7 @@ impl Component for SearchFilterList {
 
                 let request_body: AddFilterRequest =
                     AddFilterRequest::new(filter.name.clone(), group, parsed_url);
-                let request = Request::post(&format!("http://{}/filters", get_api_host()))
+                let request = Request::post("/api/filters")
                     .header("Content-Type", "application/json")
                     .body(serde_json::to_string(&request_body).unwrap());
                 self.active_filters.push(Filter::new(
@@ -137,7 +136,7 @@ impl Component for SearchFilterList {
                 };
                 let request_body: AddFilterRequest =
                     AddFilterRequest::new(filter.name.clone(), FilterGroup::Malware, parsed_url);
-                let request = Request::delete(&format!("http://{}/filters", get_api_host()))
+                let request = Request::delete("/api/filters")
                     .header("Content-Type", "application/json")
                     .body(serde_json::to_string(&request_body).unwrap());
                 spawn_local(async move {
@@ -159,31 +158,91 @@ impl Component for SearchFilterList {
                 if self.loading {
                     let link = self.link.clone();
                     spawn_local(async move {
-                        match filterlists_api::get_languages().await {
-                            Ok(langs) => {
-                                link.send_message(SearchFilterMessage::LanguagesLoaded(langs))
+                        let request = Request::get("/api/filterlists/list");
+                        match request.send().await {
+                            Ok(response) => {
+                                if response.ok() {
+                                    if let Ok(filters) =
+                                        response.json::<Vec<filterlists_api::Filter>>().await
+                                    {
+                                        link.send_message(SearchFilterMessage::FiltersLoaded(
+                                            filters,
+                                        ))
+                                    }
+                                } else {
+                                    log::error!("Failed to load filters: {:?}", response.status());
+                                    link.send_message(SearchFilterMessage::Error(
+                                        response.status().to_string(),
+                                    ))
+                                }
+                            }
+                            Err(err) => {
+                                link.send_message(SearchFilterMessage::Error(err.to_string()))
+                            }
+                        }
+                        let request = Request::get("/api/filterlists/languages");
+                        match request.send().await {
+                            Ok(response) => {
+                                if response.ok() {
+                                    if let Ok(langs) = response
+                                        .json::<Vec<filterlists_api::FilterLanguage>>()
+                                        .await
+                                    {
+                                        link.send_message(SearchFilterMessage::LanguagesLoaded(
+                                            langs,
+                                        ))
+                                    }
+                                } else {
+                                    log::error!(
+                                        "Failed to load languages: {:?}",
+                                        response.status()
+                                    );
+                                    link.send_message(SearchFilterMessage::Error(
+                                        response.status().to_string(),
+                                    ))
+                                }
                             }
                             Err(err) => {
                                 link.send_message(SearchFilterMessage::Error(err.to_string()))
                             }
                         };
-                        match filterlists_api::get_licenses().await {
-                            Ok(licenses) => {
-                                link.send_message(SearchFilterMessage::LicensesLoaded(licenses))
+                        let request = Request::get("/api/filterlists/licenses");
+                        match request.send().await {
+                            Ok(response) => {
+                                if response.ok() {
+                                    if let Ok(licenses) =
+                                        response.json::<Vec<filterlists_api::FilterLicense>>().await
+                                    {
+                                        link.send_message(SearchFilterMessage::LicensesLoaded(
+                                            licenses,
+                                        ))
+                                    }
+                                } else {
+                                    log::error!("Failed to load licenses: {:?}", response.status());
+                                    link.send_message(SearchFilterMessage::Error(
+                                        response.status().to_string(),
+                                    ))
+                                }
                             }
                             Err(err) => {
                                 link.send_message(SearchFilterMessage::Error(err.to_string()))
                             }
                         };
-                        match filterlists_api::get_tags().await {
-                            Ok(tags) => link.send_message(SearchFilterMessage::TagsLoaded(tags)),
-                            Err(err) => {
-                                link.send_message(SearchFilterMessage::Error(err.to_string()))
-                            }
-                        };
-                        match filterlists_api::get_filters().await {
-                            Ok(filters) => {
-                                link.send_message(SearchFilterMessage::FiltersLoaded(filters))
+                        let request = Request::get("/api/filterlists/tags");
+                        match request.send().await {
+                            Ok(response) => {
+                                if response.ok() {
+                                    if let Ok(tags) =
+                                        response.json::<Vec<filterlists_api::FilterTag>>().await
+                                    {
+                                        link.send_message(SearchFilterMessage::TagsLoaded(tags))
+                                    }
+                                } else {
+                                    log::error!("Failed to load tags: {:?}", response.status());
+                                    link.send_message(SearchFilterMessage::Error(
+                                        response.status().to_string(),
+                                    ))
+                                }
                             }
                             Err(err) => {
                                 link.send_message(SearchFilterMessage::Error(err.to_string()))
@@ -210,7 +269,7 @@ impl Component for SearchFilterList {
                 self.tags = tags.clone();
             }
             SearchFilterMessage::Error(error) => {
-                log::error!("Error loading filters: {}", error);
+                log::error!("Error loading filters: {}", error.to_string());
                 self.loading = false;
             }
             SearchFilterMessage::NextPage => {
@@ -397,7 +456,7 @@ impl SearchFilterList {
                     }}
                 </td>
                 <td class="border px-4 py-2 overflow-auto" style="height: 5vh; max-width: 10vw; white-space: normal;">
-                    { &filter.description }
+                    { &filter.description.clone().unwrap() }
                 </td>
                 <td class="border px-4 py-2 overflow-hidden" style="height: 5vh; white-space: nowrap; text-overflow: ellipsis;">
                     { self.get_language_name(filter.language_ids.clone()) }
