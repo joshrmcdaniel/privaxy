@@ -9,20 +9,23 @@ pub struct Filter {
     pub id: u64,
     pub name: String,
     #[serde(default = "default_description")]
-    pub description: String,
+    pub description: Option<String>,
     pub license_id: u64,
     pub syntax_ids: Vec<u64>,
     pub language_ids: Vec<u64>,
     pub tag_ids: Vec<u64>,
-    #[serde(default)]
+    #[serde(default = "default_view_url")]
     pub primary_view_url: Option<String>,
     pub maintainer_ids: Vec<u64>,
 }
 
-fn default_description() -> String {
-    "No description".to_string()
+fn default_description() -> Option<String> {
+    Some("No description".to_string())
 }
 
+fn default_view_url() -> Option<String> {
+    None
+}
 #[derive(Serialize, Deserialize, PartialEq, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 #[readonly::make]
@@ -154,11 +157,8 @@ pub enum FilterListError {
     #[error("API error: {0}")]
     APIError(#[from] FilterListAPIError),
     #[cfg(feature = "reqwest")]
-    #[error("Request error: {0}")]
+    #[error("Reqwest error: {0}")]
     RequestError(#[from] reqwest::Error),
-    #[cfg(feature = "reqwasm")]
-    #[error("Request error: {0}")]
-    RequestError(#[from] reqwasm::Error),
     #[error("Serialization error: {0}")]
     SerializationError(#[from] serde_json::Error),
     #[error("Unknown error: {0}")]

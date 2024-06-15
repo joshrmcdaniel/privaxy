@@ -17,6 +17,6 @@ async-trait = "0.1.80"
 thiserror = "1.0.61"
 
 [features]
-default = ["reqwasm"]
+default = []
 reqwest = ["dep:reqwest"]
 reqwasm = ["dep:reqwasm"]
