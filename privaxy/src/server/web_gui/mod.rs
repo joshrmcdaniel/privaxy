@@ -24,30 +24,25 @@ pub(crate) struct ApiError {
     error: String,
 }
 
-pub(crate) fn start_web_gui_static_files_server(bind: SocketAddr, api_addr: SocketAddr) {
-    let filter = warp::get().and(warp::path::tail()).map(move |tail: Tail| {
+pub(crate) fn start_frontend(
+    events_sender: broadcast::Sender<events::Event>,
+    statistics: Statistics,
+    blocking_disabled_store: BlockingDisabledStore,
+    configuration_updater_sender: Sender<Configuration>,
+    ca_certificate_pem: String,
+    configuration_save_lock: Arc<tokio::sync::Mutex<()>>,
+    local_exclusions_store: LocalExclusionStore,
+    bind: SocketAddr,
+) {
+    let static_files_routes = warp::get().and(warp::path::tail()).map(move |tail: Tail| {
         let tail_str = tail.as_str();
-
-        let mut is_index = tail_str == "index.html";
 
         let file_contents = match WEBAPP_FRONTEND_DIR.get_file(tail_str) {
             Some(file) => file.contents().to_vec(),
             None => {
-                is_index = true;
-
                 let index_html = WEBAPP_FRONTEND_DIR.get_file("index.html").unwrap();
-                WEBAPP_FRONTEND_DIR.get_file("index.html").unwrap();
-
                 index_html.contents().to_vec()
             }
-        };
-
-        let file_contents = if is_index {
-            let index_utf8 = String::from_utf8(file_contents).unwrap();
-
-            Vec::from(index_utf8.replace("{#api_host#}", &api_addr.to_string()))
-        } else {
-            file_contents
         };
 
         let mime = mime_guess::from_path(tail_str).first_raw().unwrap_or("");
@@ -57,12 +52,35 @@ pub(crate) fn start_web_gui_static_files_server(bind: SocketAddr, api_addr: Sock
             .body(file_contents)
     });
 
+    let cors = warp::cors()
+        .allow_any_origin()
+        .allow_methods(vec!["GET", "PUT", "POST", "DELETE"])
+        .allow_headers(vec![
+            http::header::CONTENT_TYPE,
+            http::header::CONTENT_LENGTH,
+            http::header::DATE,
+        ]);
+    let http_client = reqwest::Client::new();
+
+    let api_routes = create_api_routes(
+        events_sender,
+        statistics,
+        blocking_disabled_store,
+        configuration_updater_sender,
+        ca_certificate_pem,
+        configuration_save_lock,
+        local_exclusions_store,
+        http_client,
+    )
+    .with(cors);
+    let combined_routes = api_routes.or(static_files_routes);
+
     tokio::spawn(async move {
-        warp::serve(filter).run(bind).await;
+        warp::serve(combined_routes).run(bind).await;
     });
 }
 
-fn create_routes(
+fn create_api_routes(
     events_sender: broadcast::Sender<events::Event>,
     statistics: Statistics,
     blocking_disabled_store: BlockingDisabledStore,
@@ -72,6 +90,7 @@ fn create_routes(
     local_exclusions_store: LocalExclusionStore,
     http_client: reqwest::Client,
 ) -> BoxedFilter<(impl Reply,)> {
+    let api_path = warp::path("api");
     let events_route = warp::path("events")
         .and(warp::ws())
         .map(move |ws: warp::ws::Ws| {
@@ -111,15 +130,18 @@ fn create_routes(
 
     let filterlists_route = warp::path("filterlists").and(filterlists::create_routes());
 
-    events_route
-        .or(statistics_route)
-        .or(filters_route)
-        .or(custom_filters_route)
-        .or(exclusions_route)
-        .or(blocking_enabled_route)
-        .or(ca_certificate_route)
-        .or(options_route)
-        .or(filterlists_route)
+    api_path
+        .and(
+            events_route
+                .or(statistics_route)
+                .or(filters_route)
+                .or(custom_filters_route)
+                .or(exclusions_route)
+                .or(blocking_enabled_route)
+                .or(ca_certificate_route)
+                .or(options_route)
+                .or(filterlists_route),
+        )
         .boxed()
 }
 
@@ -158,7 +180,7 @@ pub(crate) fn start_web_gui_server(
             http::header::DATE,
         ]);
 
-    let routes = create_routes(
+    let routes = create_api_routes(
         events_sender,
         statistics,
         blocking_disabled_store,

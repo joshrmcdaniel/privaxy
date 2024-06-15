@@ -143,7 +143,7 @@ pub async fn start_privaxy() -> PrivaxyServer {
     };
     let web_api_server_addr = SocketAddr::from((ip, network_config.api_port));
 
-    web_gui::start_web_gui_server(
+    web_gui::start_frontend(
         broadcast_tx.clone(),
         statistics.clone(),
         blocking_disabled_store.clone(),
@@ -212,13 +212,9 @@ pub async fn start_privaxy() -> PrivaxyServer {
         .tcp_keepalive(Some(Duration::from_secs(600)))
         .serve(make_service);
 
-    let web_gui_http_addr = SocketAddr::from((ip, network_config.web_port));
-
-    web_gui::start_web_gui_static_files_server(web_gui_http_addr, web_api_server_addr);
-
     log::info!("Proxy available at http://{}", proxy_server_addr);
-    log::info!("API server available at http://{}", web_api_server_addr);
-    log::info!("Web gui available at http://{}", web_gui_http_addr);
+    log::info!("Web server available at http://{}", web_api_server_addr);
+    log::info!("API server available at http://{}/api", web_api_server_addr);
 
     if let Err(e) = server.await {
         log::error!("server error: {}", e);
