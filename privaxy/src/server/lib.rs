@@ -22,6 +22,7 @@ pub mod configuration;
 mod proxy;
 pub mod statistics;
 mod web_gui;
+
 pub const WEBAPP_FRONTEND_DIR: Dir<'_> = include_dir!("web_frontend/dist");
 
 #[derive(Debug, Clone)]

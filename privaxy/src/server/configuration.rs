@@ -595,7 +595,8 @@ fn get_config_directory() -> PathBuf {
         // Assume default directory
         Err(_) => PathBuf::from(CONFIGURATION_DIRECTORY_NAME),
     };
-    return get_base_directory().unwrap_or(get_home_directory().unwrap())
+    return get_base_directory()
+        .unwrap_or(get_home_directory().unwrap())
         .join(config_dir);
 }
 
@@ -605,8 +606,7 @@ fn get_filter_directory() -> PathBuf {
         // Assume home directory
         Err(_) => PathBuf::from(FILTERS_DIRECTORY_NAME),
     };
-    return get_config_directory()
-        .join(filter_dir);
+    return get_config_directory().join(filter_dir);
 }
 
 async fn get_filter(
