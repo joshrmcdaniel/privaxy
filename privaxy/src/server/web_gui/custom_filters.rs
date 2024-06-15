@@ -2,9 +2,11 @@ use super::get_error_response;
 use crate::configuration::Configuration;
 use std::{convert::Infallible, sync::Arc};
 use tokio::sync::mpsc::Sender;
+use warp::filters::BoxedFilter;
 use warp::http::StatusCode;
+use warp::Filter as RouteFilter;
 
-pub async fn get_custom_filters() -> Result<Box<dyn warp::Reply>, Infallible> {
+async fn get_custom_filters() -> Result<Box<dyn warp::Reply>, Infallible> {
     let configuration = match Configuration::read_from_home().await {
         Ok(configuration) => configuration,
         Err(err) => {
@@ -18,7 +20,7 @@ pub async fn get_custom_filters() -> Result<Box<dyn warp::Reply>, Infallible> {
     Ok(Box::new(warp::reply::json(&custom_filters)))
 }
 
-pub async fn put_custom_filters(
+async fn put_custom_filters(
     custom_filters: String,
     configuration_updater_sender: Sender<Configuration>,
     configuration_save_lock: Arc<tokio::sync::Mutex<()>>,
@@ -44,4 +46,22 @@ pub async fn put_custom_filters(
         .unwrap();
 
     Ok(Box::new(StatusCode::ACCEPTED))
+}
+
+pub(super) fn create_routes(
+    configuration_updater_sender: Sender<Configuration>,
+    configuration_save_lock: Arc<tokio::sync::Mutex<()>>,
+) -> BoxedFilter<(impl warp::Reply,)> {
+    warp::get()
+        .and_then(self::get_custom_filters)
+        .or(warp::put()
+            .and(warp::body::json())
+            .and(super::with_configuration_updater_sender(
+                configuration_updater_sender.clone(),
+            ))
+            .and(super::with_configuration_save_lock(
+                configuration_save_lock.clone(),
+            ))
+            .and_then(self::put_custom_filters))
+        .boxed()
 }

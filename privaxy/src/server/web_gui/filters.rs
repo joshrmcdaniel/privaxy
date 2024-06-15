@@ -8,7 +8,9 @@ use std::{convert::Infallible, sync::Arc};
 use tokio::sync::mpsc::Sender;
 use url::Url;
 use warp::http::Response;
+use warp::Filter as RouteFilter;
 
+use warp::filters::BoxedFilter;
 #[derive(Debug, Deserialize)]
 pub struct FilterStatusChangeRequest {
     enabled: bool,
@@ -25,7 +27,7 @@ pub struct FilterRequest {
     pub url: Url,
 }
 
-pub async fn change_filter_status(
+async fn change_filter_status(
     filter_status_change_request: Vec<FilterStatusChangeRequest>,
     configuration_updater_sender: Sender<Configuration>,
     configuration_save_lock: Arc<tokio::sync::Mutex<()>>,
@@ -61,7 +63,7 @@ pub async fn change_filter_status(
         .unwrap())
 }
 
-pub async fn get_filters_configuration() -> Result<impl warp::Reply, Infallible> {
+async fn get_filters_configuration() -> Result<impl warp::Reply, Infallible> {
     let configuration = match Configuration::read_from_home().await {
         Ok(configuration) => configuration,
         Err(err) => {
@@ -78,7 +80,7 @@ pub async fn get_filters_configuration() -> Result<impl warp::Reply, Infallible>
         .unwrap())
 }
 
-pub async fn add_filter(
+async fn add_filter(
     filter_request: FilterRequest,
     http_client: reqwest::Client,
     configuration_updater_sender: Sender<Configuration>,
@@ -120,7 +122,7 @@ pub async fn add_filter(
         url: filter_url,
         title: filter_request.title.clone(),
         group: filter_request.group,
-        file_name: calculate_sha256_hex(&filter_request.url.to_string()), // Generate a unique file name
+        file_name: calculate_sha256_hex(&filter_request.url.to_string()) + ".txt",
     };
 
     match configuration
@@ -159,7 +161,7 @@ pub async fn add_filter(
         .unwrap())
 }
 
-pub async fn delete_filter(
+async fn delete_filter(
     filter_request: FilterRequest,
     configuration_updater_sender: Sender<Configuration>,
     configuration_save_lock: Arc<tokio::sync::Mutex<()>>,
@@ -195,4 +197,42 @@ pub async fn delete_filter(
         .status(http::StatusCode::NO_CONTENT)
         .body("".to_string())
         .unwrap())
+}
+
+pub(super) fn create_routes(
+    configuration_updater_sender: Sender<Configuration>,
+    configuration_save_lock: Arc<tokio::sync::Mutex<()>>,
+    http_client: reqwest::Client,
+) -> BoxedFilter<(impl warp::Reply,)> {
+    warp::get()
+        .and_then(self::get_filters_configuration)
+        .or(warp::put()
+            .and(warp::body::json())
+            .and(super::with_configuration_updater_sender(
+                configuration_updater_sender.clone(),
+            ))
+            .and(super::with_configuration_save_lock(
+                configuration_save_lock.clone(),
+            ))
+            .and_then(self::change_filter_status))
+        .or(warp::post()
+            .and(warp::body::json())
+            .and(super::with_http_client(http_client.clone()))
+            .and(super::with_configuration_updater_sender(
+                configuration_updater_sender.clone(),
+            ))
+            .and(super::with_configuration_save_lock(
+                configuration_save_lock.clone(),
+            ))
+            .and_then(self::add_filter))
+        .or(warp::delete()
+            .and(warp::body::json())
+            .and(super::with_configuration_updater_sender(
+                configuration_updater_sender.clone(),
+            ))
+            .and(super::with_configuration_save_lock(
+                configuration_save_lock.clone(),
+            ))
+            .and_then(self::delete_filter))
+        .boxed()
 }
