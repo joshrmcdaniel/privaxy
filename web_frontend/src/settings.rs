@@ -1,6 +1,6 @@
 use crate::filters::Filters;
+use crate::set_title;
 use crate::settings_textarea::SettingsTextarea;
-use crate::{get_api_host, set_title};
 use yew::prelude::*;
 use yew::{html, Html};
 use yew_router::prelude::*;

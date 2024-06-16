@@ -1,4 +1,3 @@
-use crate::get_api_host;
 use reqwasm::http::Request;
 use wasm_bindgen_futures::spawn_local;
 use yew::{classes, html, Component, Context, Html};
@@ -36,8 +35,8 @@ impl Component for BlockingEnabled {
     }
 
     fn update(&mut self, ctx: &Context<Self>, msg: Self::Message) -> bool {
-        let base_request = Request::put(&format!("http://{}/blocking-enabled", get_api_host()))
-            .header("Content-Type", "application/json");
+        let base_request =
+            Request::put("/api/blocking-enabled").header("Content-Type", "application/json");
 
         let message_callback = ctx.link().callback(|message: Message| message);
 
@@ -84,7 +83,7 @@ impl Component for BlockingEnabled {
                 self.blocking_enabled = false;
             }
             Message::SetCurrentBlockingState => {
-                let request = Request::get(&format!("http://{}/blocking-enabled", get_api_host()));
+                let request = Request::get("/api/blocking-enabled");
 
                 spawn_local(async move {
                     if let Ok(response) = request.send().await {

@@ -1,5 +1,4 @@
 use crate::blocking_enabled::BlockingEnabled;
-use crate::get_api_host;
 use futures::future::{AbortHandle, Abortable};
 use futures::StreamExt;
 use gloo_timers::future::TimeoutFuture;
@@ -148,7 +147,7 @@ impl Component for Dashboard {
                     </div>
                     <div
                         class="mt-6 flex flex-col-reverse justify-stretch space-y-4 space-y-reverse sm:flex-row-reverse sm:justify-end sm:space-x-reverse sm:space-y-0 sm:space-x-3 md:mt-0 md:flex-row md:space-x-3">
-                        <a href={format!("//{}/privaxy_ca_certificate.pem", get_api_host())}
+                        <a href="/privaxy_ca_certificate.pem"
                         class="inline-flex items-center justify-center px-4 py-2 border border-gray-300 shadow-sm text-sm font-medium rounded-md text-white bg-gray-800 hover:bg-gray-900 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-gray-100 focus:ring-gray-500">
                         <svg xmlns="http://www.w3.org/2000/svg" class="ml-0.5 mr-2 h-5 w-5" fill="none"
                             viewBox="0 0 24 24" stroke="currentColor">

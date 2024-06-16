@@ -1,5 +1,5 @@
 use crate::filterlists::SearchFilterList;
-use crate::{get_api_host, save_button, submit_banner};
+use crate::{save_button, submit_banner};
 use reqwasm::http::Request;
 use serde::{Deserialize, Serialize};
 use serde_json::de::IoRead;

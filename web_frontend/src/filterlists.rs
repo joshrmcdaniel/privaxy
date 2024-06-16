@@ -1,6 +1,6 @@
 use crate::filters::{AddFilterRequest, Filter, FilterConfiguration, FilterGroup};
 use crate::save_button::BASE_BUTTON_CSS;
-use crate::{get_api_host, save_button, submit_banner};
+use crate::{save_button, submit_banner};
 use filterlists_api;
 use reqwasm::http::Request;
 use url::Url;

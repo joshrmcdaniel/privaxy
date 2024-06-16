@@ -1,4 +1,3 @@
-use crate::get_api_host;
 use futures::future::{AbortHandle, Abortable};
 use futures::StreamExt;
 use reqwasm::websocket::futures::WebSocket;
