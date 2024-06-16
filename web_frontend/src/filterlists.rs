@@ -456,7 +456,7 @@ impl SearchFilterList {
                     }}
                 </td>
                 <td class="border px-4 py-2 overflow-auto" style="height: 5vh; max-width: 10vw; white-space: normal;">
-                    { &filter.description.clone().unwrap() }
+                    { &filter.description.clone().unwrap_or_default() }
                 </td>
                 <td class="border px-4 py-2 overflow-hidden" style="height: 5vh; white-space: nowrap; text-overflow: ellipsis;">
                     { self.get_language_name(filter.language_ids.clone()) }
