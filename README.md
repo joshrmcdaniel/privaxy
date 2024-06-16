@@ -64,7 +64,7 @@ Privaxy is also way more capable than DNS-based blockers as it is able to operat
   - [ ] TLS support on the web gui
   - [ ] Authentication to the web gui
   - [ ] Update root certificate
-  - [ ] Change bind settings
+  - [x] Change bind settings
 - Backend
   - [x] Bind to different addresses and ports
   - [x] Specify path or CA cert in config
@@ -92,6 +92,7 @@ Privaxy is also way more capable than DNS-based blockers as it is able to operat
   to https://filterlists.com in the web gui to search and add filters from there.
 - **NotValidBefore** patched properly, slight time differences *will not* produce
   invalid cert messages.
+- Static files and API now bind to same port
 
 
 **TODO** more info, screenshots
