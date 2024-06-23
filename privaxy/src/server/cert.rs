@@ -28,7 +28,7 @@ pub struct SignedWithCaCert {
 }
 
 impl SignedWithCaCert {
-    fn new(
+    pub(super) fn new(
         authority: Authority,
         private_key: PKey<Private>,
         ca_certificate: X509,
@@ -194,7 +194,7 @@ impl CertCache {
         Self {
             cache: Arc::new(Mutex::new(LRUCache::default())),
             private_key: {
-                let rsa = Rsa::generate(2048).unwrap();
+                let rsa: Rsa<Private> = Rsa::generate(2048).unwrap();
                 PKey::from_rsa(rsa).unwrap()
             },
             ca_certificate,

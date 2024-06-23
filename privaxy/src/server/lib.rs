@@ -38,7 +38,7 @@ pub struct PrivaxyServer {
 }
 
 // Helper function to parse the IP address string into an array of u8
-fn parse_ip_address(ip_str: &str) -> [u8; 4] {
+pub(crate) fn parse_ip_address(ip_str: &str) -> [u8; 4] {
     let mut ip: [u8; 4] = [0, 0, 0, 0];
     let parts: Vec<&str> = ip_str.split('.').collect();
     for (i, part) in parts.iter().enumerate() {
@@ -85,7 +85,7 @@ pub async fn start_privaxy() -> PrivaxyServer {
         }
     };
 
-    let ca_certificate_pem = std::str::from_utf8(&ca_certificate.to_pem().unwrap())
+    let ca_certificate_pem = std::str::from_utf8(&ca_certificate.clone().to_pem().unwrap())
         .unwrap()
         .to_string();
 
@@ -97,7 +97,7 @@ pub async fn start_privaxy() -> PrivaxyServer {
         }
     };
 
-    let cert_cache = cert::CertCache::new(ca_certificate, ca_private_key);
+    let cert_cache = cert::CertCache::new(ca_certificate.clone(), ca_private_key.clone());
 
     let statistics = statistics::Statistics::new();
     let statistics_clone = statistics.clone();
@@ -143,6 +143,25 @@ pub async fn start_privaxy() -> PrivaxyServer {
     };
     let web_api_server_addr = SocketAddr::from((ip, network_config.web_port));
 
+    let mut tls_cert = None;
+    let mut tls_key = None;
+    if network_config.tls {
+        tls_cert = match network_config
+            .read_or_create_tls_cert(ca_certificate.clone(), ca_private_key.clone())
+            .await
+        {
+            Ok(cert) => Some(cert),
+            Err(err) => {
+                panic!("Failed to read or create TLS certificate: {err}");
+            }
+        };
+        tls_key = match network_config.get_tls_key().await {
+            Ok(key) => Some(key),
+            Err(err) => {
+                panic!("Failed to read or create TLS key: {err}");
+            }
+        };
+    }
     web_gui::start_frontend(
         broadcast_tx.clone(),
         statistics.clone(),
@@ -151,6 +170,9 @@ pub async fn start_privaxy() -> PrivaxyServer {
         configuration_save_lock.clone(),
         local_exclusion_store.clone(),
         web_api_server_addr,
+        tls_cert,
+        tls_key,
+        network_config.tls,
     );
 
     thread::spawn(move || {

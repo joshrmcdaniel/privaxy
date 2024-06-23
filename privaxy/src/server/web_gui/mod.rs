@@ -2,6 +2,8 @@ use crate::proxy::exclusions::LocalExclusionStore;
 use crate::statistics::Statistics;
 use crate::WEBAPP_FRONTEND_DIR;
 use crate::{blocker::BlockingDisabledStore, configuration::Configuration};
+use openssl::pkey::{PKey, Private};
+use openssl::x509::X509;
 use serde::Serialize;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -33,6 +35,9 @@ pub(crate) fn start_frontend(
     configuration_save_lock: Arc<tokio::sync::Mutex<()>>,
     local_exclusions_store: LocalExclusionStore,
     bind: SocketAddr,
+    tls_cert: Option<X509>,
+    tls_key: Option<PKey<Private>>,
+    use_tls: bool,
 ) {
     let static_files_routes = warp::get().and(warp::path::tail()).map(move |tail: Tail| {
         let tail_str = tail.as_str();
@@ -74,9 +79,30 @@ pub(crate) fn start_frontend(
     .with(cors);
     let combined_routes = api_routes.or(static_files_routes);
 
-    tokio::spawn(async move {
-        warp::serve(combined_routes).run(bind).await;
-    });
+    if use_tls {
+        let key = tls_key.unwrap();
+        let cert = tls_cert.unwrap();
+        let combined_routes_with_hsts = combined_routes.map(|reply| {
+            warp::reply::with_header(
+                reply,
+                "Strict-Transport-Security",
+                "max-age=31536000; includeSubDomains; preload",
+            )
+        });
+
+        tokio::spawn(async move {
+            warp::serve(combined_routes_with_hsts)
+                .tls()
+                .cert(cert.to_pem().unwrap())
+                .key(key.private_key_to_pem_pkcs8().unwrap())
+                .run(bind)
+                .await;
+        });
+    } else {
+        tokio::spawn(async move {
+            warp::serve(combined_routes).run(bind).await;
+        });
+    }
 }
 
 fn create_api_routes(
