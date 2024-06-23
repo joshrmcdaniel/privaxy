@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.6.0
+
+- Remove gui app
+- Bring back web gui
+- API improvements
+- Support for custom filters
+- Filterlists.com integration
+- SSL support on the web gui
+  - Optional to specify. If not provided and `tls` is set
+    to `true`, a SSL certificate is created with the proxy
+    CA cert
+- Allow users to specify their own CA cert
+- Improve frontend routing
+- Update dependencies
+- Allow customization of bind address
+- Static files and API are now under the same route
+  - Static files are found as before
+  - API calls are under `/api`
+
+
 ## v0.5.2
 
 - Wildcards are allowed in configurable exclusions.
