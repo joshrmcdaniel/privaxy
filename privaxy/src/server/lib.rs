@@ -234,8 +234,22 @@ pub async fn start_privaxy() -> PrivaxyServer {
         .serve(make_service);
 
     log::info!("Proxy available at http://{}", proxy_server_addr);
-    log::info!("Web server available at http://{}", web_api_server_addr);
-    log::info!("API server available at http://{}/api", web_api_server_addr);
+    log::info!(
+        "Web server available at {}{web_api_server_addr}",
+        if network_config.tls {
+            "https://"
+        } else {
+            "http://"
+        }
+    );
+    log::info!(
+        "API server available at {}{web_api_server_addr}/api",
+        if network_config.tls {
+            "https://"
+        } else {
+            "http://"
+        }
+    );
 
     if let Err(e) = server.await {
         log::error!("server error: {}", e);
