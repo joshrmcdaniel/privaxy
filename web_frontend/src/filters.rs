@@ -1,3 +1,4 @@
+use crate::button::ButtonState;
 use crate::filterlists::SearchFilterList;
 use crate::{save_button, submit_banner};
 use reqwasm::http::Request;
@@ -208,6 +209,7 @@ impl Component for AddFilterComponent {
         let category = self.category.clone();
         let title = self.title.clone();
 
+        // <button onclick={self.link.callback(|_| AddFilterMessage::Open)} type="button" class="mt-5 button-base button-green">
         html! {
             <>
                 <button onclick={self.link.callback(|_| AddFilterMessage::Open)} type="button" class={classes!(save_button_classes, "mt-5" )}>
@@ -458,9 +460,9 @@ impl Component for Filters {
     fn view(&self, ctx: &Context<Self>) -> Html {
         log::debug!("At view.");
         let save_button_state = if !self.configuration_has_changed() {
-            save_button::SaveButtonState::Disabled
+            ButtonState::Disabled
         } else {
-            save_button::SaveButtonState::Enabled
+            ButtonState::Enabled
         };
         log::debug!("Retrieving callback..");
 
@@ -550,7 +552,7 @@ impl Component for Filters {
                             <div class="mb-5 flex space-x-4">
                                 <AddFilterComponent state={save_button::SaveButtonState::Enabled}/>
                                 <SearchFilterList filter_configuration={filter_configuration.clone()}/>
-                                <save_button::SaveButton state={save_button_state} onclick={save_callback} />
+                                {save_button!(save_callback, save_button_state)}
                             </div>
                             { render_category(FilterGroup::Default, filter_configuration) }
                             { render_category(FilterGroup::Ads, filter_configuration) }

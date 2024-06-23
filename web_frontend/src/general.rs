@@ -1,3 +1,4 @@
+use crate::button::{get_css, ButtonColor};
 use crate::save_button;
 use gloo_utils::format::JsValueSerdeExt;
 use regex::Regex;
@@ -103,23 +104,6 @@ impl GeneralSettings {
             }
         };
         net_changed
-    }
-}
-
-impl GeneralSettings {
-    fn new() -> Self {
-        Self {
-            changes_saved: true,
-            network_settings: None,
-            ca_config: CaConfig {
-                private_key_pem: String::new(),
-                ca_cert_pem: String::new(),
-                ca_cert_error: None,
-                private_key_error: None,
-            },
-            loading: true,
-            save_callback: Callback::noop(),
-        }
     }
 }
 
@@ -451,6 +435,7 @@ fn render_certificate_setting(
     error: Option<&String>,
     description: &str,
 ) -> Html {
+    let input_id = setting_name.to_string().to_lowercase().replace(" ", "_");
     html! {
         <div class="mb-4" style="display: flex; flex-direction: column; width: 100%; padding: 2px 0;">
             <div style="display: flex; align-items: center; width: 100%;">
@@ -466,13 +451,17 @@ fn render_certificate_setting(
             <div class="ml-200" style="margin-left: 200px;">
                 <input
                     type="file"
+                    id={input_id.clone()}
+                    name={input_id.clone()}
+                    class={ get_css(ButtonColor::Blue) }
                     onchange={Callback::from(move |e: Event| {
                         let input: web_sys::HtmlInputElement = e.target_unchecked_into();
                         if let Some(file) = input.files().and_then(|files| files.get(0)) {
                             onupload.emit(file);
                         }
                     })}
-                />
+                    accept=".pem"
+                    />
                 <p class="text-gray-400 text-sm mt-1">{description}</p>
                 if let Some(error_msg) = error {
                     <p class="text-red-500 text-xs italic">{error_msg}</p>

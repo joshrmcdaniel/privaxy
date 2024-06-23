@@ -4,6 +4,7 @@ use yew::prelude::*;
 use yew_router::prelude::*;
 
 mod blocking_enabled;
+mod button;
 mod dashboard;
 mod filterlists;
 mod filters;
@@ -88,10 +89,10 @@ fn switch(route: &Route) -> Html {
               <img class="h-8 w-auto text-white" src="/logo.svg" alt="Logo" />
             </div>
               <div class="flex ml-6 space-x-4">
-               <Link<Route> classes={ get_classes(*route, Route::Dashboard) } to={Route::Dashboard}>{ "Dashboard" }</Link<Route>>
+              <Link<Route> classes={ get_classes(*route, Route::Dashboard) } to={Route::Dashboard}>{ "Dashboard" }</Link<Route>>
                <Link<Route> classes={ get_classes(*route, Route::Requests) } to={Route::Requests}>{ "Requests" }</Link<Route>>
                <Link<settings::SettingsRoute> classes={ get_classes(*route, Route::Settings) } to={settings::SettingsRoute::Filters}>{ "Settings" }</Link<settings::SettingsRoute>>
-            </div>
+               </div>
           </div>
         </div>
       </div>
