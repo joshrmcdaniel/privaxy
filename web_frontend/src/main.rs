@@ -15,7 +15,7 @@ mod settings;
 mod settings_textarea;
 mod submit_banner;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub(crate) struct ApiError {
     error: String,
 }

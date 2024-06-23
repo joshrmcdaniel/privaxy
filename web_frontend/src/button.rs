@@ -98,6 +98,7 @@ impl Component for PrivaxyButton {
             <button
                 class={css}
                 onclick={onclick}
+                disabled={properties.state == ButtonState::Disabled || properties.state == ButtonState::Loading}
             >
             if let Some(children) = properties.children.clone() {
                 {children}
@@ -147,7 +148,7 @@ macro_rules! save_button {
     ($callback:expr, $text:expr) => {
         html! {
             <div class="mt-5">
-            <PrivaxyButton
+            <crate::button::PrivaxyButton
                 state={ButtonState::Enabled}
                 onclick={$callback}
                 color={ButtonColor::Green}
