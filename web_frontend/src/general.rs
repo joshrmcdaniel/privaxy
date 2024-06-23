@@ -1,3 +1,4 @@
+use crate::button::ButtonState;
 use crate::button::{get_css, ButtonColor};
 use crate::save_button;
 use gloo_utils::format::JsValueSerdeExt;
@@ -302,14 +303,14 @@ impl Component for GeneralSettings {
 
         let render_boolean_setting = |setting_name: &str,
                                       setting_value: bool,
+                                      oninput: Callback<MouseEvent>,
                                       description: &str| {
-            let checkbox_callback = ctx.link().callback(|_| Message::Load);
             html! {
                 <div class="mb-4" style="display: flex; flex-direction: column; width: 100%; padding: 2px 0;">
                     <div style="display: flex; align-items: center; width: 100%;">
                         <div class="text-gray-500" style="width: 200px; text-align: left; padding-right: 4px;">{ setting_name }</div>
                         <div style="flex-grow: 1;">
-                            <input checked={setting_value} onchange={checkbox_callback} type="checkbox" class="focus:ring-blue-500 h-4 w-4 text-blue-600 border-gray-300 rounded" />
+                            <input checked={setting_value} onclick={oninput} type="checkbox" class="focus:ring-blue-500 h-4 w-4 text-blue-600 border-gray-300 rounded" />
                         </div>
                     </div>
                     <div style="margin-left: 200px;">
@@ -358,7 +359,14 @@ impl Component for GeneralSettings {
                                         network_settings.web_port_error.as_ref(),
                                         "The port number the web server will listen on"
                                     ) }
-                                    { render_boolean_setting("TLS", network_settings.current_config.tls, "If the web server uses HTTPS") }
+                                    { render_boolean_setting(
+                                        "TLS",
+                                        network_settings.current_config.tls,
+                                        ctx.link().callback(|e: MouseEvent| {
+                                            let input: web_sys::HtmlInputElement = e.target_unchecked_into();
+                                            Message::UpdateTls(input.checked())
+                                        }),
+                                        "If the web server uses HTTPS") }
                                     </>
                                 }
                             }
@@ -398,10 +406,10 @@ impl Component for GeneralSettings {
             }
         };
 
-        let save_button_state = if !self.changes_saved {
-            save_button::SaveButtonState::Disabled
+        let save_button_state = if self.config_has_changed() {
+            ButtonState::Enabled
         } else {
-            save_button::SaveButtonState::Enabled
+            ButtonState::Disabled
         };
 
         let save_callback = ctx.link().callback(|_| Message::Save);
@@ -421,7 +429,7 @@ impl Component for GeneralSettings {
                 }
                     {render_category("Certificate", SettingCategories::Certificate(self.ca_config.clone()))}
 
-            <save_button::SaveButton state={save_button_state} onclick={save_callback} />
+            {save_button!(save_callback, save_button_state)}
             </>
         }
     }
