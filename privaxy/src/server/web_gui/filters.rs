@@ -32,8 +32,6 @@ async fn change_filter_status(
     configuration_updater_sender: Sender<Configuration>,
     configuration_save_lock: Arc<tokio::sync::Mutex<()>>,
 ) -> Result<impl warp::Reply, Infallible> {
-    let _guard = configuration_save_lock.lock().await;
-
     let mut configuration = match Configuration::read_from_home().await {
         Ok(configuration) => configuration,
         Err(err) => {
@@ -51,12 +49,13 @@ async fn change_filter_status(
             return Ok(get_error_response(err));
         }
     }
+    let guard = configuration_save_lock.lock().await;
 
     configuration_updater_sender
         .send(configuration.clone())
         .await
         .unwrap();
-
+    drop(guard);
     Ok(Response::builder()
         .status(http::StatusCode::ACCEPTED)
         .body("".to_string())
@@ -86,8 +85,6 @@ async fn add_filter(
     configuration_updater_sender: Sender<Configuration>,
     configuration_save_lock: Arc<tokio::sync::Mutex<()>>,
 ) -> Result<impl warp::Reply, Infallible> {
-    let _guard = configuration_save_lock.lock().await;
-
     // Read the current configuration
     let mut configuration = match Configuration::read_from_home().await {
         Ok(configuration) => configuration,
@@ -135,11 +132,12 @@ async fn add_filter(
             return Ok(get_error_response(err));
         }
     }
+    let guard = configuration_save_lock.lock().await;
     configuration_updater_sender
         .send(configuration.clone())
         .await
         .unwrap();
-
+    drop(guard);
     // Save the updated configuration
     if let Err(err) = configuration.save().await {
         log::error!("Failed to save configuration: {err}");

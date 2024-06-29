@@ -15,7 +15,10 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
+use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::broadcast;
+use tokio::sync::Notify;
+
 pub mod blocker;
 mod blocker_utils;
 mod ca;
@@ -41,6 +44,33 @@ pub struct PrivaxyServer {
 // Helper function to parse the IP address string into an array of u8
 pub(crate) fn parse_ip_address(ip_str: &str) -> [u8; 4] {
     Ipv4Addr::from_str(ip_str).unwrap().octets()
+}
+
+async fn handle_signals() -> Arc<Notify> {
+    let notify = Arc::new(Notify::new());
+    let notify_clone = notify.clone();
+
+    tokio::spawn(async move {
+        let mut hup_signal =
+            signal(SignalKind::hangup()).expect("failed to set up SIGHUP signal handler");
+        let mut term_signal =
+            signal(SignalKind::terminate()).expect("failed to set up SIGTERM signal handler");
+
+        loop {
+            tokio::select! {
+                _ = hup_signal.recv() => {
+                    log::info!("Received SIGHUP signal, restarting child processes...");
+                    notify_clone.notify_waiters();
+                }
+                _ = term_signal.recv() => {
+                    log::info!("Received SIGTERM signal, shutting down gracefully...");
+                    std::process::exit(0);
+                }
+            }
+        }
+    });
+
+    notify
 }
 
 pub async fn start_privaxy() -> PrivaxyServer {
@@ -128,57 +158,35 @@ pub async fn start_privaxy() -> PrivaxyServer {
         Err(_) => network_config.parsed_ip_address(),
     };
     let web_api_server_addr = SocketAddr::from((ip, network_config.web_port));
-    let (_sig_tx, mut sig_rx) = tokio::sync::mpsc::channel::<tokio::signal::unix::Signal>(1);
-    let frontend = web_gui::get_frontend(
-        broadcast_tx.clone(),
-        statistics.clone(),
-        &blocking_disabled_store,
-        &configuration_updater_tx,
-        &configuration_save_lock,
-        &local_exclusion_store,
-    );
-    let frontend_server = warp::serve(frontend);
-    if network_config.tls {
-        let tls_cert = match network_config
-            .read_or_create_tls_cert(ca_certificate.clone(), ca_private_key.clone())
-            .await
-        {
-            Ok(cert) => cert,
-            Err(err) => {
-                panic!("Failed to read or create TLS certificate: {err}");
-            }
-        };
-        let tls_key = match network_config.get_tls_key().await {
-            Ok(key) => key,
-            Err(err) => {
-                panic!("Failed to read or create TLS key: {err}");
-            }
-        };
-        tokio::spawn(async move {
-            let (_, task) = frontend_server
-                .tls()
-                .cert(tls_cert.to_pem().unwrap())
-                .key(tls_key.private_key_to_pem_pkcs8().unwrap())
-                .bind_with_graceful_shutdown(web_api_server_addr, async move {
-                    let _ = sig_rx.recv().await.expect("..");
-                });
-            task.await;
-        });
-    } else {
-        tokio::spawn(async move {
-            let (_, task) =
-                frontend_server.bind_with_graceful_shutdown(web_api_server_addr, async move {
-                    let _ = sig_rx.recv().await.expect("..");
-                });
-            task.await;
-        });
-    }
+
+    let notify = handle_signals().await;
+
+    let block_disable_ref = blocking_disabled_store.clone();
+    let local_exclusion_store_ref = local_exclusion_store.clone();
+    let stats_clone = statistics.clone();
+    let configuration_updater_tx_ref = configuration_updater_tx.clone();
+    let configuration_save_lock_ref = configuration_save_lock.clone();
+    let broadcast_tx_ref = broadcast_tx.clone();
+    tokio::spawn(async move {
+        loop {
+            let (_sig_tx, sig_rx) = tokio::sync::mpsc::channel::<tokio::signal::unix::Signal>(1);
+            privaxy_frontend(
+                broadcast_tx_ref.clone(),
+                local_exclusion_store_ref.clone(),
+                stats_clone.clone(),
+                block_disable_ref.clone(),
+                configuration_updater_tx_ref.clone(),
+                configuration_save_lock_ref.clone(),
+                sig_rx,
+            )
+            .await;
+            notify.notified().await;
+        }
+    });
+    let disabled_store_ref = blocking_disabled_store_clone.clone();
     thread::spawn(move || {
-        let blocker = blocker::Blocker::new(
-            crossbeam_sender,
-            crossbeam_receiver,
-            blocking_disabled_store,
-        );
+        let blocker =
+            blocker::Blocker::new(crossbeam_sender, crossbeam_receiver, disabled_store_ref);
 
         blocker.handle_requests()
     });
@@ -261,5 +269,76 @@ pub async fn start_privaxy() -> PrivaxyServer {
         statistics: statistics_clone,
         local_exclusion_store: local_exclusion_store_clone,
         requests_broadcast_sender: broadcast_tx_clone,
+    }
+}
+
+async fn privaxy_frontend(
+    broadcast_tx: tokio::sync::broadcast::Sender<Event>,
+    local_exclusion_store: LocalExclusionStore,
+    statistics: statistics::Statistics,
+    block_disable_ref: blocker::BlockingDisabledStore,
+    configuration_updater_tx: tokio::sync::mpsc::Sender<configuration::Configuration>,
+    configuration_save_lock: Arc<tokio::sync::Mutex<()>>,
+    mut sig_rx: tokio::sync::mpsc::Receiver<tokio::signal::unix::Signal>,
+) {
+    let frontend = web_gui::get_frontend(
+        broadcast_tx.clone(),
+        statistics.clone(),
+        &block_disable_ref,
+        &configuration_updater_tx,
+        &configuration_save_lock,
+        &local_exclusion_store,
+    );
+    let frontend_server = warp::serve(frontend);
+    let lock = configuration_save_lock.lock().await;
+    let config = configuration::Configuration::read_from_home()
+        .await
+        .unwrap();
+    drop(lock);
+    let ip = match env::var("PRIVAXY_IP_ADDRESS") {
+        Ok(val) => parse_ip_address(&val),
+        Err(_) => config.network.parsed_ip_address(),
+    };
+    let web_api_server_addr = SocketAddr::from((ip, config.network.web_port));
+
+    if config.network.tls {
+        let lock = configuration_save_lock.lock().await;
+        let ca_certificate = config.ca.get_ca_certificate().await.unwrap();
+        let ca_private_key = config.ca.get_ca_private_key().await.unwrap();
+        drop(lock);
+        let tls_cert = match config
+            .network
+            .read_or_create_tls_cert(ca_certificate.clone(), ca_private_key.clone())
+            .await
+        {
+            Ok(cert) => cert,
+            Err(err) => {
+                panic!("Failed to read or create TLS certificate: {err}");
+            }
+        };
+        let tls_key = match config.network.get_tls_key().await {
+            Ok(key) => key,
+            Err(err) => {
+                panic!("Failed to read or create TLS key: {err}");
+            }
+        };
+        tokio::spawn(async move {
+            let (_, task) = frontend_server
+                .tls()
+                .cert(tls_cert.to_pem().unwrap())
+                .key(tls_key.private_key_to_pem_pkcs8().unwrap())
+                .bind_with_graceful_shutdown(web_api_server_addr, async move {
+                    let _ = sig_rx.recv().await;
+                });
+            task.await;
+        });
+    } else {
+        tokio::spawn(async move {
+            let (_, task) =
+                frontend_server.bind_with_graceful_shutdown(web_api_server_addr, async move {
+                    let _ = sig_rx.recv().await;
+                });
+            task.await;
+        });
     }
 }

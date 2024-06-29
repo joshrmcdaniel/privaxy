@@ -28,7 +28,6 @@ async fn put_network_settings(
     configuration_updater_sender: Sender<Configuration>,
     configuration_save_lock: Arc<tokio::sync::Mutex<()>>,
 ) -> Result<Box<dyn warp::Reply>, Infallible> {
-    let _guard = configuration_save_lock.lock().await;
     let mut configuration = match Configuration::read_from_home().await {
         Ok(configuration) => configuration,
         Err(err) => {
@@ -36,15 +35,19 @@ async fn put_network_settings(
             return Ok(Box::new(get_error_response(err)));
         }
     };
+
     if let Err(err) = configuration.set_network_settings(&network_settings).await {
         log::error!("Invalid network settings: {err}");
         return Ok(Box::new(get_error_response(err)));
     };
 
+    let guard = configuration_save_lock.lock().await;
     configuration_updater_sender
         .send(configuration.clone())
         .await
         .unwrap();
+    drop(guard);
+
     Ok(Box::new(
         Response::builder()
             .status(http::StatusCode::NO_CONTENT)
