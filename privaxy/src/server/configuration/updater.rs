@@ -25,7 +25,7 @@ impl ConfigurationUpdater {
 
         let (tx, rx) = match tx_rx {
             Some((tx, rx)) => (tx, rx),
-            None => sync::mpsc::channel(1),
+            None => sync::mpsc::channel(2),
         };
 
         let http_client_clone = http_client.clone();

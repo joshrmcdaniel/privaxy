@@ -25,14 +25,30 @@ pub(crate) struct ApiError {
 }
 
 pub(crate) fn get_frontend(
-    events_sender: &broadcast::Sender<events::Event>,
-    statistics: &Statistics,
+    events_sender: broadcast::Sender<events::Event>,
+    statistics: Statistics,
     blocking_disabled_store: &BlockingDisabledStore,
     configuration_updater_sender: &Sender<Configuration>,
     configuration_save_lock: &Arc<tokio::sync::Mutex<()>>,
     local_exclusions_store: &LocalExclusionStore,
 ) -> BoxedFilter<(impl warp::Reply,)> {
-    let static_files_routes = create_static_routes();
+    let static_files_routes = warp::get().and(warp::path::tail()).map(move |tail: Tail| {
+        let tail_str = tail.as_str();
+
+        let file_contents = match WEBAPP_FRONTEND_DIR.get_file(tail_str) {
+            Some(file) => file.contents().to_vec(),
+            None => {
+                let index_html = WEBAPP_FRONTEND_DIR.get_file("index.html").unwrap();
+                index_html.contents().to_vec()
+            }
+        };
+
+        let mime = mime_guess::from_path(tail_str).first_raw().unwrap_or("");
+
+        Response::builder()
+            .header(http::header::CONTENT_TYPE, mime)
+            .body(file_contents)
+    });
 
     let cors = warp::cors()
         .allow_any_origin()
@@ -45,16 +61,15 @@ pub(crate) fn get_frontend(
     let http_client = reqwest::Client::new();
 
     let api_routes = create_api_routes(
-        events_sender.clone(),
-        statistics.clone(),
-        &blocking_disabled_store,
-        &configuration_updater_sender,
-        &configuration_save_lock,
-        &local_exclusions_store,
+        events_sender,
+        statistics,
+        blocking_disabled_store,
+        configuration_updater_sender,
+        configuration_save_lock,
+        local_exclusions_store,
         http_client,
-    )
-    .with(cors);
-    api_routes.or(static_files_routes).boxed()
+    );
+    api_routes.or(static_files_routes).with(cors).boxed()
 }
 
 fn create_static_routes() -> BoxedFilter<(impl warp::Reply,)> {

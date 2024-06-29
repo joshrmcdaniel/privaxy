@@ -57,13 +57,16 @@ pub(super) fn create_routes(
     configuration_save_lock: Arc<tokio::sync::Mutex<()>>,
 ) -> BoxedFilter<(impl warp::Reply,)> {
     warp::path::end()
-        .and(warp::get().and_then(self::get_network_settings))
-        .or(warp::put()
-            .and(warp::body::json())
-            .and(with_configuration_updater_sender(
-                configuration_updater_sender,
-            ))
-            .and(with_configuration_save_lock(configuration_save_lock))
-            .and_then(self::put_network_settings))
+        .and(
+            warp::get().and_then(get_network_settings).or(warp::put()
+                .and(warp::body::json())
+                .and(with_configuration_updater_sender(
+                    configuration_updater_sender.clone(),
+                ))
+                .and(with_configuration_save_lock(
+                    configuration_save_lock.clone(),
+                ))
+                .and_then(put_network_settings)),
+        )
         .boxed()
 }

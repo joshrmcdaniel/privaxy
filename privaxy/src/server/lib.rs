@@ -9,7 +9,9 @@ use proxy::exclusions;
 use reqwest::redirect::Policy;
 use std::convert::Infallible;
 use std::env;
+use std::net::Ipv4Addr;
 use std::net::SocketAddr;
+use std::str::FromStr;
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
@@ -22,7 +24,6 @@ pub mod configuration;
 mod proxy;
 pub mod statistics;
 mod web_gui;
-
 pub const WEBAPP_FRONTEND_DIR: Dir<'_> = include_dir!("web_frontend/dist");
 
 #[derive(Debug)]
@@ -39,14 +40,7 @@ pub struct PrivaxyServer {
 
 // Helper function to parse the IP address string into an array of u8
 pub(crate) fn parse_ip_address(ip_str: &str) -> [u8; 4] {
-    let mut ip: [u8; 4] = [0, 0, 0, 0];
-    let parts: Vec<&str> = ip_str.split('.').collect();
-    for (i, part) in parts.iter().enumerate() {
-        if let Ok(num) = part.parse::<u8>() {
-            ip[i] = num;
-        }
-    }
-    ip
+    Ipv4Addr::from_str(ip_str).unwrap().octets()
 }
 
 pub async fn start_privaxy() -> PrivaxyServer {
@@ -130,22 +124,14 @@ pub async fn start_privaxy() -> PrivaxyServer {
 
     let configuration_save_lock = Arc::new(tokio::sync::Mutex::new(()));
     let ip = match env::var("PRIVAXY_IP_ADDRESS") {
-        Ok(val) =>
-        // Parse the IP address from the environment variable string
-        {
-            parse_ip_address(&val)
-        }
-        Err(_) =>
-        // Set a default IP address
-        {
-            parse_ip_address(&network_config.bind_addr.clone())
-        }
+        Ok(val) => parse_ip_address(&val),
+        Err(_) => network_config.parsed_ip_address(),
     };
     let web_api_server_addr = SocketAddr::from((ip, network_config.web_port));
-
+    let (_sig_tx, mut sig_rx) = tokio::sync::mpsc::channel::<tokio::signal::unix::Signal>(1);
     let frontend = web_gui::get_frontend(
-        &broadcast_tx,
-        &statistics,
+        broadcast_tx.clone(),
+        statistics.clone(),
         &blocking_disabled_store,
         &configuration_updater_tx,
         &configuration_save_lock,
@@ -169,19 +155,24 @@ pub async fn start_privaxy() -> PrivaxyServer {
             }
         };
         tokio::spawn(async move {
-            frontend_server
+            let (_, task) = frontend_server
                 .tls()
                 .cert(tls_cert.to_pem().unwrap())
                 .key(tls_key.private_key_to_pem_pkcs8().unwrap())
-                .run(web_api_server_addr)
-                .await;
+                .bind_with_graceful_shutdown(web_api_server_addr, async move {
+                    let _ = sig_rx.recv().await.expect("..");
+                });
+            task.await;
         });
     } else {
         tokio::spawn(async move {
-            frontend_server.run(web_api_server_addr).await;
+            let (_, task) =
+                frontend_server.bind_with_graceful_shutdown(web_api_server_addr, async move {
+                    let _ = sig_rx.recv().await.expect("..");
+                });
+            task.await;
         });
     }
-
     thread::spawn(move || {
         let blocker = blocker::Blocker::new(
             crossbeam_sender,
@@ -265,7 +256,7 @@ pub async fn start_privaxy() -> PrivaxyServer {
     PrivaxyServer {
         ca_certificate_pem,
         configuration_updater_sender: configuration_updater_tx,
-        configuration_save_lock: configuration_save_lock,
+        configuration_save_lock,
         blocking_disabled_store: blocking_disabled_store_clone,
         statistics: statistics_clone,
         local_exclusion_store: local_exclusion_store_clone,

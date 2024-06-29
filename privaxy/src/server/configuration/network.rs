@@ -1,9 +1,12 @@
 use regex::Regex;
 use serde::{Deserialize, Serialize};
+use serde_with::serde_as;
+use std::str::FromStr;
 use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 use tokio::fs;
 
+use super::ConfigurationResult;
 use openssl::{
     asn1::Asn1Time,
     bn::{BigNum, MsbOption},
@@ -17,10 +20,10 @@ use openssl::{
         X509NameBuilder, X509Ref, X509Req, X509ReqBuilder, X509,
     },
 };
-
-use super::ConfigurationResult;
+use std::net::Ipv4Addr;
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde_as]
 /// Network configuration for Privaxy
 pub struct NetworkConfig {
     /// Bind address for the proxy server.
@@ -34,12 +37,15 @@ pub struct NetworkConfig {
     /// Path to user specified TLS certificate
     /// If not set, a self-signed certificate will be generated
     /// using the root CA.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub tls_cert_path: Option<String>,
     /// Path to user specified TLS certificate key
     /// If not set, a self-signed key will be generated
     /// using the root CA.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub tls_key_path: Option<String>,
     /// URL to listen on. Only used when TLS is enabled.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub listen_url: Option<String>,
 }
 
@@ -230,6 +236,14 @@ impl NetworkConfig {
             self.gen_self_signed_tls_cert(ca_cert, ca_key).await
         }
     }
+
+    pub(crate) fn parsed_ip_address(&self) -> [u8; 4] {
+        let ip_addr = match Ipv4Addr::from_str(self.bind_addr.as_str()) {
+            Ok(ip) => ip,
+            Err(_) => Ipv4Addr::new(0, 0, 0, 0),
+        };
+        ip_addr.octets()
+    }
 }
 
 fn build_certificate_request(key_pair: &PKey<Private>, authority: String) -> X509Req {
@@ -284,9 +298,7 @@ fn build_ca_signed_cert(
 
     let not_before = {
         let current_time = SystemTime::now();
-        let since_epoch = current_time
-            .duration_since(UNIX_EPOCH)
-            .expect("Time went backwards");
+        let since_epoch = current_time.duration_since(UNIX_EPOCH).unwrap();
         // patch NotValidBefore
         Asn1Time::from_unix(since_epoch.as_secs() as i64 - 60).unwrap()
     };
