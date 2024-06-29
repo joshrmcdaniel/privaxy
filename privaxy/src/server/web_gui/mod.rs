@@ -2,10 +2,7 @@ use crate::proxy::exclusions::LocalExclusionStore;
 use crate::statistics::Statistics;
 use crate::WEBAPP_FRONTEND_DIR;
 use crate::{blocker::BlockingDisabledStore, configuration::Configuration};
-use openssl::pkey::{PKey, Private};
-use openssl::x509::X509;
 use serde::Serialize;
-use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc::Sender};
 use warp::filters::BoxedFilter;
@@ -27,35 +24,15 @@ pub(crate) struct ApiError {
     error: String,
 }
 
-pub(crate) fn start_frontend(
-    events_sender: broadcast::Sender<events::Event>,
-    statistics: Statistics,
-    blocking_disabled_store: BlockingDisabledStore,
-    configuration_updater_sender: Sender<Configuration>,
-    configuration_save_lock: Arc<tokio::sync::Mutex<()>>,
-    local_exclusions_store: LocalExclusionStore,
-    bind: SocketAddr,
-    tls_cert: Option<X509>,
-    tls_key: Option<PKey<Private>>,
-    use_tls: bool,
-) {
-    let static_files_routes = warp::get().and(warp::path::tail()).map(move |tail: Tail| {
-        let tail_str = tail.as_str();
-
-        let file_contents = match WEBAPP_FRONTEND_DIR.get_file(tail_str) {
-            Some(file) => file.contents().to_vec(),
-            None => {
-                let index_html = WEBAPP_FRONTEND_DIR.get_file("index.html").unwrap();
-                index_html.contents().to_vec()
-            }
-        };
-
-        let mime = mime_guess::from_path(tail_str).first_raw().unwrap_or("");
-
-        Response::builder()
-            .header(http::header::CONTENT_TYPE, mime)
-            .body(file_contents)
-    });
+pub(crate) fn get_frontend(
+    events_sender: &broadcast::Sender<events::Event>,
+    statistics: &Statistics,
+    blocking_disabled_store: &BlockingDisabledStore,
+    configuration_updater_sender: &Sender<Configuration>,
+    configuration_save_lock: &Arc<tokio::sync::Mutex<()>>,
+    local_exclusions_store: &LocalExclusionStore,
+) -> BoxedFilter<(impl warp::Reply,)> {
+    let static_files_routes = create_static_routes();
 
     let cors = warp::cors()
         .allow_any_origin()
@@ -68,50 +45,48 @@ pub(crate) fn start_frontend(
     let http_client = reqwest::Client::new();
 
     let api_routes = create_api_routes(
-        events_sender,
-        statistics,
-        blocking_disabled_store,
-        configuration_updater_sender,
-        configuration_save_lock,
-        local_exclusions_store,
+        events_sender.clone(),
+        statistics.clone(),
+        &blocking_disabled_store,
+        &configuration_updater_sender,
+        &configuration_save_lock,
+        &local_exclusions_store,
         http_client,
     )
     .with(cors);
-    let combined_routes = api_routes.or(static_files_routes);
+    api_routes.or(static_files_routes).boxed()
+}
 
-    if use_tls {
-        let key = tls_key.unwrap();
-        let cert = tls_cert.unwrap();
-        let combined_routes_with_hsts = combined_routes.map(|reply| {
-            warp::reply::with_header(
-                reply,
-                "Strict-Transport-Security",
-                "max-age=31536000; includeSubDomains; preload",
-            )
-        });
+fn create_static_routes() -> BoxedFilter<(impl warp::Reply,)> {
+    warp::get()
+        .and(warp::path::tail())
+        .map(move |tail: Tail| {
+            let tail_str = tail.as_str();
 
-        tokio::spawn(async move {
-            warp::serve(combined_routes_with_hsts)
-                .tls()
-                .cert(cert.to_pem().unwrap())
-                .key(key.private_key_to_pem_pkcs8().unwrap())
-                .run(bind)
-                .await;
-        });
-    } else {
-        tokio::spawn(async move {
-            warp::serve(combined_routes).run(bind).await;
-        });
-    }
+            let file_contents = match WEBAPP_FRONTEND_DIR.get_file(tail_str) {
+                Some(file) => file.contents().to_vec(),
+                None => {
+                    let index_html = WEBAPP_FRONTEND_DIR.get_file("index.html").unwrap();
+                    index_html.contents().to_vec()
+                }
+            };
+
+            let mime = mime_guess::from_path(tail_str).first_raw().unwrap_or("");
+
+            Response::builder()
+                .header(http::header::CONTENT_TYPE, mime)
+                .body(file_contents)
+        })
+        .boxed()
 }
 
 fn create_api_routes(
     events_sender: broadcast::Sender<events::Event>,
     statistics: Statistics,
-    blocking_disabled_store: BlockingDisabledStore,
-    configuration_updater_sender: Sender<Configuration>,
-    configuration_save_lock: Arc<tokio::sync::Mutex<()>>,
-    local_exclusions_store: LocalExclusionStore,
+    blocking_disabled_store: &BlockingDisabledStore,
+    configuration_updater_sender: &Sender<Configuration>,
+    configuration_save_lock: &Arc<tokio::sync::Mutex<()>>,
+    local_exclusions_store: &LocalExclusionStore,
     http_client: reqwest::Client,
 ) -> BoxedFilter<(impl Reply,)> {
     let def_headers =

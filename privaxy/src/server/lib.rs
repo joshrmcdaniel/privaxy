@@ -25,7 +25,7 @@ mod web_gui;
 
 pub const WEBAPP_FRONTEND_DIR: Dir<'_> = include_dir!("web_frontend/dist");
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct PrivaxyServer {
     pub ca_certificate_pem: String,
     pub configuration_updater_sender: tokio::sync::mpsc::Sender<configuration::Configuration>,
@@ -143,37 +143,44 @@ pub async fn start_privaxy() -> PrivaxyServer {
     };
     let web_api_server_addr = SocketAddr::from((ip, network_config.web_port));
 
-    let mut tls_cert = None;
-    let mut tls_key = None;
+    let frontend = web_gui::get_frontend(
+        &broadcast_tx,
+        &statistics,
+        &blocking_disabled_store,
+        &configuration_updater_tx,
+        &configuration_save_lock,
+        &local_exclusion_store,
+    );
+    let frontend_server = warp::serve(frontend);
     if network_config.tls {
-        tls_cert = match network_config
+        let tls_cert = match network_config
             .read_or_create_tls_cert(ca_certificate.clone(), ca_private_key.clone())
             .await
         {
-            Ok(cert) => Some(cert),
+            Ok(cert) => cert,
             Err(err) => {
                 panic!("Failed to read or create TLS certificate: {err}");
             }
         };
-        tls_key = match network_config.get_tls_key().await {
-            Ok(key) => Some(key),
+        let tls_key = match network_config.get_tls_key().await {
+            Ok(key) => key,
             Err(err) => {
                 panic!("Failed to read or create TLS key: {err}");
             }
         };
+        tokio::spawn(async move {
+            frontend_server
+                .tls()
+                .cert(tls_cert.to_pem().unwrap())
+                .key(tls_key.private_key_to_pem_pkcs8().unwrap())
+                .run(web_api_server_addr)
+                .await;
+        });
+    } else {
+        tokio::spawn(async move {
+            frontend_server.run(web_api_server_addr).await;
+        });
     }
-    web_gui::start_frontend(
-        broadcast_tx.clone(),
-        statistics.clone(),
-        blocking_disabled_store.clone(),
-        configuration_updater_tx.clone(),
-        configuration_save_lock.clone(),
-        local_exclusion_store.clone(),
-        web_api_server_addr,
-        tls_cert,
-        tls_key,
-        network_config.tls,
-    );
 
     thread::spawn(move || {
         let blocker = blocker::Blocker::new(
