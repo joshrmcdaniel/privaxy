@@ -36,6 +36,8 @@ pub enum Message {
     UpdateTls(bool),
     SaveSuccess,
     SaveFailed(ApiError),
+    AcknowledgeError,
+    AcknowledgeSuccess,
 }
 enum SettingType {
     Text(String),
@@ -238,6 +240,12 @@ impl Component for GeneralSettings {
                 self.show_success = true;
                 self.show_error = false;
                 self.err_msg = String::new();
+            }
+            Message::AcknowledgeSuccess => {
+                self.show_success = false;
+            }
+            Message::AcknowledgeError => {
+                self.show_error = false;
             }
             Message::NetworkLoadSuccess(network_config) => {
                 self.network_settings = {
@@ -498,12 +506,16 @@ impl Component for GeneralSettings {
             </div>
         };
         let success_banner_html = if self.show_success {
-            success_banner!()
+            success_banner!(true, ctx.link().callback(|_| Message::AcknowledgeSuccess))
         } else {
             html! {}
         };
         let failure_banner_html = if self.show_error {
-            failure_banner!(self.err_msg.clone())
+            failure_banner!(
+                true,
+                ctx.link().callback(|_| Message::AcknowledgeError),
+                self.err_msg.clone()
+            )
         } else {
             html! {}
         };

@@ -1,11 +1,11 @@
 use crate::save_button;
 use crate::submit_banner;
+use crate::success_banner;
 use reqwasm::http::Request;
 use wasm_bindgen_futures::spawn_local;
 use web_sys::HtmlInputElement;
 use yew::virtual_dom::VNode;
-use yew::Properties;
-use yew::{html, Component, Context, Html, InputEvent, TargetCast};
+use yew::{html, Callback, Component, Context, Html, InputEvent, Properties, TargetCast};
 
 #[derive(Properties, PartialEq)]
 pub struct Props {
@@ -29,6 +29,7 @@ pub enum Message {
     UpdatePreviousInputData,
     Save,
     Saved,
+    AckChanges,
 }
 
 impl Component for SettingsTextarea {
@@ -77,6 +78,9 @@ impl Component for SettingsTextarea {
 
                 self.changes_saved = true;
                 self.is_save_button_enabled = false;
+            }
+            Message::AckChanges => {
+                self.changes_saved = false;
             }
             Message::LoadCurrentState => {
                 let request = Request::get(&ctx.props().resource_url);
@@ -128,7 +132,11 @@ impl Component for SettingsTextarea {
                 </svg>
             };
             html! {
-                <submit_banner::SubmitBanner message="Changes saved" {icon} color={submit_banner::Color::Green}/>
+                <submit_banner::SubmitBanner
+                message="Changes saved"
+                {icon}
+                on_hide={ctx.link().callback(|_| Message::AckChanges)}
+                visible={true} color={submit_banner::Color::Green}/>
             }
         } else {
             html! {}

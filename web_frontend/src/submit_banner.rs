@@ -1,6 +1,9 @@
-use yew::{classes, html, virtual_dom::VNode, Component, Context, Html, Properties};
+use gloo_timers::callback::Timeout;
+use yew::{classes, html, Callback, Component, Context, Html, Properties};
 
-pub struct SubmitBanner;
+pub struct SubmitBanner {
+    hide_timeout: Option<Timeout>,
+}
 
 #[derive(PartialEq, Eq, Clone, Copy)]
 pub enum Color {
@@ -12,32 +15,62 @@ pub enum Color {
 pub struct Props {
     pub message: String,
     pub color: Color,
-    pub icon: VNode,
+    pub icon: Html,
+    pub visible: bool,
+    pub on_hide: Callback<()>,
+}
+
+pub enum Msg {
+    Hide,
 }
 
 impl Component for SubmitBanner {
-    type Message = ();
+    type Message = Msg;
     type Properties = Props;
 
-    fn create(_ctx: &Context<Self>) -> Self {
-        Self
+    fn create(ctx: &Context<Self>) -> Self {
+        let mut banner = Self { hide_timeout: None };
+
+        if ctx.props().visible {
+            banner.show(ctx);
+        }
+
+        banner
+    }
+
+    fn update(&mut self, ctx: &Context<Self>, msg: Self::Message) -> bool {
+        match msg {
+            Msg::Hide => {
+                ctx.props().on_hide.emit(());
+                true
+            }
+        }
+    }
+
+    fn changed(&mut self, ctx: &Context<Self>) -> bool {
+        if ctx.props().visible {
+            self.show(ctx);
+        }
+        true
     }
 
     fn view(&self, ctx: &Context<Self>) -> Html {
         let props = ctx.props();
-
         let first_color = match props.color {
             Color::Green => "bg-green-500",
             Color::Red => "bg-red-500",
         };
-
         let second_color = match props.color {
             Color::Green => "bg-green-700",
             Color::Red => "bg-red-700",
         };
 
         html! {
-            <div class={classes!("mb-5", "p-2", "rounded-lg", "shadow-lg", "sm:p-3", first_color)}>
+            <div class={classes!(
+                "mb-5", "p-2", "rounded-lg", "shadow-lg", "sm:p-3", "transition-opacity", "duration-1000",
+                if props.visible { "opacity-100" } else { "opacity-0" },
+                first_color
+            )}>
                 <div class="flex items-center justify-between flex-wrap">
                     <div class="w-0 flex-1 flex items-center">
                         <span class={classes!("flex", "p-2", "rounded-lg", second_color)}>
@@ -53,6 +86,14 @@ impl Component for SubmitBanner {
     }
 }
 
+impl SubmitBanner {
+    fn show(&mut self, ctx: &Context<Self>) {
+        let link = ctx.link().clone();
+        self.hide_timeout = Some(Timeout::new(3000, move || {
+            link.send_message(Msg::Hide);
+        }));
+    }
+}
 #[macro_export]
 macro_rules! info_icon {
     () => {
@@ -68,23 +109,23 @@ macro_rules! info_icon {
 
 #[macro_export]
 macro_rules! success_banner {
-    () => {
+    ($visible:expr, $on_hide:expr) => {
         html! {
-            <crate::submit_banner::SubmitBanner message="Changes saved" icon={crate::info_icon!()} color={crate::submit_banner::Color::Green}/>
+            <crate::submit_banner::SubmitBanner message="Changes saved" icon={crate::info_icon!()} color={crate::submit_banner::Color::Green} visible={$visible} on_hide={$on_hide}/>
         }
     };
 }
 
 #[macro_export]
 macro_rules! failure_banner {
-    () => {
+    ($visible:expr, $on_hide:expr) => {
         html! {
-            <crate::submit_banner::SubmitBanner message="Error saving changes" icon={crate::info_icon!()} color={crate::submit_banner::Color::Red}/>
+            <crate::submit_banner::SubmitBanner message="Error saving changes" icon={crate::info_icon!()} color={crate::submit_banner::Color::Red} visible={$visible} on_hide={$on_hide}/>
         }
     };
-    ($message:expr) => {
+    ($visible:expr, $on_hide:expr, $message:expr) => {
         html! {
-            <crate::submit_banner::SubmitBanner message={$message} icon={crate::info_icon!()} color={crate::submit_banner::Color::Red}/>
+            <crate::submit_banner::SubmitBanner message={$message} icon={crate::info_icon!()} color={crate::submit_banner::Color::Red} visible={$visible} on_hide={$on_hide}/>
         }
     };
 }

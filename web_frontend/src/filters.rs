@@ -90,6 +90,7 @@ pub struct AddFilterComponent {
     category: FilterGroup,
     title: String,
     url: String,
+    changes_saved: bool,
 }
 
 impl Component for AddFilterComponent {
@@ -103,6 +104,7 @@ impl Component for AddFilterComponent {
             category: FilterGroup::Default,
             url: String::new(),
             title: String::new(),
+            changes_saved: false,
         }
     }
 
@@ -145,6 +147,7 @@ impl Component for AddFilterComponent {
                     log::error!("Invalid URL: {}", url);
                 }
                 self.is_open = false;
+                self.changes_saved = true;
             }
             AddFilterMessage::CategoryChanged(category) => self.category = category,
             AddFilterMessage::UrlChanged(url) => self.url = url,
@@ -325,6 +328,7 @@ pub enum Message {
     UpdateFilterSelection((String, bool)),
     Save,
     ChangesSaved,
+    AckChanges,
 }
 
 pub struct Filters {
@@ -452,6 +456,7 @@ impl Component for Filters {
                 self.changes_saved = true;
                 self.filter_configuration_before_changes = self.filter_configuration.clone();
             }
+            Message::AckChanges => self.changes_saved = false,
         };
 
         true
@@ -531,7 +536,10 @@ impl Component for Filters {
                 </svg>
             };
             html! {
-                <submit_banner::SubmitBanner message="Changes saved" {icon} color={submit_banner::Color::Green}/>
+                <submit_banner::SubmitBanner message="Changes saved" {icon}
+                visible={true}
+                on_hide={ ctx.link().callback(|_| Message::AckChanges)}
+                color={submit_banner::Color::Green}/>
             }
         } else {
             html! {}

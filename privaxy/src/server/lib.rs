@@ -228,6 +228,7 @@ pub async fn start_privaxy() -> PrivaxyServer {
         }
     });
 
+    let ip = env_or_config_ip(&network_config).await;
     let proxy_server_addr = SocketAddr::from((ip, network_config.proxy_port));
 
     let server = Server::bind(&proxy_server_addr)
