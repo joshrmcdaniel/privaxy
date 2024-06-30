@@ -26,7 +26,7 @@ name = "privaxy"
 path = "src/server/lib.rs"
 
 [dependencies]
-hyper = { version = "0.14.23", features = ["full"] }
+hyper = { version = "0.14.29", features = ["full"] }
 tokio = { version = "1.22.0", features = ["full"] }
 serde_json = "1.0.89"
 toml = "0.8.13"
@@ -36,13 +36,13 @@ adblock = { version = "0.8.9" }
 openssl = { version = "0.10.43", features = ["vendored"] }
 include_dir = "0.7.3"
 chrono = { version = "0.4.23", features = ["serde"] }
-rustls = { version = "0.20.7" }
+rustls = { version = "0.20.9" }
 futures-util = "0.3.25"
 wildmatch = "2.1.1"
-http = "0.2.8"
+http = "0.2.12"
 mime_guess = "2.0.4"
 tokio-rustls = "0.23.4"
-hyper-rustls = { version = "0.23.1", features = ["http1", "http2"] }
+hyper-rustls = { version = "0.23.2", features = ["http1", "http2"] }
 log = "0.4.17"
 env_logger = "0.11.3"
 uluru = "3.0.0"
@@ -53,9 +53,9 @@ crossbeam-channel = "0.5.6"
 thiserror = "1.0.37"
 url = "2.3.1"
 futures = "0.3.25"
-dirs = "4.0.0"
+dirs = "5.0.1"
 async-compression = { version = "0.4.11", features = ["futures-io", "gzip"] }
-reqwest = { version = "0.11.13", features = [
+reqwest = { version = "0.11.27", features = [
   "stream",
   "rustls-tls",
   "gzip",
