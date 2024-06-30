@@ -170,6 +170,7 @@ pub async fn start_privaxy() -> PrivaxyServer {
     tokio::spawn(async move {
         loop {
             let (_sig_tx, sig_rx) = tokio::sync::mpsc::channel::<tokio::signal::unix::Signal>(1);
+            log::info!("Starting Privaxy frontend");
             privaxy_frontend(
                 broadcast_tx_ref.clone(),
                 local_exclusion_store_ref.clone(),
@@ -181,6 +182,8 @@ pub async fn start_privaxy() -> PrivaxyServer {
             )
             .await;
             notify.notified().await;
+            log::info!("Stopping Privaxy frontend");
+
         }
     });
     let disabled_store_ref = blocking_disabled_store_clone.clone();
@@ -293,7 +296,6 @@ async fn privaxy_frontend(
     let config = read_configuration(&configuration_save_lock).await;
     let ip = env_or_config_ip(&config.network).await;
     let web_api_server_addr = SocketAddr::from((ip, config.network.web_port));
-
     if config.network.tls {
         let lock = configuration_save_lock.lock().await;
         let ca_certificate = config.ca.get_ca_certificate().await.unwrap();
@@ -323,6 +325,9 @@ async fn privaxy_frontend(
                 .bind_with_graceful_shutdown(web_api_server_addr, async move {
                     let _ = sig_rx.recv().await;
                 });
+                log::info!("Web server available at https://{web_api_server_addr}/");
+                log::info!("API server available at https://{web_api_server_addr}/api");
+
             task.await;
         });
     } else {
@@ -331,6 +336,8 @@ async fn privaxy_frontend(
                 frontend_server.bind_with_graceful_shutdown(web_api_server_addr, async move {
                     let _ = sig_rx.recv().await;
                 });
+                log::info!("Web server available at http://{web_api_server_addr}/");
+                log::info!("API server available at http://{web_api_server_addr}/api");
             task.await;
         });
     }
