@@ -20,6 +20,8 @@
   - API calls are under `/api`
 - Privaxy now honors SIGHUP
   - `systemctl reload privaxy` will reload privaxys configuration
+- Change settings in webserver
+  - Upon a successful change, the server will reload
 
 
 ## v0.5.2

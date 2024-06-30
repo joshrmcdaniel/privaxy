@@ -23,6 +23,7 @@ See pending features [here](#todo)
 <img width="912" alt="requests" src="./images/requests.png">
 <img width="912" alt="filters" src="./images/filters.png">
 <img width="912" alt="filterlists" src="./images/filterlist.png">
+<img width="912" alt="general" src="./images/general.png">
 <img alt="addfilter" src="./images/addfilter.png">
 </div>
 
@@ -60,25 +61,28 @@ Privaxy is also way more capable than DNS-based blockers as it is able to operat
 - General
   - Documentation
   - Verify dpkg works as expected
+  - Configure for /etc/
   - Optimize code
 - Web GUI
   - [x] Ability to add custom filters
   - [x] [filterlists.com](https://filterlists.com) integration
   - [x] Change bind settings
   - [x] TLS on the web gui
+  - [x] Update configuration from the gui
+    - When network settings are changed, the server will reload
+    - Need to add proxy setting changing, network works though
   - [ ] Authentication to the web gui
-  - [ ] Update configuration from the gui
 - Backend
   - [x] Bind to different addresses and ports
   - [x] Specify path or CA cert in config
   - [x] Update ublock dependencies
   - [x] Patch NotValidBefore on generated certificates
   - [ ] Package for a systemd service
-  - [ ] Fix cloudflare/robot checks?
-  - [ ] Update dependencies
   - [ ] Implement systemctl signal handling
     - [x] Web GUI honors SIGHUP
     - [ ] Proxy
+  - [ ] Fix cloudflare/robot checks?
+  - [ ] Update dependencies
   - [ ] Figure out which syntaxes the adblock engine supports
   - [ ] Improve logging
   - [ ] Utilize uAsset website
