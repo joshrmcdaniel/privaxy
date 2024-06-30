@@ -153,11 +153,6 @@ pub async fn start_privaxy() -> PrivaxyServer {
     configuration_updater.start();
 
     let configuration_save_lock = Arc::new(tokio::sync::Mutex::new(()));
-    let ip = match env::var("PRIVAXY_IP_ADDRESS") {
-        Ok(val) => parse_ip_address(&val),
-        Err(_) => network_config.parsed_ip_address(),
-    };
-    let web_api_server_addr = SocketAddr::from((ip, network_config.web_port));
 
     let notify = handle_signals().await;
 
@@ -243,23 +238,6 @@ pub async fn start_privaxy() -> PrivaxyServer {
         .serve(make_service);
 
     log::info!("Proxy available at http://{}", proxy_server_addr);
-    log::info!(
-        "Web server available at {}{web_api_server_addr}",
-        if network_config.tls {
-            "https://"
-        } else {
-            "http://"
-        }
-    );
-    log::info!(
-        "API server available at {}{web_api_server_addr}/api",
-        if network_config.tls {
-            "https://"
-        } else {
-            "http://"
-        }
-    );
-
     if let Err(e) = server.await {
         log::error!("server error: {}", e);
     }
