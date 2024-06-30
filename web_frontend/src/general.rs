@@ -94,7 +94,9 @@ impl NetworkSettings {
     }
     async fn save(&mut self) -> Result<(), ApiError> {
         let body = serde_json::to_string(&self.remote_config).unwrap();
-        let req = reqwasm::http::Request::put("/api/settings/network").body(body);
+        let req = reqwasm::http::Request::put("/api/settings/network")
+            .body(body)
+            .header("Content-Type", "application/json");
         match req.send().await {
             Ok(resp) => {
                 if resp.ok() {
@@ -218,6 +220,7 @@ impl Component for GeneralSettings {
                                 Err(err) => {
                                     log::error!("Failed to save network config: {:?}", err);
                                     link.send_message(Message::SaveFailed(err.clone()));
+                                    return;
                                 }
                             }
                         } else {
@@ -226,6 +229,7 @@ impl Component for GeneralSettings {
                             ));
                         }
                     }
+                    link.send_message(Message::SaveSuccess);
                 });
             }
             Message::SaveFailed(err) => {
