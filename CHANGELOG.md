@@ -18,6 +18,8 @@
 - Static files and API are now under the same route
   - Static files are found as before
   - API calls are under `/api`
+- Privaxy now honors SIGHUP
+  - `systemctl reload privaxy` will reload privaxys configuration
 
 
 ## v0.5.2

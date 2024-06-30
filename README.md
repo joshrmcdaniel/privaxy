@@ -60,6 +60,7 @@ Privaxy is also way more capable than DNS-based blockers as it is able to operat
 - General
   - Documentation
   - Verify dpkg works as expected
+  - Optimize code
 - Web GUI
   - [x] Ability to add custom filters
   - [x] [filterlists.com](https://filterlists.com) integration
@@ -72,9 +73,12 @@ Privaxy is also way more capable than DNS-based blockers as it is able to operat
   - [x] Specify path or CA cert in config
   - [x] Update ublock dependencies
   - [x] Patch NotValidBefore on generated certificates
+  - [ ] Package for a systemd service
   - [ ] Fix cloudflare/robot checks?
   - [ ] Update dependencies
   - [ ] Implement systemctl signal handling
+    - [x] Web GUI honors SIGHUP
+    - [ ] Proxy
   - [ ] Figure out which syntaxes the adblock engine supports
   - [ ] Improve logging
   - [ ] Utilize uAsset website
