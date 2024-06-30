@@ -157,7 +157,7 @@ pub async fn start_privaxy() -> PrivaxyServer {
 
     let configuration_save_lock = Arc::new(tokio::sync::Mutex::new(()));
 
-    let (notify_shutdown, notify_reload) = handle_signals().await;
+    let (_notify_shutdown, notify_reload) = handle_signals().await;
 
     let block_disable_ref = blocking_disabled_store.clone();
     let local_exclusion_store_ref = local_exclusion_store.clone();

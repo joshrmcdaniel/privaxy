@@ -5,11 +5,12 @@ use lol_html::{element, HtmlRewriter, Settings};
 use regex::Regex;
 use std::collections::HashSet;
 use std::fmt::Write;
-use tokio::sync;
+use std::sync::{Arc, Mutex};
+use tokio::sync::mpsc;
 
 type InternalBodyChannel = (
-    sync::mpsc::UnboundedSender<(Bytes, Option<AdblockProperties>)>,
-    sync::mpsc::UnboundedReceiver<(Bytes, Option<AdblockProperties>)>,
+    mpsc::UnboundedSender<(Bytes, Option<AdblockProperties>)>,
+    mpsc::UnboundedReceiver<(Bytes, Option<AdblockProperties>)>,
 );
 
 struct AdblockProperties {
@@ -41,7 +42,7 @@ impl Rewriter {
             statistics,
             adblock_requester,
             receiver,
-            internal_body_channel: sync::mpsc::unbounded_channel(),
+            internal_body_channel: mpsc::unbounded_channel(),
         }
     }
 
@@ -51,8 +52,10 @@ impl Rewriter {
         let adblock_requester = self.adblock_requester.clone();
         let statistics = self.statistics.clone();
 
-        let mut classes = HashSet::new();
-        let mut ids = HashSet::new();
+        let internal_body_sender = Arc::new(Mutex::new(internal_body_sender));
+
+        let classes = Arc::new(Mutex::new(HashSet::new()));
+        let ids = Arc::new(Mutex::new(HashSet::new()));
 
         tokio::spawn(Self::write_body(
             internal_body_receiver,
@@ -61,38 +64,31 @@ impl Rewriter {
             statistics,
         ));
 
+        let re = Regex::new(r"\s+").unwrap();
+        let classes_clone = Arc::clone(&classes);
+        let ids_clone = Arc::clone(&ids);
+        let internal_body_sender_clone = Arc::clone(&internal_body_sender);
+
         let mut rewriter = HtmlRewriter::new(
             Settings {
                 element_content_handlers: vec![
-                    element!("*", |element| {
-                        let id = element.get_attribute("id");
-
-                        if let Some(id) = id {
-                            ids.insert(id);
+                    element!("*", move |element| {
+                        if let Some(id) = element.get_attribute("id") {
+                            ids_clone.lock().unwrap().insert(id);
                         }
-
                         Ok(())
                     }),
-                    element!("*", |element| {
-                        let class = element.get_attribute("class");
-
-                        if let Some(class) = class {
-                            let re = Regex::new(r"\s+").unwrap();
+                    element!("*", move |element| {
+                        if let Some(class) = element.get_attribute("class") {
                             let classes_without_duplicate_spaces = re.replace_all(&class, " ");
-
-                            let class = classes_without_duplicate_spaces
-                                .split(' ')
-                                .map(|s| s.to_string())
-                                .collect::<HashSet<_>>();
-
-                            classes.extend(class);
+                            let class_set: HashSet<_> = classes_without_duplicate_spaces
+                                .split_whitespace()
+                                .map(String::from)
+                                .collect();
+                            classes_clone.lock().unwrap().extend(class_set);
                         }
-
                         Ok(())
                     }),
-                    // Let's discard of end html and body tag
-                    // to inject style and scripts before the implicit
-                    // close.
                     element!("html, body", |element| {
                         if let Some(handlers) = element.end_tag_handlers() {
                             handlers.push(Box::new(move |end| {
@@ -105,8 +101,11 @@ impl Rewriter {
                 ],
                 ..Settings::default()
             },
-            |c: &[u8]| {
-                let _result = internal_body_sender.send((Bytes::copy_from_slice(c), None));
+            move |c: &[u8]| {
+                let _ = internal_body_sender_clone
+                    .lock()
+                    .unwrap()
+                    .send((Bytes::copy_from_slice(c), None));
             },
         );
 
@@ -115,18 +114,18 @@ impl Rewriter {
         }
         rewriter.end().unwrap();
 
-        let _result = internal_body_sender.send((
+        let _ = internal_body_sender.lock().unwrap().send((
             Bytes::new(),
             Some(AdblockProperties {
-                ids,
-                classes,
+                ids: ids.lock().unwrap().clone(),
+                classes: classes.lock().unwrap().clone(),
                 url: self.url,
             }),
         ));
     }
 
     async fn write_body(
-        mut receiver: sync::mpsc::UnboundedReceiver<(Bytes, Option<AdblockProperties>)>,
+        mut receiver: mpsc::UnboundedReceiver<(Bytes, Option<AdblockProperties>)>,
         mut body_sender: hyper::body::Sender,
         adblock_requester: AdblockRequester,
         statistics: Statistics,
@@ -141,10 +140,25 @@ impl Rewriter {
                 let blocker_result = adblock_requester
                     .get_cosmetic_response(
                         adblock_properties.url,
-                        Vec::from_iter(adblock_properties.ids.into_iter()),
-                        Vec::from_iter(adblock_properties.classes.into_iter()),
+                        adblock_properties.ids.into_iter().collect(),
+                        adblock_properties.classes.into_iter().collect(),
                     )
                     .await;
+
+                let hidden_selectors: String = blocker_result
+                    .hidden_selectors
+                    .into_iter()
+                    .map(|selector| format!("{} {{ display: none !important; }}", selector))
+                    .collect();
+
+                let style_selectors: String = blocker_result
+                    .style_selectors
+                    .into_iter()
+                    .map(|(selector, content)| {
+                        response_has_been_modified = true;
+                        format!("{} {{ {} }}", selector, content.join(";"))
+                    })
+                    .collect();
 
                 let mut to_append_to_response = format!(
                     r#"
@@ -152,49 +166,11 @@ impl Rewriter {
 <style>{hidden_selectors}
 {style_selectors}
 </style>
-<!-- privaxy proxy -->"#,
-                    hidden_selectors = {
-                        // We insert one `display: none !important;` entry per selector
-                        // as otherwise, a single malformed selector would be breaking blocking.
-                        blocker_result
-                            .hidden_selectors
-                            .into_iter()
-                            .map(|selector| {
-                                format!(
-                                    r#"
-                                {}
-                                {{
-                                    display: none !important;
-                                }}
-                        "#,
-                                    selector
-                                )
-                            })
-                            .collect::<String>()
-                    },
-                    style_selectors = {
-                        let style_selectors = blocker_result.style_selectors;
-
-                        if !style_selectors.is_empty() {
-                            response_has_been_modified = true
-                        }
-
-                        style_selectors
-                            .into_iter()
-                            .map(|(selector, content)| {
-                                format!(
-                                    "{selector} {{ {content} }}",
-                                    selector = selector,
-                                    content = content.join(";")
-                                )
-                            })
-                            .collect::<String>()
-                    }
+<!-- privaxy proxy -->"#
                 );
 
                 if let Some(injected_script) = blocker_result.injected_script {
                     response_has_been_modified = true;
-
                     write!(
                         to_append_to_response,
                         r#"
@@ -211,7 +187,7 @@ impl Rewriter {
                     statistics.increment_modified_responses();
                 }
 
-                let bytes = Bytes::copy_from_slice(&to_append_to_response.into_bytes());
+                let bytes = Bytes::copy_from_slice(to_append_to_response.as_bytes());
 
                 if let Err(_err) = body_sender.send_data(bytes).await {
                     break;

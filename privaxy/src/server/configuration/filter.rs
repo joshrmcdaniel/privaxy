@@ -17,6 +17,7 @@ pub enum FilterGroup {
     Malware,
     Social,
 }
+
 impl ToString for FilterGroup {
     fn to_string(&self) -> String {
         match self {
@@ -63,17 +64,16 @@ pub struct DefaultFilters(Vec<DefaultFilter>);
 
 impl DefaultFilters {
     pub fn new() -> Self {
-        let filters = Self::get_default_filters()
-            .into_iter()
-            .chain(Self::get_ads_filters().into_iter())
-            .chain(Self::get_privacy_filters().into_iter())
-            .chain(Self::get_malware_filters().into_iter())
-            .chain(Self::get_social_filters().into_iter())
-            .chain(Self::get_regional_filters().into_iter())
-            .collect();
-
+        let mut filters = Vec::new();
+        filters.extend(Self::get_default_filters());
+        filters.extend(Self::get_ads_filters());
+        filters.extend(Self::get_privacy_filters());
+        filters.extend(Self::get_malware_filters());
+        filters.extend(Self::get_social_filters());
+        filters.extend(Self::get_regional_filters());
         DefaultFilters(filters)
     }
+
     pub fn list(&self) -> Vec<DefaultFilter> {
         self.0.clone()
     }
@@ -111,8 +111,8 @@ impl DefaultFilters {
             ("https://raw.githubusercontent.com/uBlockOrigin/uAssets/master/filters/resource-abuse.txt", "uBlock filters - Resource abuse", FilterGroup::Default, true),
             ("https://raw.githubusercontent.com/uBlockOrigin/uAssets/master/filters/unbreak.txt", "uBlock filters - Unbreak", FilterGroup::Default, true),
             ("https://raw.githubusercontent.com/uBlockOrigin/uAssets/master/filters/quick-fixes.txt", "uBlock filters - Quick Fixes", FilterGroup::Default, true),
-
-        ].into_iter()
+        ]
+        .into_iter()
         .filter_map(|(url, title, group, enabled_by_default)| Self::parse_filter(url, title, group, enabled_by_default))
         .collect()
     }
@@ -151,7 +151,8 @@ impl DefaultFilters {
             ("https://filters.adtidy.org/extension/ublock/filters/17.txt", "AdGuard URL Tracking Protection", FilterGroup::Privacy, false),
             ("https://raw.githubusercontent.com/uBlockOrigin/uAssets/master/filters/lan-block.txt", "Block Outsider Intrusion into LAN", FilterGroup::Privacy, false),
             ("https://easylist.to/easylist/easyprivacy.txt", "EasyPrivacy", FilterGroup::Privacy, true),
-        ].into_iter()
+        ]
+        .into_iter()
         .filter_map(|(url, title, group, enabled_by_default)| Self::parse_filter(url, title, group, enabled_by_default))
         .collect()
     }
@@ -187,7 +188,8 @@ impl DefaultFilters {
             ("https://secure.fanboy.co.nz/fanboy-cookiemonster.txt", "EasyList Cookie", FilterGroup::Social, false),
             ("https://easylist.to/easylist/fanboy-social.txt", "Fanboy's Social", FilterGroup::Social, false),
             ("https://raw.githubusercontent.com/uBlockOrigin/uAssets/master/filters/annoyances.txt", "uBlock filters - Annoyances", FilterGroup::Social, false),
-        ].into_iter()
+        ]
+        .into_iter()
         .filter_map(|(url, title, group, enabled_by_default)| Self::parse_filter(url, title, group, enabled_by_default))
         .collect()
     }
@@ -227,7 +229,8 @@ impl DefaultFilters {
             ("https://raw.githubusercontent.com/easylist-thailand/easylist-thailand/master/subscription/easylist-thailand.txt", "THA: EasyList Thailand", FilterGroup::Regional, false),
             ("https://filters.adtidy.org/extension/ublock/filters/13.txt", "TUR: AdGuard Turkish", FilterGroup::Regional, false),
             ("https://raw.githubusercontent.com/abpvn/abpvn/master/filter/abpvn_ublock.txt", "VIE: ABPVN List", FilterGroup::Regional, false),
-        ].into_iter()
+        ]
+        .into_iter()
         .filter_map(|(url, title, group, enabled_by_default)| Self::parse_filter(url, title, group, enabled_by_default))
         .collect()
     }
@@ -251,7 +254,6 @@ impl Filter {
         log::debug!("Updating filter: {}", self.title);
 
         let filters_directory = get_filter_directory();
-
         fs::create_dir_all(&filters_directory).await?;
 
         let filter = get_filter(self, http_client).await?;
@@ -303,36 +305,17 @@ pub(crate) async fn get_filter(
     filter: &mut Filter,
     http_client: &reqwest::Client,
 ) -> super::ConfigurationResult<String> {
-    let response = match http_client.get(filter.url.as_str()).send().await {
-        Ok(response) => {
-            if response.status().is_success() {
-                match response.text().await {
-                    Ok(content) => content,
-                    Err(err) => {
-                        log::error!("Failed to read filter content: {err}");
-                        return Err(super::ConfigurationError::FilterError(format!(
-                            "Failed to read filter content: {}",
-                            err
-                        )));
-                    }
-                }
-            } else {
-                log::error!("Failed to fetch filter content: {}", response.status());
-                return Err(super::ConfigurationError::FilterError(format!(
-                    "Failed to fetch filter content: {}",
-                    response.status()
-                )));
-            }
-        }
-        Err(err) => {
-            log::error!("Failed to fetch filter URL: {err}");
-            return Err(super::ConfigurationError::FilterError(format!(
-                "Failed to fetch filter URL: {}",
-                err
-            )));
-        }
-    };
-    Ok(response)
+    let response = http_client.get(filter.url.as_str()).send().await?;
+    if response.status().is_success() {
+        let content = response.text().await?;
+        Ok(content)
+    } else {
+        log::error!("Failed to fetch filter content: {}", response.status());
+        Err(super::ConfigurationError::FilterError(format!(
+            "Failed to fetch filter content: {}",
+            response.status()
+        )))
+    }
 }
 
 fn get_filter_directory() -> PathBuf {
@@ -349,9 +332,16 @@ pub(crate) async fn get_filters_content(
     http_client: &reqwest::Client,
 ) -> Vec<String> {
     let mut filters = Vec::new();
+    let mut futures = vec![];
 
     for filter in configuration.get_enabled_filters() {
-        match filter.get_contents(http_client).await {
+        let future = filter.get_contents(http_client);
+        futures.push(future);
+    }
+
+    let results = futures::future::join_all(futures).await;
+    for result in results {
+        match result {
             Ok(filter_content) => filters.push(filter_content),
             Err(err) => {
                 log::error!("Unable to retrieve filter: {:?}, skipping.", err)
