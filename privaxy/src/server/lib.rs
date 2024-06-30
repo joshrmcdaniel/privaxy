@@ -1,3 +1,4 @@
+use crate::configuration::NetworkConfig;
 use crate::blocker::AdblockRequester;
 use crate::proxy::exclusions::LocalExclusionStore;
 use crate::web_gui::events::Event;
@@ -9,11 +10,11 @@ use proxy::exclusions;
 use reqwest::redirect::Policy;
 use std::convert::Infallible;
 use std::env;
-use std::net::Ipv4Addr;
 use std::net::SocketAddr;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::thread;
+use std::net::IpAddr;
 use std::time::Duration;
 use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::broadcast;
@@ -41,9 +42,8 @@ pub struct PrivaxyServer {
     pub requests_broadcast_sender: broadcast::Sender<Event>,
 }
 
-// Helper function to parse the IP address string into an array of u8
-pub(crate) fn parse_ip_address(ip_str: &str) -> [u8; 4] {
-    Ipv4Addr::from_str(ip_str).unwrap().octets()
+pub(crate) fn parse_ip_address(ip_str: &str) -> IpAddr {
+    IpAddr::from_str(ip_str).unwrap()
 }
 
 async fn handle_signals() -> Arc<Notify> {
@@ -290,15 +290,8 @@ async fn privaxy_frontend(
         &local_exclusion_store,
     );
     let frontend_server = warp::serve(frontend);
-    let lock = configuration_save_lock.lock().await;
-    let config = configuration::Configuration::read_from_home()
-        .await
-        .unwrap();
-    drop(lock);
-    let ip = match env::var("PRIVAXY_IP_ADDRESS") {
-        Ok(val) => parse_ip_address(&val),
-        Err(_) => config.network.parsed_ip_address(),
-    };
+    let config = read_configuration(&configuration_save_lock).await;
+    let ip = env_or_config_ip(&config.network).await;
     let web_api_server_addr = SocketAddr::from((ip, config.network.web_port));
 
     if config.network.tls {
@@ -340,5 +333,23 @@ async fn privaxy_frontend(
                 });
             task.await;
         });
+    }
+}
+
+
+async fn read_configuration(
+    configuration_save_lock: &Arc<tokio::sync::Mutex<()>>,
+) -> configuration::Configuration {
+    let lock = configuration_save_lock.lock().await;
+    let config = configuration::Configuration::read_from_home()
+        .await
+        .unwrap();
+    drop(lock);
+    config
+}
+async fn env_or_config_ip(network_config: &NetworkConfig) -> IpAddr {
+    match env::var("PRIVAXY_IP_ADDRESS") {
+        Ok(val) => parse_ip_address(&val),
+        Err(_) => network_config.parsed_ip_address(),
     }
 }

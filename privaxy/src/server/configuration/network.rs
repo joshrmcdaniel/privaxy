@@ -20,7 +20,7 @@ use openssl::{
         X509NameBuilder, X509Ref, X509Req, X509ReqBuilder, X509,
     },
 };
-use std::net::Ipv4Addr;
+use std::net::{IpAddr, Ipv4Addr};
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde_as]
@@ -237,12 +237,12 @@ impl NetworkConfig {
         }
     }
 
-    pub(crate) fn parsed_ip_address(&self) -> [u8; 4] {
-        let ip_addr = match Ipv4Addr::from_str(self.bind_addr.as_str()) {
+    pub(crate) fn parsed_ip_address(&self) -> IpAddr {
+        let ip_addr = match IpAddr::from_str(self.bind_addr.as_str()) {
             Ok(ip) => ip,
-            Err(_) => Ipv4Addr::new(0, 0, 0, 0),
+            Err(_) => Ipv4Addr::new(0, 0, 0, 0).into(),
         };
-        ip_addr.octets()
+        ip_addr
     }
 }
 
