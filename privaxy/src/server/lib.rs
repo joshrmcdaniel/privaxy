@@ -149,7 +149,6 @@ pub async fn start_privaxy() -> PrivaxyServer {
     )
     .await;
 
-    let network_config = configuration.network.clone();
     let configuration_updater_tx = configuration_updater.tx.clone();
     configuration_updater_tx.send(configuration).await.unwrap();
 
@@ -165,10 +164,12 @@ pub async fn start_privaxy() -> PrivaxyServer {
     let configuration_updater_tx_ref = configuration_updater_tx.clone();
     let configuration_save_lock_ref = configuration_save_lock.clone();
     let broadcast_tx_ref = broadcast_tx.clone();
+    let notify_reload_clone = notify_reload.clone();
 
     tokio::spawn(async move {
+        let notify_reload_frontend = notify_reload_clone.clone();
+        let cfg_lock_frontend = configuration_save_lock_ref.clone();
         loop {
-            let (_sig_tx, sig_rx) = tokio::sync::mpsc::channel::<tokio::signal::unix::Signal>(1);
             log::info!("Starting Privaxy frontend");
             privaxy_frontend(
                 broadcast_tx_ref.clone(),
@@ -176,12 +177,11 @@ pub async fn start_privaxy() -> PrivaxyServer {
                 stats_clone.clone(),
                 block_disable_ref.clone(),
                 configuration_updater_tx_ref.clone(),
-                configuration_save_lock_ref.clone(),
-                sig_rx,
-                notify_reload.clone(),
+                cfg_lock_frontend.clone(),
+                notify_reload_frontend.clone(),
             )
             .await;
-            notify_reload.notified().await;
+        notify_reload_frontend.notified().await;
             log::info!("Stopping Privaxy frontend");
         }
     });
@@ -194,60 +194,27 @@ pub async fn start_privaxy() -> PrivaxyServer {
         blocker.handle_requests()
     });
 
-    let https_connector = hyper_rustls::HttpsConnectorBuilder::new()
-        .with_native_roots()
-        .https_or_http()
-        .enable_http1()
-        .build();
+    let notify_reload_clone = notify_reload.clone();
+    let configuration_save_lock_ref = configuration_save_lock.clone();
 
-    // The hyper client is only used to perform upgrades. We don't need to
-    // handle compression.
-    // Hyper's client don't follow redirects, which is what we want, nothing to
-    // disable here.
-    let hyper_client = Client::builder().build(https_connector);
-
-    let make_service = make_service_fn(move |conn: &AddrStream| {
-        let client_ip_address = conn.remote_addr().ip();
-
-        let client = client.clone();
-        let hyper_client = hyper_client.clone();
-        let cert_cache = cert_cache.clone();
-        let blocker_requester = blocker_requester.clone();
-        let broadcast_tx = broadcast_tx.clone();
-        let statistics = statistics.clone();
-        let local_exclusion_store = local_exclusion_store.clone();
-
-        async move {
-            Ok::<_, Infallible>(service_fn(move |req| {
-                proxy::serve_mitm_session(
-                    blocker_requester.clone(),
-                    hyper_client.clone(),
-                    client.clone(),
-                    req,
-                    cert_cache.clone(),
-                    broadcast_tx.clone(),
-                    statistics.clone(),
-                    client_ip_address,
-                    local_exclusion_store.clone(),
-                )
-            }))
+    tokio::spawn(async move {
+        let notify_reload_backend = notify_reload_clone.clone();
+        let cfg_lock_backend = configuration_save_lock_ref.clone();
+        loop {
+            log::info!("Starting Privaxy proxy");
+            privaxy_backend(
+                client.clone(),
+                cert_cache.clone(),
+                blocker_requester.clone(),
+                broadcast_tx.clone(),
+                statistics.clone(),
+                local_exclusion_store.clone(),
+                cfg_lock_backend.clone(),
+                notify_reload_backend.clone(),
+            )
+            .await;
         }
     });
-
-    let ip = env_or_config_ip(&network_config).await;
-    let proxy_server_addr = SocketAddr::from((ip, network_config.proxy_port));
-
-    let server = Server::bind(&proxy_server_addr)
-        .http1_preserve_header_case(true)
-        .http1_title_case_headers(true)
-        .tcp_keepalive(Some(Duration::from_secs(600)))
-        .serve(make_service);
-
-    log::info!("Proxy available at http://{}", proxy_server_addr);
-    if let Err(e) = server.await {
-        log::error!("server error: {}", e);
-    }
-
     PrivaxyServer {
         ca_certificate_pem,
         configuration_updater_sender: configuration_updater_tx,
@@ -266,7 +233,6 @@ async fn privaxy_frontend(
     block_disable_ref: blocker::BlockingDisabledStore,
     configuration_updater_tx: tokio::sync::mpsc::Sender<configuration::Configuration>,
     configuration_save_lock: Arc<tokio::sync::Mutex<()>>,
-    mut sig_rx: tokio::sync::mpsc::Receiver<tokio::signal::unix::Signal>,
     notify_reload: Arc<tokio::sync::Notify>,
 ) {
     let frontend = web_gui::get_frontend(
@@ -320,7 +286,7 @@ async fn privaxy_frontend(
         tokio::spawn(async move {
             let (_, task) =
                 frontend_server.bind_with_graceful_shutdown(web_api_server_addr, async move {
-                    let _ = sig_rx.recv().await;
+                    let _ = notify_reload.clone().notified().await;
                 });
             log::info!("Web server available at http://{web_api_server_addr}/");
             log::info!("API server available at http://{web_api_server_addr}/api");
@@ -344,4 +310,73 @@ async fn env_or_config_ip(network_config: &NetworkConfig) -> IpAddr {
         Ok(val) => parse_ip_address(&val),
         Err(_) => network_config.parsed_ip_address(),
     }
+}
+
+async fn privaxy_backend(
+    client: reqwest::Client,
+    cert_cache: cert::CertCache,
+    blocker_requester: AdblockRequester,
+    broadcast_tx: broadcast::Sender<Event>,
+    statistics: statistics::Statistics,
+    local_exclusion_store: LocalExclusionStore,
+    configuration_save_lock: Arc<tokio::sync::Mutex<()>>,
+    notify_reload: Arc<tokio::sync::Notify>,
+) {
+    let https_connector = hyper_rustls::HttpsConnectorBuilder::new()
+        .with_native_roots()
+        .https_or_http()
+        .enable_http1()
+        .build();
+    let config = read_configuration(&configuration_save_lock).await;
+    let network_config = &config.network;
+
+    // The hyper client is only used to perform upgrades. We don't need to
+    // handle compression.
+    // Hyper's client don't follow redirects, which is what we want, nothing to
+    // disable here.
+    let hyper_client = Client::builder().build(https_connector);
+
+    let make_service = make_service_fn(move |conn: &AddrStream| {
+        let client_ip_address = conn.remote_addr().ip();
+
+        let client = client.clone();
+        let hyper_client = hyper_client.clone();
+        let cert_cache = cert_cache.clone();
+        let blocker_requester = blocker_requester.clone();
+        let broadcast_tx = broadcast_tx.clone();
+        let statistics = statistics.clone();
+        let local_exclusion_store = local_exclusion_store.clone();
+
+        async move {
+            Ok::<_, Infallible>(service_fn(move |req| {
+                proxy::serve_mitm_session(
+                    blocker_requester.clone(),
+                    hyper_client.clone(),
+                    client.clone(),
+                    req,
+                    cert_cache.clone(),
+                    broadcast_tx.clone(),
+                    statistics.clone(),
+                    client_ip_address,
+                    local_exclusion_store.clone(),
+                )
+            }))
+        }
+    });
+
+    let ip = env_or_config_ip(&network_config).await;
+    let proxy_server_addr = SocketAddr::from((ip, network_config.proxy_port));
+
+    let server = Server::bind(&proxy_server_addr)
+        .http1_preserve_header_case(true)
+        .http1_title_case_headers(true)
+        .tcp_keepalive(Some(Duration::from_secs(600)))
+        .serve(make_service)
+        .with_graceful_shutdown(async move {
+            log::info!("Proxy available at http://{}", proxy_server_addr);
+            let _ = notify_reload.clone().notified().await;
+            log::info!("Stopping Privaxy proxy");
+        });
+
+    let _ = server.await;
 }
