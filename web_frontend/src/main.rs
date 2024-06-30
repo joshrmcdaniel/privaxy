@@ -128,7 +128,7 @@ fn app() -> Html {
 }
 
 fn set_title(title: &str) {
-    gloo_utils::document().set_title(&format!("{} | Privaxy", title));
+    gloo_utils::document().set_title(&format!("Privaxy | {}", title));
 }
 
 fn main() {
