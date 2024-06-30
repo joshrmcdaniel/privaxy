@@ -4,6 +4,7 @@ use crate::WEBAPP_FRONTEND_DIR;
 use crate::{blocker::BlockingDisabledStore, configuration::Configuration};
 use serde::Serialize;
 use std::sync::Arc;
+use tokio::sync::Notify;
 use tokio::sync::{broadcast, mpsc::Sender};
 use warp::filters::BoxedFilter;
 use warp::http::Response;
@@ -30,6 +31,7 @@ pub(crate) fn get_frontend(
     configuration_updater_sender: &Sender<Configuration>,
     configuration_save_lock: &Arc<tokio::sync::Mutex<()>>,
     local_exclusions_store: &LocalExclusionStore,
+    notify_reload: Arc<Notify>,
 ) -> BoxedFilter<(impl warp::Reply,)> {
     let static_files_routes = warp::get().and(warp::path::tail()).map(move |tail: Tail| {
         let tail_str = tail.as_str();
@@ -59,6 +61,7 @@ pub(crate) fn get_frontend(
             http::header::CONTENT_LENGTH,
             http::header::DATE,
         ]);
+
     let http_client = reqwest::Client::new();
 
     let api_routes = create_api_routes(
@@ -69,6 +72,7 @@ pub(crate) fn get_frontend(
         configuration_save_lock,
         local_exclusions_store,
         http_client,
+        notify_reload,
     );
 
     api_routes.or(static_files_routes).with(cors).boxed()
@@ -105,6 +109,7 @@ fn create_api_routes(
     configuration_save_lock: &Arc<tokio::sync::Mutex<()>>,
     local_exclusions_store: &LocalExclusionStore,
     http_client: reqwest::Client,
+    notify_reload: Arc<Notify>,
 ) -> BoxedFilter<(impl Reply,)> {
     let def_headers =
         warp::filters::reply::default_header(http::header::CONTENT_TYPE, "application/json");
@@ -144,6 +149,7 @@ fn create_api_routes(
     let settings_route = warp::path("settings").and(settings::create_routes(
         configuration_updater_sender.clone(),
         configuration_save_lock.clone(),
+        notify_reload.clone(),
     ));
 
     let blocking_enabled_route = warp::path("blocking-enabled").and(

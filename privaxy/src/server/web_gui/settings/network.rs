@@ -1,8 +1,11 @@
 use super::get_error_response;
+use crate::configuration;
 use crate::configuration::NetworkConfig;
 use crate::web_gui::with_configuration_save_lock;
 use crate::web_gui::with_configuration_updater_sender;
 use serde::{Deserialize, Serialize};
+use tokio::sync::Notify;
+
 use std::convert::Infallible;
 use std::sync::Arc;
 use tokio::sync::mpsc::Sender;
@@ -55,31 +58,38 @@ async fn put_network_settings(
     network_settings: NetworkConfigRequest,
     configuration_updater_sender: Sender<Configuration>,
     configuration_save_lock: Arc<tokio::sync::Mutex<()>>,
+    notify_reload: Arc<Notify>,
 ) -> Result<Box<dyn warp::Reply>, Infallible> {
+    let lock = configuration_save_lock.lock().await;
     let mut configuration = match Configuration::read_from_home().await {
         Ok(configuration) => configuration,
         Err(err) => {
-            log::error!("Failed to get network settings: {err}");
+            log::error!("Failed to get network settings: {}", err);
             return Ok(Box::new(get_error_response(err)));
         }
     };
+
+    drop(lock);
     let mut net_cfg: NetworkConfig = network_settings.into();
     let current_cfg = configuration.network.clone();
     net_cfg.tls_cert_path = current_cfg.tls_cert_path;
     net_cfg.tls_key_path = current_cfg.tls_key_path;
     net_cfg.listen_url = current_cfg.listen_url;
-
-    if let Err(err) = configuration.set_network_settings(&net_cfg).await {
-        log::error!("Invalid network settings: {err}");
+    if let Err(err) = &net_cfg.validate().await {
+        log::error!("Invalid network settings: {}", err);
         return Ok(Box::new(get_error_response(err)));
     };
+    configuration.network = net_cfg.clone();
 
     let guard = configuration_save_lock.lock().await;
+    configuration.save().await.unwrap();
     configuration_updater_sender
         .send(configuration.clone())
         .await
         .unwrap();
     drop(guard);
+
+    notify_reload.notify_waiters(); // Notify the reload signal
 
     Ok(Box::new(
         Response::builder()
@@ -91,6 +101,7 @@ async fn put_network_settings(
 pub(super) fn create_routes(
     configuration_updater_sender: Sender<Configuration>,
     configuration_save_lock: Arc<tokio::sync::Mutex<()>>,
+    notify_reload: Arc<Notify>,
 ) -> BoxedFilter<(impl warp::Reply,)> {
     let get_route = warp::get()
         .and(warp::path::end())
@@ -105,7 +116,20 @@ pub(super) fn create_routes(
         .and(with_configuration_save_lock(
             configuration_save_lock.clone(),
         ))
-        .and_then(put_network_settings);
+        .and_then(
+            move |network_settings, configuration_updater_sender, configuration_save_lock| {
+                let notify_reload = notify_reload.clone();
+                async move {
+                    put_network_settings(
+                        network_settings,
+                        configuration_updater_sender,
+                        configuration_save_lock,
+                        notify_reload,
+                    )
+                    .await
+                }
+            },
+        );
 
     get_route.or(put_route).boxed()
 }

@@ -93,7 +93,7 @@ impl NetworkSettings {
         self.current_config.clone() != self.remote_config
     }
     async fn save(&mut self) -> Result<(), ApiError> {
-        let body = serde_json::to_string(&self.remote_config).unwrap();
+        let body = serde_json::to_string(&self.current_config).unwrap();
         let req = reqwasm::http::Request::put("/api/settings/network")
             .body(body)
             .header("Content-Type", "application/json");

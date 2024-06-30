@@ -46,9 +46,11 @@ pub(crate) fn parse_ip_address(ip_str: &str) -> IpAddr {
     IpAddr::from_str(ip_str).unwrap()
 }
 
-async fn handle_signals() -> Arc<Notify> {
-    let notify = Arc::new(Notify::new());
-    let notify_clone = notify.clone();
+async fn handle_signals() -> (Arc<Notify>, Arc<Notify>) {
+    let notify_shutdown = Arc::new(Notify::new());
+    let notify_reload = Arc::new(Notify::new());
+    let notify_shutdown_clone = notify_shutdown.clone();
+    let notify_reload_clone = notify_reload.clone();
 
     tokio::spawn(async move {
         let mut hup_signal =
@@ -60,17 +62,18 @@ async fn handle_signals() -> Arc<Notify> {
             tokio::select! {
                 _ = hup_signal.recv() => {
                     log::info!("Received SIGHUP signal, restarting child processes...");
-                    notify_clone.notify_waiters();
+                    notify_reload_clone.notify_waiters();
                 }
                 _ = term_signal.recv() => {
                     log::info!("Received SIGTERM signal, shutting down gracefully...");
+                    notify_shutdown_clone.notify_waiters();
                     std::process::exit(0);
                 }
             }
         }
     });
 
-    notify
+    (notify_shutdown, notify_reload)
 }
 
 pub async fn start_privaxy() -> PrivaxyServer {
@@ -154,7 +157,7 @@ pub async fn start_privaxy() -> PrivaxyServer {
 
     let configuration_save_lock = Arc::new(tokio::sync::Mutex::new(()));
 
-    let notify = handle_signals().await;
+    let (notify_shutdown, notify_reload) = handle_signals().await;
 
     let block_disable_ref = blocking_disabled_store.clone();
     let local_exclusion_store_ref = local_exclusion_store.clone();
@@ -162,6 +165,7 @@ pub async fn start_privaxy() -> PrivaxyServer {
     let configuration_updater_tx_ref = configuration_updater_tx.clone();
     let configuration_save_lock_ref = configuration_save_lock.clone();
     let broadcast_tx_ref = broadcast_tx.clone();
+
     tokio::spawn(async move {
         loop {
             let (_sig_tx, sig_rx) = tokio::sync::mpsc::channel::<tokio::signal::unix::Signal>(1);
@@ -174,12 +178,14 @@ pub async fn start_privaxy() -> PrivaxyServer {
                 configuration_updater_tx_ref.clone(),
                 configuration_save_lock_ref.clone(),
                 sig_rx,
+                notify_reload.clone(),
             )
             .await;
-            notify.notified().await;
+            notify_reload.notified().await;
             log::info!("Stopping Privaxy frontend");
         }
     });
+
     let disabled_store_ref = blocking_disabled_store_clone.clone();
     thread::spawn(move || {
         let blocker =
@@ -261,6 +267,7 @@ async fn privaxy_frontend(
     configuration_updater_tx: tokio::sync::mpsc::Sender<configuration::Configuration>,
     configuration_save_lock: Arc<tokio::sync::Mutex<()>>,
     mut sig_rx: tokio::sync::mpsc::Receiver<tokio::signal::unix::Signal>,
+    notify_reload: Arc<tokio::sync::Notify>,
 ) {
     let frontend = web_gui::get_frontend(
         broadcast_tx.clone(),
@@ -269,6 +276,7 @@ async fn privaxy_frontend(
         &configuration_updater_tx,
         &configuration_save_lock,
         &local_exclusion_store,
+        notify_reload.clone(),
     );
     let frontend_server = warp::serve(frontend);
     let config = read_configuration(&configuration_save_lock).await;
@@ -301,7 +309,7 @@ async fn privaxy_frontend(
                 .cert(tls_cert.to_pem().unwrap())
                 .key(tls_key.private_key_to_pem_pkcs8().unwrap())
                 .bind_with_graceful_shutdown(web_api_server_addr, async move {
-                    let _ = sig_rx.recv().await;
+                    notify_reload.clone().notified().await;
                 });
             log::info!("Web server available at https://{web_api_server_addr}/");
             log::info!("API server available at https://{web_api_server_addr}/api");
@@ -316,7 +324,7 @@ async fn privaxy_frontend(
                 });
             log::info!("Web server available at http://{web_api_server_addr}/");
             log::info!("API server available at http://{web_api_server_addr}/api");
-            task.await;
+            task.await
         });
     }
 }

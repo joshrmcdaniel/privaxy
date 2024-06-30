@@ -215,7 +215,7 @@ impl Configuration {
         &mut self,
         network_config: &NetworkConfig,
     ) -> ConfigurationResult<()> {
-        if let Err(err) = network_config.validate() {
+        if let Err(err) = network_config.validate().await {
             log::error!("Failed to validate network settings: {err}");
             return Err(err);
         };

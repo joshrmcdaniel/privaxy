@@ -66,7 +66,7 @@ pub enum NetworkConfigError {
 }
 
 impl NetworkConfig {
-    pub(crate) fn validate(&self) -> super::ConfigurationResult<()> {
+    pub(crate) async fn validate(&self) -> super::ConfigurationResult<()> {
         if self.proxy_port == 0 {
             return Err(
                 NetworkConfigError::ProxyPortError("Proxy port cannot be 0".to_string()).into(),
