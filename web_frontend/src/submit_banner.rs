@@ -1,14 +1,21 @@
 use gloo_timers::callback::Timeout;
 use yew::{classes, html, Callback, Component, Context, Html, Properties};
-
 pub struct SubmitBanner {
-    hide_timeout: Option<Timeout>,
+    timeout: Option<Timeout>,
+    transition: TransitionState,
 }
 
 #[derive(PartialEq, Eq, Clone, Copy)]
 pub enum Color {
     Green,
     Red,
+}
+
+#[derive(PartialEq, Eq)]
+enum TransitionState {
+    Hidden,
+    Visible,
+    FadingOut,
 }
 
 #[derive(Properties, PartialEq)]
@@ -21,6 +28,8 @@ pub struct Props {
 }
 
 pub enum Msg {
+    Show,
+    StartHide,
     Hide,
 }
 
@@ -29,10 +38,14 @@ impl Component for SubmitBanner {
     type Properties = Props;
 
     fn create(ctx: &Context<Self>) -> Self {
-        let mut banner = Self { hide_timeout: None };
+        let mut banner = Self {
+            timeout: None,
+            transition: TransitionState::Hidden,
+        };
 
         if ctx.props().visible {
-            banner.show(ctx);
+            banner.transition = TransitionState::Visible;
+            banner.schedule_hide(ctx);
         }
 
         banner
@@ -40,7 +53,21 @@ impl Component for SubmitBanner {
 
     fn update(&mut self, ctx: &Context<Self>, msg: Self::Message) -> bool {
         match msg {
+            Msg::Show => {
+                self.transition = TransitionState::Visible;
+                self.schedule_hide(ctx);
+                true
+            }
+            Msg::StartHide => {
+                let link = ctx.link().clone();
+                self.transition = TransitionState::FadingOut;
+                self.timeout = Some(Timeout::new(1000, move || {
+                    link.send_message(Msg::Hide);
+                }));
+                true
+            }
             Msg::Hide => {
+                self.transition = TransitionState::Hidden;
                 ctx.props().on_hide.emit(());
                 true
             }
@@ -48,8 +75,8 @@ impl Component for SubmitBanner {
     }
 
     fn changed(&mut self, ctx: &Context<Self>) -> bool {
-        if ctx.props().visible {
-            self.show(ctx);
+        if ctx.props().visible && self.transition == TransitionState::Hidden {
+            ctx.link().send_message(Msg::Show);
         }
         true
     }
@@ -65,11 +92,15 @@ impl Component for SubmitBanner {
             Color::Red => "bg-red-700",
         };
 
+        let opacity_class = match self.transition {
+            TransitionState::Hidden => "opacity-0",
+            TransitionState::Visible => "opacity-100",
+            TransitionState::FadingOut => "opacity-0 transition-opacity duration-1000",
+        };
+
         html! {
             <div class={classes!(
-                "mb-5", "p-2", "rounded-lg", "shadow-lg", "sm:p-3", "transition-opacity", "duration-1000",
-                if props.visible { "opacity-100" } else { "opacity-0" },
-                first_color
+                "mb-5", "p-2", "rounded-lg", "shadow-lg", "sm:p-3", opacity_class, first_color
             )}>
                 <div class="flex items-center justify-between flex-wrap">
                     <div class="w-0 flex-1 flex items-center">
@@ -87,13 +118,14 @@ impl Component for SubmitBanner {
 }
 
 impl SubmitBanner {
-    fn show(&mut self, ctx: &Context<Self>) {
+    fn schedule_hide(&mut self, ctx: &Context<Self>) {
         let link = ctx.link().clone();
-        self.hide_timeout = Some(Timeout::new(3000, move || {
-            link.send_message(Msg::Hide);
+        self.timeout = Some(Timeout::new(3000, move || {
+            link.send_message(Msg::StartHide);
         }));
     }
 }
+
 #[macro_export]
 macro_rules! info_icon {
     () => {
