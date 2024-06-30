@@ -23,7 +23,6 @@ pub(crate) mod statistics;
 pub(crate) struct ApiError {
     error: String,
 }
-
 pub(crate) fn get_frontend(
     events_sender: broadcast::Sender<events::Event>,
     statistics: Statistics,
@@ -34,10 +33,12 @@ pub(crate) fn get_frontend(
 ) -> BoxedFilter<(impl warp::Reply,)> {
     let static_files_routes = warp::get().and(warp::path::tail()).map(move |tail: Tail| {
         let tail_str = tail.as_str();
+        log::info!("Static file request for: {}", tail_str);
 
         let file_contents = match WEBAPP_FRONTEND_DIR.get_file(tail_str) {
             Some(file) => file.contents().to_vec(),
             None => {
+                log::warn!("File not found: {}, serving index.html", tail_str);
                 let index_html = WEBAPP_FRONTEND_DIR.get_file("index.html").unwrap();
                 index_html.contents().to_vec()
             }
@@ -69,6 +70,7 @@ pub(crate) fn get_frontend(
         local_exclusions_store,
         http_client,
     );
+
     api_routes.or(static_files_routes).with(cors).boxed()
 }
 
@@ -107,6 +109,7 @@ fn create_api_routes(
     let def_headers =
         warp::filters::reply::default_header(http::header::CONTENT_TYPE, "application/json");
     let api_path = warp::path("api");
+
     let events_route = warp::path("events")
         .and(warp::ws())
         .map(move |ws: warp::ws::Ws| {
@@ -126,15 +129,18 @@ fn create_api_routes(
         configuration_save_lock.clone(),
         http_client.clone(),
     ));
+
     let custom_filters_route = warp::path("custom-filters").and(custom_filters::create_routes(
         configuration_updater_sender.clone(),
         configuration_save_lock.clone(),
     ));
+
     let exclusions_route = warp::path("exclusions").and(exclusions::create_routes(
         configuration_updater_sender.clone(),
         configuration_save_lock.clone(),
         local_exclusions_store.clone(),
     ));
+
     let settings_route = warp::path("settings").and(settings::create_routes(
         configuration_updater_sender.clone(),
         configuration_save_lock.clone(),
@@ -151,6 +157,7 @@ fn create_api_routes(
     let not_found = warp::path::tail()
         .map(move |tail: Tail| {
             let tail_str = tail.as_str();
+            log::warn!("Path not found: /api/{}", tail_str);
             Response::builder()
                 .status(http::StatusCode::NOT_FOUND)
                 .body(
