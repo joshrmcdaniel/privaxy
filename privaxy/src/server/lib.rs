@@ -1,5 +1,5 @@
-use crate::configuration::NetworkConfig;
 use crate::blocker::AdblockRequester;
+use crate::configuration::NetworkConfig;
 use crate::proxy::exclusions::LocalExclusionStore;
 use crate::web_gui::events::Event;
 use hyper::server::conn::AddrStream;
@@ -10,11 +10,11 @@ use proxy::exclusions;
 use reqwest::redirect::Policy;
 use std::convert::Infallible;
 use std::env;
+use std::net::IpAddr;
 use std::net::SocketAddr;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::thread;
-use std::net::IpAddr;
 use std::time::Duration;
 use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::broadcast;
@@ -178,7 +178,6 @@ pub async fn start_privaxy() -> PrivaxyServer {
             .await;
             notify.notified().await;
             log::info!("Stopping Privaxy frontend");
-
         }
     });
     let disabled_store_ref = blocking_disabled_store_clone.clone();
@@ -303,8 +302,8 @@ async fn privaxy_frontend(
                 .bind_with_graceful_shutdown(web_api_server_addr, async move {
                     let _ = sig_rx.recv().await;
                 });
-                log::info!("Web server available at https://{web_api_server_addr}/");
-                log::info!("API server available at https://{web_api_server_addr}/api");
+            log::info!("Web server available at https://{web_api_server_addr}/");
+            log::info!("API server available at https://{web_api_server_addr}/api");
 
             task.await;
         });
@@ -314,13 +313,12 @@ async fn privaxy_frontend(
                 frontend_server.bind_with_graceful_shutdown(web_api_server_addr, async move {
                     let _ = sig_rx.recv().await;
                 });
-                log::info!("Web server available at http://{web_api_server_addr}/");
-                log::info!("API server available at http://{web_api_server_addr}/api");
+            log::info!("Web server available at http://{web_api_server_addr}/");
+            log::info!("API server available at http://{web_api_server_addr}/api");
             task.await;
         });
     }
 }
-
 
 async fn read_configuration(
     configuration_save_lock: &Arc<tokio::sync::Mutex<()>>,
