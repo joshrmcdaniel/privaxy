@@ -3,6 +3,7 @@ use futures::future::{AbortHandle, Abortable};
 
 use tokio::sync::mpsc::Receiver;
 use tokio::sync::{self, mpsc::Sender};
+
 pub struct ConfigurationUpdater {
     filters_updater_abort_handle: AbortHandle,
     rx: Receiver<super::Configuration>,
@@ -54,24 +55,26 @@ impl ConfigurationUpdater {
         }
     }
 
-    pub(crate) fn start(mut self) {
+    pub(crate) fn start(mut self: Self) {
         tokio::spawn(async move {
             if let Some(mut configuration) = self.rx.recv().await {
                 self.filters_updater_abort_handle.abort();
 
                 let filters =
                     super::filter::get_filters_content(&mut configuration, &self.http_client).await;
-
                 self.adblock_requester.replace_engine(filters).await;
 
-                let new_self = Self::new(
-                    configuration,
-                    self.http_client,
-                    self.adblock_requester,
-                    Some((self.tx, self.rx)),
-                )
-                .await;
-                new_self.start();
+                let adblock_requester_clone = self.adblock_requester.clone();
+                let http_client_clone = self.http_client.clone();
+
+                tokio::spawn(async move {
+                    Self::filters_updater(
+                        configuration,
+                        adblock_requester_clone,
+                        http_client_clone,
+                    )
+                    .await;
+                });
 
                 log::info!("Applied new configuration");
             }

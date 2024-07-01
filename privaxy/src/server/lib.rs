@@ -28,6 +28,7 @@ pub mod configuration;
 mod proxy;
 pub mod statistics;
 mod web_gui;
+
 pub const WEBAPP_FRONTEND_DIR: Dir<'_> = include_dir!("web_frontend/dist");
 
 #[derive(Debug)]
@@ -181,7 +182,7 @@ pub async fn start_privaxy() -> PrivaxyServer {
                 notify_reload_frontend.clone(),
             )
             .await;
-        notify_reload_frontend.notified().await;
+            notify_reload_frontend.notified().await;
             log::info!("Stopping Privaxy frontend");
         }
     });

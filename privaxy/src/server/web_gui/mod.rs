@@ -33,25 +33,7 @@ pub(crate) fn get_frontend(
     local_exclusions_store: &LocalExclusionStore,
     notify_reload: Arc<Notify>,
 ) -> BoxedFilter<(impl warp::Reply,)> {
-    let static_files_routes = warp::get().and(warp::path::tail()).map(move |tail: Tail| {
-        let tail_str = tail.as_str();
-        log::info!("Static file request for: {}", tail_str);
-
-        let file_contents = match WEBAPP_FRONTEND_DIR.get_file(tail_str) {
-            Some(file) => file.contents().to_vec(),
-            None => {
-                log::warn!("File not found: {}, serving index.html", tail_str);
-                let index_html = WEBAPP_FRONTEND_DIR.get_file("index.html").unwrap();
-                index_html.contents().to_vec()
-            }
-        };
-
-        let mime = mime_guess::from_path(tail_str).first_raw().unwrap_or("");
-
-        Response::builder()
-            .header(http::header::CONTENT_TYPE, mime)
-            .body(file_contents)
-    });
+    let static_files_routes = create_static_routes();
 
     let cors = warp::cors()
         .allow_any_origin()

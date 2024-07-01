@@ -258,7 +258,8 @@ impl Filter {
 
         let filter = get_filter(self, http_client).await?;
 
-        fs::write(filters_directory.join(&self.file_name), &filter).await?;
+        let filter_path = filters_directory.join(&self.file_name);
+        fs::write(&filter_path, &filter).await?;
 
         Ok(filter)
     }
@@ -268,7 +269,7 @@ impl Filter {
         http_client: &reqwest::Client,
     ) -> super::ConfigurationResult<String> {
         let filter_path = get_filter_directory().join(&self.file_name);
-        match fs::read(filter_path).await {
+        match fs::read(&filter_path).await {
             Err(err) => {
                 if err.kind() == std::io::ErrorKind::NotFound {
                     self.update(http_client).await
