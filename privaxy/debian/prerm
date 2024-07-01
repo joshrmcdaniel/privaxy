@@ -1,7 +1,8 @@
-#!/bin/bash
-set -e
+# !/bin/sh
 
-if [ -x /etc/init.d/privaxy ]; then
+#DEBHELPER#
+
+if [ -x /etc/init.d/privaxy ] ; then
     /etc/init.d/privaxy stop || true
 fi
 

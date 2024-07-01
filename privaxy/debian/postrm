@@ -1,6 +1,6 @@
-#!/bin/bash
-set -e
+# !/bin/sh
 
+#DEBHELPER#
 if [ -x /etc/init.d/privaxy ]; then
     update-rc.d privaxy remove
     rm -f /etc/init.d/privaxy
@@ -10,7 +10,7 @@ if systemctl is-enabled --quiet privaxy; then
     systemctl disable privaxy
 fi
 
-if systemctl status privaxy >/dev/null 2>&1; then
+if systemctl status privaxy >/dev/null 2>&1 ; then
     systemctl stop privaxy
     systemctl disable privaxy
     rm -f /lib/systemd/system/privaxy.service
@@ -18,8 +18,8 @@ if systemctl status privaxy >/dev/null 2>&1; then
     systemctl reset-failed
 fi
 
-if id -u privaxy >/dev/null 2>&1; then
-    userdel privaxy
+if id -u privaxy >/dev/null 2>&1 ; then
+    deluser --quiet privaxy
     rm -rf /etc/privaxy
 fi
 
