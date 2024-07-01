@@ -3,7 +3,7 @@ Description=Privaxy Service
 After=network.target
 
 [Service]
-ExecStart=/usr/local/bin/privaxy
+ExecStart=/usr/bin/privaxy
 Restart=always
 User=privaxy
 Group=privaxy

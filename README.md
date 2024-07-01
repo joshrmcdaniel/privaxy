@@ -79,8 +79,8 @@ Privaxy is also way more capable than DNS-based blockers as it is able to operat
   - [x] Implement systemctl signal handling
     - [x] Web GUI honors SIGHUP
     - [x] Proxy
-  - [ ] Package for a systemd service
-  - [ ] Update dependencies
+  - [x] Package for a systemd service
+  - [ ] Update dependencies (sortof)
   - [ ] Figure out which syntaxes the adblock engine supports
   - [ ] Improve logging
   - [ ] Fix cloudflare/robot checks?

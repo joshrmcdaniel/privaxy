@@ -325,7 +325,7 @@ fn get_filter_directory() -> PathBuf {
         // Assume home directory
         Err(_) => PathBuf::from(FILTERS_DIRECTORY_NAME),
     };
-    return super::get_config_directory().join(filter_dir);
+    return super::get_base_directory().unwrap().join(filter_dir);
 }
 
 pub(crate) async fn get_filters_content(

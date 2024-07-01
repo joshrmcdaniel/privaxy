@@ -20,7 +20,7 @@ maintainer-scripts = "debian/"
 depends = "$auto"
 assets = [
   ["debian/privaxy.service", "/lib/systemd/system/privaxy.service", "644"],
-  ["target/release/privaxy", "/usr/local/bin/", "755"],
+  ["target/release/privaxy", "/usr/bin/", "755"],
 ]
 
 [[bin]]

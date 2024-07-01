@@ -7,7 +7,6 @@ mod filter;
 mod network;
 mod updater;
 pub use ca::*;
-use dirs::home_dir;
 pub use filter::*;
 use futures::future::try_join_all;
 pub use network::*;
@@ -21,7 +20,7 @@ pub(crate) const FILTERS_UPDATE_AFTER: Duration = Duration::from_secs(60 * 10);
 pub(crate) const CONFIGURATION_FILE_NAME: &str = "config";
 
 /// Default configuration directory name.
-const CONFIGURATION_DIRECTORY_NAME: &str = ".privaxy";
+const CONFIGURATION_DIRECTORY_NAME: &str = "/etc/privaxy";
 
 #[derive(Error, Debug)]
 pub enum ConfigurationError {
@@ -62,8 +61,8 @@ pub enum PrivaxyError {
 
 impl Configuration {
     pub async fn read_from_home() -> ConfigurationResult<Self> {
-        let configuration_directory = get_config_directory();
-        let configuration_file_path = configuration_directory.join(CONFIGURATION_FILE_NAME);
+        let configuration_directory = get_base_directory().unwrap();
+        let configuration_file_path = get_config_file();
 
         if let Err(err) = fs::metadata(&configuration_directory).await {
             if err.kind() == std::io::ErrorKind::NotFound {
@@ -98,8 +97,7 @@ impl Configuration {
     }
 
     pub async fn save(&self) -> ConfigurationResult<()> {
-        let configuration_directory = get_config_directory();
-        let configuration_file_path = configuration_directory.join(CONFIGURATION_FILE_NAME);
+        let configuration_file_path = get_config_file();
 
         let configuration_serialized = toml::to_string_pretty(&self).unwrap();
 
@@ -271,29 +269,18 @@ impl Configuration {
     }
 }
 
-pub(crate) fn get_config_directory() -> PathBuf {
-    let config_dir: PathBuf = match env::var("PRIVAXY_CONFIG_PATH") {
-        Ok(val) => PathBuf::from(&val),
-        // Assume default directory
-        Err(_) => PathBuf::from(CONFIGURATION_DIRECTORY_NAME),
-    };
-    return get_base_directory()
-        .unwrap_or(get_home_directory().unwrap())
-        .join(config_dir);
+pub(crate) fn get_config_file() -> PathBuf {
+    get_base_directory()
+        .unwrap()
+        .join(CONFIGURATION_FILE_NAME)
 }
 
-fn get_home_directory() -> ConfigurationResult<PathBuf> {
-    match home_dir() {
-        Some(home_directory) => Ok(home_directory),
-        None => Err(ConfigurationError::DirectoryNotFound),
-    }
-}
 
 fn get_base_directory() -> ConfigurationResult<PathBuf> {
     let base_directory: PathBuf = match env::var("PRIVAXY_BASE_PATH") {
         Ok(val) => PathBuf::from(&val),
         // Assume home directory
-        Err(_) => get_home_directory()?,
+        Err(_) => PathBuf::from(CONFIGURATION_DIRECTORY_NAME),
     };
     match Path::exists(&base_directory) {
         true => Ok(base_directory),
