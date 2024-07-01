@@ -62,29 +62,28 @@ Privaxy is also way more capable than DNS-based blockers as it is able to operat
   - Documentation
   - Verify dpkg works as expected
   - Configure for /etc/
-  - Optimize code
+  - [x] Optimize code (kinda)
 - Web GUI
   - [x] Ability to add custom filters
   - [x] [filterlists.com](https://filterlists.com) integration
   - [x] Change bind settings
   - [x] TLS on the web gui
   - [x] Update configuration from the gui
-    - When network settings are changed, the server will reload
-    - Need to add proxy setting changing, network works though
+    - Need to add changing the CA
   - [ ] Authentication to the web gui
 - Backend
   - [x] Bind to different addresses and ports
   - [x] Specify path or CA cert in config
   - [x] Update ublock dependencies
   - [x] Patch NotValidBefore on generated certificates
-  - [ ] Package for a systemd service
-  - [ ] Implement systemctl signal handling
+  - [x] Implement systemctl signal handling
     - [x] Web GUI honors SIGHUP
-    - [ ] Proxy
-  - [ ] Fix cloudflare/robot checks?
+    - [x] Proxy
+  - [ ] Package for a systemd service
   - [ ] Update dependencies
   - [ ] Figure out which syntaxes the adblock engine supports
   - [ ] Improve logging
+  - [ ] Fix cloudflare/robot checks?
   - [ ] Utilize uAsset website
 - Future
   - Add DNS resolutions; incoporate DNS level blocking?
