@@ -3,3 +3,5 @@ members = ["web_frontend", "privaxy"]
 
 [profile.release]
 lto = true
+codegen-units = 8
+opt-level = 3
