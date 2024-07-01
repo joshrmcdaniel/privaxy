@@ -57,7 +57,8 @@ impl ConfigurationUpdater {
 
     pub(crate) fn start(mut self: Self) {
         tokio::spawn(async move {
-            if let Some(mut configuration) = self.rx.recv().await {
+            loop {
+                let mut configuration = self.rx.recv().await.unwrap();
                 self.filters_updater_abort_handle.abort();
 
                 let filters =
