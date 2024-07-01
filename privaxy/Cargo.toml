@@ -8,6 +8,11 @@ authors = [
   "Josh McDaniel <80354972+joshrmcdaniel@users.noreply.github.com>"
 ]
 
+[profile.release]
+lto = true
+codegen-units = 8
+opt-level = 3
+
 [package.metadata.deb]
 maintainer = "Josh McDaniel <80354972+joshrmcdaniel@users.noreply.github.com>"
 license-file = ["../LICENSE.txt", "4"]
