@@ -3,10 +3,12 @@ use crate::configuration::Ca;
 use crate::configuration::Configuration;
 use crate::web_gui::with_configuration_save_lock;
 use crate::web_gui::with_configuration_updater_sender;
+use crate::web_gui::with_notify_reload;
 use crate::web_gui::ApiError;
 use std::convert::Infallible;
 use std::sync::Arc;
 use tokio::sync::mpsc::Sender;
+use tokio::sync::Notify;
 use warp::filters::BoxedFilter;
 use warp::http::Response;
 use warp::Filter as RouteFilter;
@@ -66,6 +68,7 @@ async fn put_ca_certificates(
     ca_cert_struct: Ca,
     configuration_updater_sender: Sender<Configuration>,
     configuration_save_lock: Arc<tokio::sync::Mutex<()>>,
+    notify_reload: Arc<Notify>,
 ) -> Result<Box<dyn warp::Reply>, Infallible> {
     let _guard = configuration_save_lock.lock().await;
 
@@ -97,6 +100,7 @@ async fn put_ca_certificates(
 pub(super) fn create_routes(
     configuration_updater_sender: Sender<Configuration>,
     configuration_save_lock: Arc<tokio::sync::Mutex<()>>,
+    notify_reload: Arc<Notify>,
 ) -> BoxedFilter<(impl warp::Reply,)> {
     warp::path::end()
         .and(
@@ -110,6 +114,7 @@ pub(super) fn create_routes(
                     .and(with_configuration_save_lock(
                         configuration_save_lock.clone(),
                     ))
+                    .and(with_notify_reload(notify_reload.clone()))
                     .and_then(self::put_ca_certificates)),
         )
         .or(warp::path("validate").and(

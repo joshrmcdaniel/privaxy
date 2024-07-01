@@ -125,8 +125,6 @@ pub async fn start_privaxy() -> PrivaxyServer {
         }
     };
 
-    let cert_cache = cert::CertCache::new(ca_certificate.clone(), ca_private_key.clone());
-
     let statistics = statistics::Statistics::new();
     let statistics_clone = statistics.clone();
 
@@ -201,11 +199,14 @@ pub async fn start_privaxy() -> PrivaxyServer {
     tokio::spawn(async move {
         let notify_reload_backend = notify_reload_clone.clone();
         let cfg_lock_backend = configuration_save_lock_ref.clone();
+        let mut rt_cert_cache =
+            cert::CertCache::new(ca_certificate.clone(), ca_private_key.clone());
+        let mut rt_ca_certificate = ca_certificate;
         loop {
             log::info!("Starting Privaxy proxy");
             privaxy_backend(
                 client.clone(),
-                cert_cache.clone(),
+                rt_cert_cache.clone(),
                 blocker_requester.clone(),
                 broadcast_tx.clone(),
                 statistics.clone(),
@@ -214,6 +215,13 @@ pub async fn start_privaxy() -> PrivaxyServer {
                 notify_reload_backend.clone(),
             )
             .await;
+            let cfg = read_configuration(&cfg_lock_backend).await;
+            let ca_cert = cfg.ca.get_ca_certificate().await.unwrap();
+            let ca_key = cfg.ca.get_ca_private_key().await.unwrap();
+            if !ca_key.public_eq(&rt_ca_certificate.public_key().unwrap()) {
+                rt_ca_certificate = ca_cert.clone();
+                rt_cert_cache = cert::CertCache::new(ca_cert, ca_key);
+            }
         }
     });
     PrivaxyServer {

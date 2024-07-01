@@ -206,6 +206,12 @@ pub(self) fn with_http_client(
     warp::any().map(move || http_client.clone())
 }
 
+pub(self) fn with_notify_reload(
+    notify_reload: Arc<Notify>,
+) -> impl Filter<Extract = (Arc<Notify>,), Error = std::convert::Infallible> + Clone {
+    warp::any().map(move || notify_reload.clone())
+}
+
 pub(crate) fn get_error_response(err: impl std::error::Error) -> Response<String> {
     log::debug!("Building error response: {:?}", err);
     Response::builder()

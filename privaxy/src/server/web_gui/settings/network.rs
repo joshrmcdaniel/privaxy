@@ -3,6 +3,7 @@ use crate::configuration;
 use crate::configuration::NetworkConfig;
 use crate::web_gui::with_configuration_save_lock;
 use crate::web_gui::with_configuration_updater_sender;
+use crate::web_gui::with_notify_reload;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Notify;
 
@@ -116,20 +117,8 @@ pub(super) fn create_routes(
         .and(with_configuration_save_lock(
             configuration_save_lock.clone(),
         ))
-        .and_then(
-            move |network_settings, configuration_updater_sender, configuration_save_lock| {
-                let notify_reload = notify_reload.clone();
-                async move {
-                    put_network_settings(
-                        network_settings,
-                        configuration_updater_sender,
-                        configuration_save_lock,
-                        notify_reload,
-                    )
-                    .await
-                }
-            },
-        );
+        .and(with_notify_reload(notify_reload.clone()))
+        .and_then(put_network_settings);
 
     get_route.or(put_route).boxed()
 }
