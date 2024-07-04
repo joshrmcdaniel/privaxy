@@ -67,17 +67,22 @@ impl ConfigurationUpdater {
 
                 let adblock_requester_clone = self.adblock_requester.clone();
                 let http_client_clone = self.http_client.clone();
-
-                tokio::spawn(async move {
-                    Self::filters_updater(
-                        configuration,
-                        adblock_requester_clone,
-                        http_client_clone,
-                    )
-                    .await;
-                });
+                let (abort_handle, abort_registration) = AbortHandle::new_pair();
+                self.filters_updater_abort_handle = abort_handle;
+                let filters_updater = Abortable::new(
+                    async move {
+                        Self::filters_updater(
+                            configuration,
+                            adblock_requester_clone,
+                            http_client_clone.clone(),
+                        )
+                        .await
+                    },
+                    abort_registration,
+                );
 
                 log::info!("Applied new configuration");
+                tokio::spawn(filters_updater);
             }
         });
     }

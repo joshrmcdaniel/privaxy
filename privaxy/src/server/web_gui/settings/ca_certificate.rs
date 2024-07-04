@@ -89,6 +89,10 @@ async fn put_ca_certificates(
         .send(configuration.clone())
         .await
         .unwrap();
+    drop(_guard);
+
+    notify_reload.notify_waiters();
+
 
     Ok(Box::new(
         Response::builder()

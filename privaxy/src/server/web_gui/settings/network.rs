@@ -1,5 +1,4 @@
 use super::get_error_response;
-use crate::configuration;
 use crate::configuration::NetworkConfig;
 use crate::web_gui::with_configuration_save_lock;
 use crate::web_gui::with_configuration_updater_sender;

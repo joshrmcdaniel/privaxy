@@ -21,6 +21,7 @@ static NON_EMPTY_LINE_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r#"\S"#).unwrap(
 pub struct ResourceProperties {
     pub name: String,
     pub alias: Vec<String>,
+    #[allow(dead_code)]
     pub data: Option<String>,
 }
 use base64::{engine::general_purpose, Engine};

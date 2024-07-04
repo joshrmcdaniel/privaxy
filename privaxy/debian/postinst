@@ -4,7 +4,7 @@
 
 if ! id -u privaxy >/dev/null 2>&1 ; then
     useradd -r -d /etc/privaxy -s /usr/sbin/nologin privaxy
-    mkdir -p /etc/privaxy
+    mkdir -pm 750 /etc/privaxy
     chown privaxy:privaxy /etc/privaxy
 fi
 
