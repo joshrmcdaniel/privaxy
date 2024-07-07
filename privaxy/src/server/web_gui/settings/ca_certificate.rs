@@ -93,7 +93,6 @@ async fn put_ca_certificates(
 
     notify_reload.notify_waiters();
 
-
     Ok(Box::new(
         Response::builder()
             .status(http::StatusCode::NO_CONTENT)
