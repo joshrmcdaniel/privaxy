@@ -1,3 +1,4 @@
+use dashmap::DashMap;
 use http::uri::Authority;
 use openssl::{
     asn1::Asn1Time,
@@ -13,13 +14,18 @@ use openssl::{
         X509NameBuilder, X509Ref, X509Req, X509ReqBuilder, X509,
     },
 };
+use parking_lot::RwLock;
 use rustls::{Certificate, PrivateKey, ServerConfig};
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::{str::FromStr, sync::Arc};
-use tokio::sync::Mutex;
-use uluru::LRUCache;
+use tokio::sync::oneshot;
 
-const MAX_CACHED_CERTIFICATES: usize = 1_000;
+// Metrics for monitoring cache performance
+#[derive(Default)]
+struct CacheMetrics {
+    hits: std::sync::atomic::AtomicU64,
+    misses: std::sync::atomic::AtomicU64,
+}
 
 #[derive(Clone)]
 pub struct SignedWithCaCert {
@@ -62,11 +68,6 @@ impl SignedWithCaCert {
         request_builder.set_pubkey(key_pair).unwrap();
 
         let mut x509_name = X509NameBuilder::new().unwrap();
-
-        // Only 64 characters are allowed in the CN field.
-        // (ub-common-name INTEGER ::= 64), browsers are not using CN anymore but uses SANs instead.
-        // Let's use a shorter entry.
-        // RFC 3280.
         let authority_host = authority.host();
         let common_name = if authority_host.len() > 64 {
             "privaxy_cn_too_long.local"
@@ -77,11 +78,7 @@ impl SignedWithCaCert {
         x509_name.append_entry_by_text("CN", common_name).unwrap();
         let x509_name = x509_name.build();
         request_builder.set_subject_name(&x509_name).unwrap();
-
-        request_builder
-            .sign(key_pair, MessageDigest::sha256())
-            .unwrap();
-
+        request_builder.sign(key_pair, MessageDigest::sha256()).unwrap();
         request_builder.build()
     }
 
@@ -92,7 +89,6 @@ impl SignedWithCaCert {
         private_key: &PKey<Private>,
     ) -> X509 {
         let req = Self::build_certificate_request(private_key, authority);
-
         let mut cert_builder = X509::builder().unwrap();
         cert_builder.set_version(2).unwrap();
 
@@ -104,9 +100,7 @@ impl SignedWithCaCert {
 
         cert_builder.set_serial_number(&serial_number).unwrap();
         cert_builder.set_subject_name(req.subject_name()).unwrap();
-        cert_builder
-            .set_issuer_name(ca_cert.subject_name())
-            .unwrap();
+        cert_builder.set_issuer_name(ca_cert.subject_name()).unwrap();
         cert_builder.set_pubkey(private_key).unwrap();
 
         let not_before = {
@@ -114,7 +108,6 @@ impl SignedWithCaCert {
             let since_epoch = current_time
                 .duration_since(UNIX_EPOCH)
                 .expect("Time went backwards");
-            // patch NotValidBefore
             Asn1Time::from_unix(since_epoch.as_secs() as i64 - 60).unwrap()
         };
         cert_builder.set_not_before(&not_before).unwrap();
@@ -142,7 +135,6 @@ impl SignedWithCaCert {
             Ok(_ip_addr) => {
                 let mut san = SubjectAlternativeName::new();
                 san.ip(authority.host());
-
                 san
             }
             Err(_err) => {
@@ -154,16 +146,12 @@ impl SignedWithCaCert {
         .build(&cert_builder.x509v3_context(Some(ca_cert), None))
         .unwrap();
 
-        cert_builder
-            .append_extension(subject_alternative_name)
-            .unwrap();
+        cert_builder.append_extension(subject_alternative_name).unwrap();
 
         let subject_key_identifier = SubjectKeyIdentifier::new()
             .build(&cert_builder.x509v3_context(Some(ca_cert), None))
             .unwrap();
-        cert_builder
-            .append_extension(subject_key_identifier)
-            .unwrap();
+        cert_builder.append_extension(subject_key_identifier).unwrap();
 
         let auth_key_identifier = AuthorityKeyIdentifier::new()
             .keyid(false)
@@ -172,67 +160,107 @@ impl SignedWithCaCert {
             .unwrap();
         cert_builder.append_extension(auth_key_identifier).unwrap();
 
-        cert_builder
-            .sign(ca_key_pair, MessageDigest::sha256())
-            .unwrap();
-
+        cert_builder.sign(ca_key_pair, MessageDigest::sha256()).unwrap();
         cert_builder.build()
     }
 }
 
+type PendingCertificates = Arc<DashMap<Authority, oneshot::Sender<SignedWithCaCert>>>;
+
 #[derive(Clone)]
 pub struct CertCache {
-    cache: Arc<Mutex<LRUCache<SignedWithCaCert, MAX_CACHED_CERTIFICATES>>>,
-    // We use a single RSA key for all certificates.
-    private_key: PKey<Private>,
-    ca_certificate: X509,
-    ca_private_key: PKey<Private>,
+    cache: Arc<DashMap<Authority, SignedWithCaCert>>,
+    pending: PendingCertificates,
+    metrics: Arc<CacheMetrics>,
+    private_key: Arc<RwLock<PKey<Private>>>,
+    ca_certificate: Arc<RwLock<X509>>,
+    ca_private_key: Arc<RwLock<PKey<Private>>>,
 }
 
 impl CertCache {
     pub fn new(ca_certificate: X509, ca_private_key: PKey<Private>) -> Self {
-        Self {
-            cache: Arc::new(Mutex::new(LRUCache::default())),
-            private_key: {
-                let rsa: Rsa<Private> = Rsa::generate(2048).unwrap();
-                PKey::from_rsa(rsa).unwrap()
-            },
-            ca_certificate,
-            ca_private_key,
+        let cache = Arc::new(DashMap::new());
+        let pending = Arc::new(DashMap::new());
+        let metrics = Arc::new(CacheMetrics::default());
+        
+        let private_key = Arc::new(RwLock::new({
+            let rsa = Rsa::generate(2048).unwrap();
+            PKey::from_rsa(rsa).unwrap()
+        }));
+
+        let instance = Self {
+            cache,
+            pending,
+            metrics,
+            private_key,
+            ca_certificate: Arc::new(RwLock::new(ca_certificate)),
+            ca_private_key: Arc::new(RwLock::new(ca_private_key)),
+        };
+
+        // create cert in bg
+        let cache_clone = instance.clone();
+        tokio::spawn(async move {
+            cache_clone.certificate_generator().await;
+        });
+
+        instance
+    }
+
+    async fn certificate_generator(&self) {
+        loop {
+            // check active cert gens
+            for entry in self.pending.iter() {
+                let authority = entry.key().clone();
+                if !self.cache.contains_key(&authority) {
+                    let certificate = self.generate_certificate(authority.clone()).await;
+                    if let Some((_, sender)) = self.pending.remove(&authority) {
+                        let _ = sender.send(certificate.clone());
+                    }
+                    self.cache.insert(authority, certificate);
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
     }
 
-    async fn insert(&self, certificate: SignedWithCaCert) {
-        let mut cache = self.cache.lock().await;
-        cache.insert(certificate);
+    async fn generate_certificate(&self, authority: Authority) -> SignedWithCaCert {
+        let private_key = self.private_key.read().clone();
+        let ca_certificate = self.ca_certificate.read().clone();
+        let ca_private_key = self.ca_private_key.read().clone();
+
+        tokio::task::spawn_blocking(move || {
+            SignedWithCaCert::new(authority, private_key, ca_certificate, ca_private_key)
+        })
+        .await
+        .unwrap()
     }
 
     pub async fn get(&self, authority: Authority) -> SignedWithCaCert {
-        let mut cache = self.cache.lock().await;
-
-        match cache.find(|cert| cert.authority == authority) {
-            Some(certificate) => certificate.clone(),
-            None => {
-                // We release the previously acquired lock early as `insert`, which we will call just
-                // afterwards also waits to acquire a lock.
-                std::mem::drop(cache);
-
-                let private_key = self.private_key.clone();
-
-                let ca_certificate = self.ca_certificate.clone();
-                let ca_private_key = self.ca_private_key.clone();
-
-                // This operation is somewhat CPU intensive and on some lower powered machines,
-                // not running it inside of a thread pool may cause it to block the executor for too long.
-                let certificate = tokio::task::spawn_blocking(move || {
-                    SignedWithCaCert::new(authority, private_key, ca_certificate, ca_private_key)
-                })
-                .await
-                .unwrap();
-
-                self.insert(certificate.clone()).await;
-                certificate
-            }
+        // check cache first
+        if let Some(cert) = self.cache.get(&authority) {
+            self.metrics.hits.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            return cert.clone();
         }
+
+        self.metrics.misses.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+        // check if certificate generation is pending
+        if let Some(_) = self.pending.get(&authority) {
+            let (tx, rx) = oneshot::channel();
+            self.pending.insert(authority.clone(), tx);
+            return rx.await.unwrap();
+        }
+
+        // generate new cert
+        let certificate = self.generate_certificate(authority.clone()).await;
+        self.cache.insert(authority, certificate.clone());
+        certificate
+    }
+
+    pub fn get_metrics(&self) -> (u64, u64) {
+        (
+            self.metrics.hits.load(std::sync::atomic::Ordering::Relaxed),
+            self.metrics.misses.load(std::sync::atomic::Ordering::Relaxed),
+        )
     }
 }

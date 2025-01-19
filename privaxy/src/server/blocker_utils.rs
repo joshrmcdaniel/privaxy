@@ -21,7 +21,6 @@ static NON_EMPTY_LINE_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r#"\S"#).unwrap(
 pub struct ResourceProperties {
     pub name: String,
     pub alias: Vec<String>,
-    pub data: Option<String>,
 }
 use base64::{engine::general_purpose, Engine};
 
@@ -48,8 +47,6 @@ impl ResourceAliasField {
 struct JsResourceProperties {
     #[serde(default)]
     alias: Option<ResourceAliasField>,
-    #[serde(default)]
-    data: Option<String>,
     #[serde(default)]
     params: Option<Vec<String>>,
 }
@@ -116,7 +113,6 @@ pub fn read_redirectable_resource_mapping(mapfile_data: &str) -> Vec<ResourcePro
                 Some(ResourceProperties {
                     name,
                     alias: props.alias.map(|a| a.into_vec()).unwrap_or_default(),
-                    data: props.data,
                 })
             }
         })

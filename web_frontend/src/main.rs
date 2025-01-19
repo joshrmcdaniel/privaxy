@@ -9,6 +9,7 @@ mod dashboard;
 mod filterlists;
 mod filters;
 mod general;
+mod metrics;
 mod requests;
 mod save_button;
 mod settings;
@@ -26,6 +27,8 @@ enum Route {
     Dashboard,
     #[at("/requests")]
     Requests,
+    #[at("/metrics")]
+    Metrics,
     #[at("/settings/:s")]
     Settings,
     #[not_found]
@@ -91,6 +94,7 @@ fn switch(route: &Route) -> Html {
               <div class="flex ml-6 space-x-4">
               <Link<Route> classes={ get_classes(*route, Route::Dashboard) } to={Route::Dashboard}>{ "Dashboard" }</Link<Route>>
                <Link<Route> classes={ get_classes(*route, Route::Requests) } to={Route::Requests}>{ "Requests" }</Link<Route>>
+               <Link<Route> classes={ get_classes(*route, Route::Metrics) } to={Route::Metrics}>{ "Metrics" }</Link<Route>>
                <Link<settings::SettingsRoute> classes={ get_classes(*route, Route::Settings) } to={settings::SettingsRoute::Filters}>{ "Settings" }</Link<settings::SettingsRoute>>
                </div>
           </div>
@@ -107,6 +111,10 @@ fn switch(route: &Route) -> Html {
         Route::Requests => {
             set_title("Requests");
             html! { <>{navigation} <div class={"container mt-4 mb-10 mx-auto px-4 sm:px-6 lg:px-8"}> <requests::Requests /> </div></> }
+        }
+        Route::Metrics => {
+            set_title("Metrics");
+            html! { <>{navigation} <div class={"container mt-4 mb-10 mx-auto px-4 sm:px-6 lg:px-8"}> <metrics::Metrics /> </div></> }
         }
         Route::Settings => {
             html! {<>{navigation} <div class={"container mt-4 mb-10 mx-auto px-4 sm:px-6 lg:px-8"}> <Switch<settings::SettingsRoute> render={Switch::render(settings::switch_settings)} /> </div> </>}

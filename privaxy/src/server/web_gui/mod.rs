@@ -1,4 +1,5 @@
 use crate::proxy::exclusions::LocalExclusionStore;
+use super::metrics::MetricsCollector;
 use crate::statistics::Statistics;
 use crate::WEBAPP_FRONTEND_DIR;
 use crate::{blocker::BlockingDisabledStore, configuration::Configuration};
@@ -17,6 +18,7 @@ pub(crate) mod events;
 pub(crate) mod exclusions;
 mod filterlists;
 pub(crate) mod filters;
+pub(crate) mod metrics;
 pub(crate) mod settings;
 pub(crate) mod statistics;
 
@@ -32,6 +34,7 @@ pub(crate) fn get_frontend(
     configuration_save_lock: &Arc<tokio::sync::Mutex<()>>,
     local_exclusions_store: &LocalExclusionStore,
     notify_reload: Arc<Notify>,
+    metrics_collector: Arc<MetricsCollector>,
 ) -> BoxedFilter<(impl warp::Reply,)> {
     let static_files_routes = create_static_routes();
 
@@ -55,6 +58,7 @@ pub(crate) fn get_frontend(
         local_exclusions_store,
         http_client,
         notify_reload,
+        metrics_collector,
     );
 
     api_routes.or(static_files_routes).with(cors).boxed()
@@ -92,6 +96,7 @@ fn create_api_routes(
     local_exclusions_store: &LocalExclusionStore,
     http_client: reqwest::Client,
     notify_reload: Arc<Notify>,
+    metrics_collector: Arc<MetricsCollector>,
 ) -> BoxedFilter<(impl Reply,)> {
     let def_headers =
         warp::filters::reply::default_header(http::header::CONTENT_TYPE, "application/json");
@@ -142,6 +147,13 @@ fn create_api_routes(
 
     let filterlists_route = warp::path("filterlists").and(filterlists::create_routes());
 
+    let metrics_route = warp::path("metrics")
+        .and(warp::ws())
+        .map(move |ws: warp::ws::Ws| {
+            let metrics_collector = metrics_collector.clone();
+            ws.on_upgrade(move |websocket| metrics::metrics(websocket, metrics_collector))
+        });
+
     let not_found = warp::path::tail()
         .map(move |tail: Tail| {
             let tail_str = tail.as_str();
@@ -169,6 +181,7 @@ fn create_api_routes(
                 .or(settings_route)
                 .or(options_route)
                 .or(filterlists_route)
+                .or(metrics_route)
                 .or(not_found),
         )
         .with(def_headers)

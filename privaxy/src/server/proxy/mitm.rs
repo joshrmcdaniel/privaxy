@@ -6,9 +6,18 @@ use hyper::{
     Method, Request, Response,
 };
 use hyper_rustls::HttpsConnector;
-use std::{net::IpAddr, sync::Arc};
-use tokio::{net::TcpStream, sync::broadcast};
+use std::{net::IpAddr, sync::Arc, time::Duration};
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    net::TcpStream,
+    sync::broadcast,
+    time::timeout,
+};
 use tokio_rustls::TlsAcceptor;
+use futures_util::pin_mut;
+
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const BUFFER_SIZE: usize = 64 * 1024; // 64KB buffer
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn serve_mitm_session(
@@ -25,90 +34,50 @@ pub(crate) async fn serve_mitm_session(
     let authority = match req.uri().authority().cloned() {
         Some(authority) => authority,
         None => {
-            let mut response = Response::new(Body::empty());
-            *response.status_mut() = http::StatusCode::BAD_REQUEST;
-
             log::warn!("Received a request without proper authority, sending bad request");
-
-            return Ok(response);
+            return Ok(Response::builder()
+                .status(http::StatusCode::BAD_REQUEST)
+                .body(Body::empty())
+                .unwrap());
         }
     };
 
     if Method::CONNECT == req.method() {
-        // Received an HTTP request like:
-        // ```
-        // CONNECT www.domain.com:443 HTTP/1.1
-        // Host: www.domain.com:443
-        // Proxy-Connection: Keep-Alive
-        // ```
-        //
-        // When HTTP method is CONNECT we should return an empty body
-        // then we can eventually upgrade the connection and talk a new protocol.
-        let server_configuration =
-            Arc::new(cert_cache.get(authority.clone()).await.server_configuration);
+        // Handle HTTPS CONNECT requests
+        let server_configuration = Arc::new(cert_cache.get(authority.clone()).await.server_configuration);
 
-        tokio::task::spawn(async move {
-            match hyper::upgrade::on(req).await {
-                Ok(mut upgraded) => {
-                    let is_host_blacklisted = local_exclusion_store.contains(authority.host());
-
-                    if is_host_blacklisted {
-                        let _result = tunnel(&mut upgraded, &authority).await;
-
-                        return;
+        tokio::spawn(async move {
+            if let Ok(upgraded) = hyper::upgrade::on(req).await {
+                if local_exclusion_store.contains(authority.host()) {
+                    if let Err(e) = handle_tunnel(upgraded, &authority).await {
+                        log::debug!("Tunnel error for {}: {}", authority, e);
                     }
-
-                    let http = Http::new();
-
-                    match TlsAcceptor::from(server_configuration)
-                        .accept(upgraded)
-                        .await
-                    {
-                        Ok(tls_stream) => {
-                            let _result = http
-                                .serve_connection(
-                                    tls_stream,
-                                    service_fn(move |req| {
-                                        serve(
-                                            adblock_requester.clone(),
-                                            req,
-                                            hyper_client.clone(),
-                                            client.clone(),
-                                            authority.clone(),
-                                            Scheme::HTTPS,
-                                            broadcast_tx.clone(),
-                                            statistics.clone(),
-                                            client_ip_address,
-                                        )
-                                    }),
-                                )
-                                .with_upgrades()
-                                .await;
-                        }
-                        // Couldn't perform the tls handshake, they may only support TLS features that we don't or
-                        // make use of untrusted certificates. Let's add them to a blacklist so we'll be able to
-                        // tunnel them instead of trying to perform MITM.
-                        // No blocking will be able to be performed.
-                        Err(error) => {
-                            if error.kind() == std::io::ErrorKind::UnexpectedEof {
-                                log::warn!("Unable to perform handshake for host: {}. Consider excluding it from blocking. The service may not tolerate TLS interception.", authority);
-                            }
-                        }
-                    }
+                    return;
                 }
-                Err(e) => log::error!("upgrade error: {}", e),
+
+                handle_tls_connection(
+                    upgraded,
+                    server_configuration,
+                    authority.clone(),
+                    adblock_requester,
+                    hyper_client,
+                    client,
+                    broadcast_tx,
+                    statistics,
+                    client_ip_address,
+                )
+                .await;
             }
         });
 
         Ok(Response::new(Body::empty()))
     } else {
-        // The request is not of method `CONNECT`. Therefore,
-        // this request is for an HTTP resource.
+        // Handle regular HTTP requests
         serve(
             adblock_requester,
             req,
-            hyper_client.clone(),
-            client.clone(),
+            hyper_client,
+            client,
             authority,
             Scheme::HTTP,
             broadcast_tx,
@@ -119,12 +88,122 @@ pub(crate) async fn serve_mitm_session(
     }
 }
 
-async fn tunnel(mut upgraded: &mut Upgraded, authority: &Authority) -> std::io::Result<()> {
-    let mut server = TcpStream::connect(authority.to_string()).await?;
+async fn handle_tls_connection(
+    upgraded: Upgraded,
+    server_configuration: Arc<rustls::ServerConfig>,
+    authority: Authority,
+    adblock_requester: AdblockRequester,
+    hyper_client: hyper::Client<HttpsConnector<HttpConnector>>,
+    client: reqwest::Client,
+    broadcast_tx: broadcast::Sender<Event>,
+    statistics: Statistics,
+    client_ip_address: IpAddr,
+) {
+    let http = Http::new();
 
-    tokio::io::copy_bidirectional(&mut upgraded, &mut server).await?;
+    match timeout(
+        Duration::from_secs(5),
+        TlsAcceptor::from(server_configuration).accept(upgraded),
+    )
+    .await
+    {
+        Ok(Ok(tls_stream)) => {
+            let _result = http
+                .serve_connection(
+                    tls_stream,
+                    service_fn(move |req| {
+                        serve(
+                            adblock_requester.clone(),
+                            req,
+                            hyper_client.clone(),
+                            client.clone(),
+                            authority.clone(),
+                            Scheme::HTTPS,
+                            broadcast_tx.clone(),
+                            statistics.clone(),
+                            client_ip_address,
+                        )
+                    }),
+                )
+                .with_upgrades()
+                .await;
+        }
+        Ok(Err(error)) => {
+            if error.kind() == std::io::ErrorKind::UnexpectedEof {
+                log::warn!(
+                    "TLS handshake failed for {}: {}",
+                    authority,
+                    error
+                );
+            } else {
+                log::error!("TLS error for {}: {}", authority, error);
+            }
+        }
+        Err(_) => {
+            log::warn!("TLS handshake timed out for {}", authority);
+        }
+    }
+}
 
-    log::debug!("Started tunneling host: {}", authority);
+async fn handle_tunnel(upgraded: Upgraded, authority: &Authority) -> std::io::Result<()> {
+    // Connect to the target server with timeout
+    let addr = format!("{}:{}", authority.host(), authority.port_u16().unwrap_or(443));
+    let mut server = match timeout(CONNECT_TIMEOUT, TcpStream::connect(&addr)).await {
+        Ok(Ok(stream)) => stream,
+        Ok(Err(e)) => {
+            log::warn!("Failed to connect to {}: {}", authority, e);
+            return Err(e);
+        }
+        Err(_) => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                format!("Connection to {} timed out", authority),
+            ));
+        }
+    };
 
-    Ok(())
+    // Set TCP options for better performance
+    server.set_nodelay(true)?;
+
+    // Create separate buffers for client->server and server->client
+    let (mut client_rx, mut client_tx) = tokio::io::split(upgraded);
+    let (mut server_rx, mut server_tx) = server.split();
+
+    // Create the two copy futures
+    let client_to_server = async {
+        let mut buffer = [0u8; BUFFER_SIZE];
+        loop {
+            match client_rx.read(&mut buffer).await {
+                Ok(0) => break Ok(()), // EOF
+                Ok(n) => {
+                    if let Err(e) = server_tx.write_all(&buffer[..n]).await {
+                        break Err(e);
+                    }
+                }
+                Err(e) => break Err(e),
+            }
+        }
+    };
+
+    let server_to_client = async {
+        let mut buffer = [0u8; BUFFER_SIZE];
+        loop {
+            match server_rx.read(&mut buffer).await {
+                Ok(0) => break Ok(()), // EOF
+                Ok(n) => {
+                    if let Err(e) = client_tx.write_all(&buffer[..n]).await {
+                        break Err(e);
+                    }
+                }
+                Err(e) => break Err(e),
+            }
+        }
+    };
+
+    // Run both copies concurrently
+    pin_mut!(client_to_server, server_to_client);
+    match futures_util::future::try_join(client_to_server, server_to_client).await {
+        Ok(_) => Ok(()),
+        Err(e) => Err(e),
+    }
 }

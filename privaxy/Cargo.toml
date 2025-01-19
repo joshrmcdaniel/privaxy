@@ -32,13 +32,17 @@ name = "privaxy"
 path = "src/server/lib.rs"
 
 [dependencies]
+parking_lot = "0.12"
+dashmap = "6.1.0"
+rayon = "1.8"
+num_cpus = "1.16"
 hyper = { version = "0.14.29", features = ["full"] }
 tokio = { version = "1.22.0", features = ["full"] }
 serde_json = "1.0.89"
 toml = "0.8.13"
 serde = { version = "1.0.148", features = ["derive"] }
 tokio-util = { version = "0.7.4", features = ["full"] }
-adblock = { version = "0.8.9" }
+adblock = { version = "0.9.4" }
 openssl = { version = "0.10.43", features = ["vendored"] }
 include_dir = "0.7.3"
 chrono = { version = "0.4.23", features = ["serde"] }
@@ -77,3 +81,4 @@ sha2 = "0.10.8"
 hex = "0.4.3"
 serde_with = "3.8.1"
 filterlists-api = { path = "../filterlists-api", features = ["reqwest"] }
+sysinfo = "0.33.1"

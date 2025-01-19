@@ -6,6 +6,7 @@ use hyper::server::conn::AddrStream;
 use hyper::service::{make_service_fn, service_fn};
 use hyper::{Client, Server};
 use include_dir::{include_dir, Dir};
+use parking_lot::RwLock;
 use proxy::exclusions;
 use reqwest::redirect::Policy;
 use std::convert::Infallible;
@@ -27,6 +28,7 @@ mod cert;
 pub mod configuration;
 mod proxy;
 pub mod statistics;
+pub mod metrics;
 mod web_gui;
 
 pub const WEBAPP_FRONTEND_DIR: Dir<'_> = include_dir!("web_frontend/dist");
@@ -39,8 +41,8 @@ pub struct PrivaxyServer {
     pub blocking_disabled_store: blocker::BlockingDisabledStore,
     pub statistics: statistics::Statistics,
     pub local_exclusion_store: exclusions::LocalExclusionStore,
-    // A Sender is required to subscribe to broadcasted messages
     pub requests_broadcast_sender: broadcast::Sender<Event>,
+    pub metrics_collector: Arc<metrics::MetricsCollector>,
 }
 
 pub(crate) fn parse_ip_address(ip_str: &str) -> IpAddr {
@@ -78,8 +80,6 @@ async fn handle_signals() -> (Arc<Notify>, Arc<Notify>) {
 }
 
 pub async fn start_privaxy() -> PrivaxyServer {
-    // We use reqwest instead of hyper's client to perform most of the proxying as it's more convenient
-    // to handle compression as well as offers a more convenient interface.
     let client = reqwest::Client::builder()
         .use_rustls_tls()
         .redirect(Policy::none())
@@ -131,8 +131,7 @@ pub async fn start_privaxy() -> PrivaxyServer {
     let (broadcast_tx, _broadcast_rx) = broadcast::channel(32);
     let broadcast_tx_clone = broadcast_tx.clone();
 
-    let blocking_disabled_store =
-        blocker::BlockingDisabledStore(Arc::new(std::sync::RwLock::new(false)));
+    let blocking_disabled_store = blocker::BlockingDisabledStore(Arc::new(RwLock::new(false)));
     let blocking_disabled_store_clone = blocking_disabled_store.clone();
 
     let (crossbeam_sender, crossbeam_receiver) = crossbeam_channel::unbounded();
@@ -157,6 +156,9 @@ pub async fn start_privaxy() -> PrivaxyServer {
 
     let (_notify_shutdown, notify_reload) = handle_signals().await;
 
+    let metrics_collector = Arc::new(metrics::MetricsCollector::new());
+    let metrics_collector_clone = metrics_collector.clone();
+
     let block_disable_ref = blocking_disabled_store.clone();
     let local_exclusion_store_ref = local_exclusion_store.clone();
     let stats_clone = statistics.clone();
@@ -164,10 +166,12 @@ pub async fn start_privaxy() -> PrivaxyServer {
     let configuration_save_lock_ref = configuration_save_lock.clone();
     let broadcast_tx_ref = broadcast_tx.clone();
     let notify_reload_clone = notify_reload.clone();
+    let metrics_collector_ref = metrics_collector.clone();
 
     tokio::spawn(async move {
         let notify_reload_frontend = notify_reload_clone.clone();
         let cfg_lock_frontend = configuration_save_lock_ref.clone();
+        let metrics_collector_frontend = metrics_collector_ref.clone();
         loop {
             log::info!("Starting Privaxy frontend");
             privaxy_frontend(
@@ -178,6 +182,7 @@ pub async fn start_privaxy() -> PrivaxyServer {
                 configuration_updater_tx_ref.clone(),
                 cfg_lock_frontend.clone(),
                 notify_reload_frontend.clone(),
+                metrics_collector_frontend.clone(),
             )
             .await;
             notify_reload_frontend.notified().await;
@@ -186,9 +191,14 @@ pub async fn start_privaxy() -> PrivaxyServer {
     });
 
     let disabled_store_ref = blocking_disabled_store_clone.clone();
+    let metrics_collector_ref = metrics_collector.clone();
     thread::spawn(move || {
-        let blocker =
-            blocker::Blocker::new(crossbeam_sender, crossbeam_receiver, disabled_store_ref);
+        let blocker = blocker::Blocker::new(
+            crossbeam_sender,
+            crossbeam_receiver,
+            disabled_store_ref,
+            metrics_collector_ref,
+        );
 
         blocker.handle_requests()
     });
@@ -224,6 +234,7 @@ pub async fn start_privaxy() -> PrivaxyServer {
             }
         }
     });
+
     PrivaxyServer {
         ca_certificate_pem,
         configuration_updater_sender: configuration_updater_tx,
@@ -232,6 +243,7 @@ pub async fn start_privaxy() -> PrivaxyServer {
         statistics: statistics_clone,
         local_exclusion_store: local_exclusion_store_clone,
         requests_broadcast_sender: broadcast_tx_clone,
+        metrics_collector: metrics_collector_clone,
     }
 }
 
@@ -243,6 +255,7 @@ async fn privaxy_frontend(
     configuration_updater_tx: tokio::sync::mpsc::Sender<configuration::Configuration>,
     configuration_save_lock: Arc<tokio::sync::Mutex<()>>,
     notify_reload: Arc<tokio::sync::Notify>,
+    metrics_collector: Arc<metrics::MetricsCollector>,
 ) {
     let frontend = web_gui::get_frontend(
         broadcast_tx.clone(),
@@ -252,6 +265,7 @@ async fn privaxy_frontend(
         &configuration_save_lock,
         &local_exclusion_store,
         notify_reload.clone(),
+        metrics_collector,
     );
     let frontend_server = warp::serve(frontend);
     let config = read_configuration(&configuration_save_lock).await;
@@ -314,6 +328,7 @@ async fn read_configuration(
     drop(lock);
     config
 }
+
 async fn env_or_config_ip(network_config: &NetworkConfig) -> IpAddr {
     match env::var("PRIVAXY_IP_ADDRESS") {
         Ok(val) => parse_ip_address(&val),
@@ -339,10 +354,6 @@ async fn privaxy_backend(
     let config = read_configuration(&configuration_save_lock).await;
     let network_config = &config.network;
 
-    // The hyper client is only used to perform upgrades. We don't need to
-    // handle compression.
-    // Hyper's client don't follow redirects, which is what we want, nothing to
-    // disable here.
     let hyper_client = Client::builder().build(https_connector);
 
     let make_service = make_service_fn(move |conn: &AddrStream| {

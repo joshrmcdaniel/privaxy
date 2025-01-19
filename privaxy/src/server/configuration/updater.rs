@@ -59,23 +59,40 @@ impl ConfigurationUpdater {
         tokio::spawn(async move {
             loop {
                 let mut configuration = self.rx.recv().await.unwrap();
+                // Abort the current updater and wait for it to fully clean up
                 self.filters_updater_abort_handle.abort();
+                
+                // Small delay to ensure cleanup
+                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
                 let filters =
                     super::filter::get_filters_content(&mut configuration, &self.http_client).await;
+                
+                // Force a garbage collection before replacing engine
+                drop(filters.clone());
+                
                 self.adblock_requester.replace_engine(filters).await;
+
+                // Create new abort pair for the next updater
+                let (abort_handle, abort_registration) = AbortHandle::new_pair();
+                self.filters_updater_abort_handle = abort_handle;
 
                 let adblock_requester_clone = self.adblock_requester.clone();
                 let http_client_clone = self.http_client.clone();
 
-                tokio::spawn(async move {
-                    Self::filters_updater(
-                        configuration,
-                        adblock_requester_clone,
-                        http_client_clone,
-                    )
-                    .await;
-                });
+                let filters_updater = Abortable::new(
+                    async move {
+                        Self::filters_updater(
+                            configuration,
+                            adblock_requester_clone,
+                            http_client_clone,
+                        )
+                        .await
+                    },
+                    abort_registration,
+                );
+
+                tokio::spawn(filters_updater);
 
                 log::info!("Applied new configuration");
             }
