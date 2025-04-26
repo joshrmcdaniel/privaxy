@@ -249,7 +249,7 @@ pub(crate) fn calc_filter_filename(filename: &str) -> String {
 impl Filter {
     pub(super) async fn update(
         &mut self,
-        http_client: &reqwest::Client,
+        http_client: &reqwest_impersonate::Client,
     ) -> super::ConfigurationResult<String> {
         log::debug!("Updating filter: {}", self.title);
 
@@ -266,7 +266,7 @@ impl Filter {
 
     pub async fn get_contents(
         &mut self,
-        http_client: &reqwest::Client,
+        http_client: &reqwest_impersonate::Client,
     ) -> super::ConfigurationResult<String> {
         let filter_path = get_filter_directory().join(&self.file_name);
         match fs::read(&filter_path).await {
@@ -304,7 +304,7 @@ impl From<DefaultFilter> for Filter {
 
 pub(crate) async fn get_filter(
     filter: &mut Filter,
-    http_client: &reqwest::Client,
+    http_client: &reqwest_impersonate::Client,
 ) -> super::ConfigurationResult<String> {
     let response = http_client.get(filter.url.as_str()).send().await?;
     if response.status().is_success() {
@@ -330,7 +330,7 @@ fn get_filter_directory() -> PathBuf {
 
 pub(crate) async fn get_filters_content(
     configuration: &mut super::Configuration,
-    http_client: &reqwest::Client,
+    http_client: &reqwest_impersonate::Client,
 ) -> Vec<String> {
     let mut filters = Vec::new();
     let mut futures = vec![];

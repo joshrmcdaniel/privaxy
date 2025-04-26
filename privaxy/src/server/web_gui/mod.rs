@@ -10,7 +10,7 @@ use warp::filters::BoxedFilter;
 use warp::http::Response;
 use warp::path::Tail;
 use warp::{http, Filter, Reply};
-
+use reqwest_impersonate as reqwest;
 pub(crate) mod blocking_enabled;
 pub(crate) mod custom_filters;
 pub(crate) mod events;
@@ -44,7 +44,7 @@ pub(crate) fn get_frontend(
             http::header::DATE,
         ]);
 
-    let http_client = reqwest::Client::new();
+    let http_client = reqwest_impersonate::Client::new();
 
     let api_routes = create_api_routes(
         events_sender,

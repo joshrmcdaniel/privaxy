@@ -9,6 +9,7 @@ use hyper_rustls::HttpsConnector;
 use std::{net::IpAddr, sync::Arc};
 use tokio::{net::TcpStream, sync::broadcast};
 use tokio_rustls::TlsAcceptor;
+use reqwest_impersonate as reqwest;
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn serve_mitm_session(

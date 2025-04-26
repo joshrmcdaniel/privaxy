@@ -17,7 +17,7 @@ pub(crate) async fn serve(
     adblock_requester: AdblockRequester,
     request: Request<Body>,
     hyper_client: hyper::Client<HttpsConnector<HttpConnector>>,
-    client: reqwest::Client,
+    client: reqwest_impersonate::Client,
     authority: Authority,
     scheme: Scheme,
     broadcast_sender: broadcast::Sender<Event>,
@@ -193,7 +193,7 @@ fn get_empty_response(status_code: http::StatusCode) -> Response<Body> {
     response
 }
 
-async fn write_proxied_body(mut response: reqwest::Response, mut sender: hyper::body::Sender) {
+async fn write_proxied_body(mut response: reqwest_impersonate::Response, mut sender: hyper::body::Sender) {
     while let Ok(Some(chunk)) = response.chunk().await {
         // The other end is broken, let's abort immediately.
         if let Err(_err) = sender.send_data(chunk).await {

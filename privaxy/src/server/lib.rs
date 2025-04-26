@@ -4,6 +4,8 @@ use crate::proxy::exclusions::LocalExclusionStore;
 use crate::web_gui::events::Event;
 use hyper::server::conn::AddrStream;
 use hyper::service::{make_service_fn, service_fn};
+use reqwest_impersonate::browser::ChromeVersion;
+use reqwest_impersonate as reqwest;
 use hyper::{Client, Server};
 use include_dir::{include_dir, Dir};
 use proxy::exclusions;
@@ -78,17 +80,6 @@ async fn handle_signals() -> (Arc<Notify>, Arc<Notify>) {
 }
 
 pub async fn start_privaxy() -> PrivaxyServer {
-    // We use reqwest instead of hyper's client to perform most of the proxying as it's more convenient
-    // to handle compression as well as offers a more convenient interface.
-    let client = reqwest::Client::builder()
-        .use_rustls_tls()
-        .redirect(Policy::none())
-        .no_proxy()
-        .gzip(true)
-        .brotli(true)
-        .deflate(true)
-        .build()
-        .unwrap();
 
     let configuration = match configuration::Configuration::read_from_home().await {
         Ok(configuration) => configuration,
@@ -100,7 +91,21 @@ pub async fn start_privaxy() -> PrivaxyServer {
             std::process::exit(1)
         }
     };
-
+    let req_ca = configuration.ca.get_ca_certificate().await.unwrap();
+    let req_pem =reqwest::Certificate::from_pem(&req_ca.to_pem().unwrap()).unwrap();
+    // We use reqwest instead of hyper's client to perform most of the proxying as it's more convenient
+    // to handle compression as well as offers a more convenient interface.
+    let client = reqwest::Client::builder()
+        .chrome_builder(ChromeVersion::V108)
+        .redirect(Policy::none())
+        .no_proxy()
+        .tls_built_in_root_certs(true)
+        .add_root_certificate(req_pem)
+        .gzip(true)
+        .brotli(true)
+        .deflate(true)
+        .build()
+        .unwrap();
     let local_exclusion_store =
         LocalExclusionStore::new(Vec::from_iter(configuration.exclusions.clone().into_iter()));
     let local_exclusion_store_clone = local_exclusion_store.clone();

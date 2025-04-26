@@ -35,11 +35,11 @@ pub enum ConfigurationError {
     #[error("file system error")]
     FileSystemError(#[from] std::io::Error),
     #[error("data store disconnected")]
-    UnableToRetrieveDefaultFilters(#[from] reqwest::Error),
+    UnableToRetrieveDefaultFilters(#[from] reqwest_impersonate::Error),
     #[error("unable to decode filter bytes, bad utf8 data")]
     UnableToDecodeFilterbytes(#[from] std::str::Utf8Error),
     #[error("unable to decode pem data")]
-    UnableToDecodePem(#[from] openssl::error::ErrorStack),
+    UnableToDecodePem(#[from] boring::error::ErrorStack),
     #[error("filter error: {0}")]
     FilterError(String),
 }
@@ -172,7 +172,7 @@ impl Configuration {
 
     pub async fn update_filters(
         &mut self,
-        http_client: reqwest::Client,
+        http_client: reqwest_impersonate::Client,
     ) -> ConfigurationResult<()> {
         log::debug!("Updating filters");
 
@@ -192,7 +192,7 @@ impl Configuration {
     pub async fn add_filter(
         &mut self,
         filter: &mut Filter,
-        http_client: &reqwest::Client,
+        http_client: &reqwest_impersonate::Client,
     ) -> ConfigurationResult<()> {
         match filter.update(http_client).await {
             Ok(_) => {

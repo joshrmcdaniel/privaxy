@@ -81,7 +81,7 @@ async fn get_filters_configuration() -> Result<impl warp::Reply, Infallible> {
 
 async fn add_filter(
     filter_request: FilterRequest,
-    http_client: reqwest::Client,
+    http_client: reqwest_impersonate::Client,
     configuration_updater_sender: Sender<Configuration>,
     configuration_save_lock: Arc<tokio::sync::Mutex<()>>,
 ) -> Result<impl warp::Reply, Infallible> {
@@ -200,7 +200,7 @@ async fn delete_filter(
 pub(super) fn create_routes(
     configuration_updater_sender: Sender<Configuration>,
     configuration_save_lock: Arc<tokio::sync::Mutex<()>>,
-    http_client: reqwest::Client,
+    http_client: reqwest_impersonate::Client,
 ) -> BoxedFilter<(impl warp::Reply,)> {
     warp::get()
         .and_then(self::get_filters_configuration)

@@ -1,5 +1,5 @@
 use http::uri::Authority;
-use openssl::{
+use boring::{
     asn1::Asn1Time,
     bn::{BigNum, MsbOption},
     hash::MessageDigest,

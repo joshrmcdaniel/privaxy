@@ -208,7 +208,7 @@ pub enum FilterListError {
     APIError(#[from] FilterListAPIError),
     #[cfg(feature = "reqwest")]
     #[error("Reqwest error: {0}")]
-    RequestError(#[from] reqwest::Error),
+    RequestError(#[from] reqwest_impersonate::Error),
     #[error("Serialization error: {0}")]
     SerializationError(#[from] serde_json::Error),
     #[error("Unknown error: {0}")]

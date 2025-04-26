@@ -1,12 +1,12 @@
-use openssl::asn1::Asn1Time;
-use openssl::bn::{BigNum, MsbOption};
-use openssl::hash::MessageDigest;
-use openssl::pkey::PKey;
-use openssl::pkey::Private;
-use openssl::rsa::Rsa;
-use openssl::x509::extension::{BasicConstraints, KeyUsage, SubjectKeyIdentifier};
-use openssl::x509::X509NameBuilder;
-use openssl::x509::X509;
+use boring::asn1::Asn1Time;
+use boring::bn::{BigNum, MsbOption};
+use boring::hash::MessageDigest;
+use boring::pkey::PKey;
+use boring::pkey::Private;
+use boring::rsa::Rsa;
+use boring::x509::extension::{BasicConstraints, KeyUsage, SubjectKeyIdentifier};
+use boring::x509::X509NameBuilder;
+use boring::x509::X509;
 
 const ORGANIZATION_NAME: &str = "Privaxy";
 

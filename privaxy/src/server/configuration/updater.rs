@@ -8,14 +8,14 @@ pub struct ConfigurationUpdater {
     filters_updater_abort_handle: AbortHandle,
     rx: Receiver<super::Configuration>,
     pub tx: Sender<super::Configuration>,
-    http_client: reqwest::Client,
+    http_client: reqwest_impersonate::Client,
     adblock_requester: AdblockRequester,
 }
 
 impl ConfigurationUpdater {
     pub(crate) async fn new(
         configuration: super::Configuration,
-        http_client: reqwest::Client,
+        http_client: reqwest_impersonate::Client,
         adblock_requester: AdblockRequester,
         tx_rx: Option<(
             sync::mpsc::Sender<super::Configuration>,
@@ -85,7 +85,7 @@ impl ConfigurationUpdater {
     async fn filters_updater(
         mut configuration: super::Configuration,
         adblock_requester: AdblockRequester,
-        http_client: reqwest::Client,
+        http_client: reqwest_impersonate::Client,
     ) {
         loop {
             tokio::time::sleep(super::FILTERS_UPDATE_AFTER).await;

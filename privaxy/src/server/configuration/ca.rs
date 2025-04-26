@@ -1,6 +1,6 @@
-use openssl::pkey::PKey;
-use openssl::pkey::Private;
-use openssl::x509::X509;
+use boring::pkey::PKey;
+use boring::pkey::Private;
+use boring::x509::X509;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use thiserror::Error;

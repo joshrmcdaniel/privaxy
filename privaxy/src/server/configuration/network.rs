@@ -7,11 +7,12 @@ use thiserror::Error;
 use tokio::fs;
 
 use super::ConfigurationResult;
-use openssl::{
+use boring::{
     asn1::Asn1Time,
     bn::{BigNum, MsbOption},
     hash::MessageDigest,
     pkey::{PKey, PKeyRef, Private},
+    rsa::Rsa,
     x509::{
         extension::{
             AuthorityKeyIdentifier, BasicConstraints, KeyUsage, SubjectAlternativeName,
@@ -209,7 +210,7 @@ impl NetworkConfig {
         ca_cert: X509,
         ca_key: PKey<Private>,
     ) -> ConfigurationResult<X509> {
-        let rsa_key = openssl::rsa::Rsa::generate(2048).unwrap();
+        let rsa_key = Rsa::generate(2048).unwrap();
         let private_key = PKey::from_rsa(rsa_key).unwrap();
         self.write_tls_key(private_key.clone()).await.unwrap();
         let fqdn = self.listen_url.clone().unwrap_or("p.p".to_string());
