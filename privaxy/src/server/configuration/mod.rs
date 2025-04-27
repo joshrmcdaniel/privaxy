@@ -284,6 +284,10 @@ fn get_base_directory() -> ConfigurationResult<PathBuf> {
     };
     match Path::exists(&base_directory) {
         true => Ok(base_directory),
-        false => Err(ConfigurationError::DirectoryNotFound),
+        false => {
+            log::info!("{base_directory:?} does not exist, creating");
+            std::fs::create_dir(&base_directory).unwrap();
+            Ok(base_directory)
+        }
     }
 }

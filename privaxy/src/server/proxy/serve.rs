@@ -3,8 +3,11 @@ use crate::blocker::AdblockRequester;
 use crate::statistics::Statistics;
 use crate::web_gui::events::Event;
 use adblock::blocker::BlockerResult;
+use brotli::Decompressor;
+use futures::SinkExt;
 use http::uri::{Authority, Scheme};
 use http::{StatusCode, Uri};
+use std::io::{Cursor, Read};
 use hyper::body::Bytes;
 use hyper::client::HttpConnector;
 use hyper::{http, Body, Request, Response};
@@ -115,13 +118,15 @@ pub(crate) async fn serve(
     let (mut parts, new_new_body) = new_response.into_parts();
     parts.status = response.status();
 
-    let new_response = Response::from_parts(parts, new_new_body);
+    let mut new_response = Response::from_parts(parts, new_new_body);
 
     if let Some(content_type) = response.headers().get(http::header::CONTENT_TYPE) {
         if let Ok(value) = content_type.to_str() {
             if value.contains("text/html") {
                 let (sender_rewriter, receiver_rewriter) = crossbeam_channel::unbounded::<Bytes>();
-
+                let is_brotli = response.headers().get(http::header::CONTENT_ENCODING)
+                .map_or(false, |v| v.to_str().unwrap_or("").contains("br"));
+            
                 let rewriter = Rewriter::new(
                     uri.to_string(),
                     adblock_requester,
@@ -132,15 +137,42 @@ pub(crate) async fn serve(
 
                 tokio::task::spawn_blocking(|| rewriter.rewrite());
 
-                while let Ok(Some(chunk)) = response.chunk().await {
-                    if let Err(_err) = sender_rewriter.send(chunk) {
-                        break;
+                if is_brotli {
+                    new_response.headers_mut().remove(http::header::CONTENT_ENCODING);
+                    let mut body_bytes = Vec::new();
+                    while let Ok(Some(chunk)) = response.chunk().await {
+                        body_bytes.extend_from_slice(&chunk);
+                    }
+                    
+                    let buf_size = body_bytes.len();
+                    let read_cursor = Cursor::new(body_bytes);
+                    let mut decompressor = Decompressor::new(read_cursor, buf_size);
+                    let mut decompressed = Vec::new();
+                    match decompressor.read_to_end(&mut decompressed) {
+                        Ok(_) => {
+                            sender_rewriter.send(Bytes::from(decompressed)).unwrap_or_default();
+                        },
+                        Err(e) => {
+                            log::error!("Failed to decompress Brotli content: {}", e);
+                            while let Ok(Some(chunk)) = response.chunk().await {
+                                if let Err(_) = sender_rewriter.send(chunk) {
+                                    break;
+                                }
+                            }
+                        }
                     }
                 }
-
+                else {
+                    // For non-Brotli content, proceed as before
+                    while let Ok(Some(chunk)) = response.chunk().await {
+                        if let Err(_err) = sender_rewriter.send(chunk) {
+                            break;
+                        }
+                    }
+                }
                 return Ok(new_response);
-            }
         }
+    }
 
         tokio::spawn(write_proxied_body(response, sender));
 

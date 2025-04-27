@@ -91,16 +91,19 @@ pub async fn start_privaxy() -> PrivaxyServer {
             std::process::exit(1)
         }
     };
-    let req_ca = configuration.ca.get_ca_certificate().await.unwrap();
-    let req_pem =reqwest::Certificate::from_pem(&req_ca.to_pem().unwrap()).unwrap();
+    let req_ca = configuration.ca.get_ca_certificate().await.unwrap().to_pem().unwrap();
+    let req_pem =reqwest::Certificate::from_pem(&req_ca).unwrap();
     // We use reqwest instead of hyper's client to perform most of the proxying as it's more convenient
     // to handle compression as well as offers a more convenient interface.
     let client = reqwest::Client::builder()
         .chrome_builder(ChromeVersion::V108)
         .redirect(Policy::none())
         .no_proxy()
-        .tls_built_in_root_certs(true)
+        .min_tls_version(reqwest_impersonate::tls::Version::TLS_1_1)
+        .max_tls_version(reqwest_impersonate::tls::Version::TLS_1_3)
+        .use_rustls_tls()
         .add_root_certificate(req_pem)
+        .http09_responses()
         .gzip(true)
         .brotli(true)
         .deflate(true)
