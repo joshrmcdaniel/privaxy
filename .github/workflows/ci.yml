@@ -1,6 +1,12 @@
 name: CI
 # See https://help.github.com/en/actions/reference/events-that-trigger-workflows
-on: [push, pull_request]
+on: 
+  branch:
+    - main
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches:
+      - main 
 jobs:
   clippy_check:
     name: Run clippy check
