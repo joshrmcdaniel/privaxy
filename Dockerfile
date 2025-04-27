@@ -2,7 +2,7 @@
 
 ARG PRIVAXY_BASE_PATH="/conf"
 
-FROM ${BUILDARCH}/node:lts-slim AS node
+FROM node:lts-slim AS node
 WORKDIR /app
 COPY . .
 RUN cd web_frontend \
@@ -11,7 +11,7 @@ RUN cd web_frontend \
 
 
 # Build stage
-FROM ${BUILDARCH}/rust:1 AS builder
+FROM rust:1 AS builder
 WORKDIR /app
 COPY . .
 COPY --from=node /app/web_frontend/dist/ /app/web_frontend/dist/
