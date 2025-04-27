@@ -10,7 +10,6 @@ RUN cd web_frontend \
     && npx tailwindcss build -i src/tailwind.css -o dist/.stage/tailwind.css
 
 
-# Build stage
 FROM rust:1 AS builder
 WORKDIR /app
 COPY . .
