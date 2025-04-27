@@ -46,7 +46,6 @@ jobs:
         run: cargo build
         working-directory: .
 
-
   rustfmt:
     name: Check style
     runs-on: ubuntu-latest
@@ -94,8 +93,7 @@ jobs:
           password: ${{secrets.GITHUB_TOKEN}}
       - name: Build and push image
         run: |
-          docker buildx build --platform linux/amd64,linux/arm64 --push -t privaxy/privaxy:latest .
-          docker push ghcr.io/joshrmcdaniel/privaxy:latest
+          docker build --push -t ghcr.io/joshrmcdaniel/privaxy:latest .
   ci:
     name: Build
     runs-on: ${{ matrix.os }}
