@@ -1,7 +1,12 @@
 [workspace]
 members = ["web_frontend", "privaxy"]
-
+resolver = "2"
 [profile.release]
 lto = true
 codegen-units = 8
 opt-level = 3
+
+
+[patch.crates-io]
+h2 = { git = "https://github.com/4JX/h2.git", branch = "imp" }
+hyper = { git = "https://github.com/4JX/hyper.git", branch = "v0.14.18-patched" }
