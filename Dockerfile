@@ -3,7 +3,7 @@
 ARG PRIVAXY_BASE_PATH="/conf"
 
 # Build stage
-FROM rust:1.86.0 AS builder
+FROM rust:1 AS builder
 WORKDIR /app
 COPY . .
 ARG PRIVAXY_BASE_PATH
@@ -22,13 +22,11 @@ RUN rustup target add wasm32-unknown-unknown \
     && cargo binstall trunk \
     && cd web_frontend \
     && npm i && trunk build --release \
-    && cd .. && cargo build --release \
-    && mkdir -p "${PRIVAXY_BASE_PATH}"
+    && cd .. && cargo build --release
 
-FROM gcr.io/distroless/cc-debian12:latest
+FROM gcr.io/distroless/cc-debian12:nonroot
 ARG PRIVAXY_BASE_PATH
 COPY --from=builder /app/target/release/privaxy /app/privaxy
-COPY --from=builder "${PRIVAXY_BASE_PATH}" "${PRIVAXY_BASE_PATH}"
 ENV PRIVAXY_BASE_PATH="${PRIVAXY_BASE_PATH}"
 VOLUME [ "${PRIVAXY_BASE_PATH}" ]
 
