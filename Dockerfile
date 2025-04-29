@@ -26,7 +26,7 @@ RUN cd web_frontend \
     && trunk build --release \
     && cd .. && cargo build --release
 
-FROM gcr.io/distroless/cc-debian12:nonroot-${BUILDARCH}
+FROM gcr.io/distroless/cc-debian12:nonroot
 
 COPY --from=builder /app/target/release/privaxy /app/privaxy
 
