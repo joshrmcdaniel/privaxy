@@ -155,7 +155,7 @@ pub(crate) async fn serve(
 fn get_informative_error_response(reason: &str) -> Response<Body> {
     let mut response_body = String::from(include_str!("../../resources/head.html"));
     response_body +=
-        &include_str!("../../resources/error.html").replace("#{request_error_reson}#", reason);
+        &include_str!("../../resources/error.html").replace("#{request_error_reason}#", reason);
 
     let mut response = Response::new(Body::from(response_body));
     *response.status_mut() = http::StatusCode::BAD_GATEWAY;

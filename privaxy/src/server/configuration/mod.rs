@@ -270,11 +270,8 @@ impl Configuration {
 }
 
 pub(crate) fn get_config_file() -> PathBuf {
-    get_base_directory()
-        .unwrap()
-        .join(CONFIGURATION_FILE_NAME)
+    get_base_directory().unwrap().join(CONFIGURATION_FILE_NAME)
 }
-
 
 fn get_base_directory() -> ConfigurationResult<PathBuf> {
     let base_directory: PathBuf = match env::var("PRIVAXY_BASE_PATH") {
