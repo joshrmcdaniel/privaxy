@@ -94,7 +94,7 @@ pub(crate) async fn serve(
     let mut request_headers = req.headers().clone();
     request_headers.remove(http::header::CONNECTION);
     request_headers.remove(http::header::HOST);
-    
+
     // zstd is causing issues
     if let Some(accept_encoding) = request_headers.get(http::header::ACCEPT_ENCODING) {
         if let Ok(encoding_str) = accept_encoding.to_str() {
@@ -104,7 +104,7 @@ pub(crate) async fn serve(
                     .filter(|e| !e.trim().eq_ignore_ascii_case("zstd"))
                     .collect::<Vec<&str>>()
                     .join(", ");
-                
+
                 if !new_encoding.is_empty() {
                     request_headers.insert(
                         http::header::ACCEPT_ENCODING,
