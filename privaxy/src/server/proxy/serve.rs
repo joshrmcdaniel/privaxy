@@ -94,6 +94,30 @@ pub(crate) async fn serve(
     let mut request_headers = req.headers().clone();
     request_headers.remove(http::header::CONNECTION);
     request_headers.remove(http::header::HOST);
+    
+    // zstd is causing issues
+    if let Some(accept_encoding) = request_headers.get(http::header::ACCEPT_ENCODING) {
+        if let Ok(encoding_str) = accept_encoding.to_str() {
+            if encoding_str.contains("zstd") {
+                let new_encoding = encoding_str
+                    .split(',')
+                    .filter(|e| !e.trim().eq_ignore_ascii_case("zstd"))
+                    .collect::<Vec<&str>>()
+                    .join(", ");
+                
+                if !new_encoding.is_empty() {
+                    request_headers.insert(
+                        http::header::ACCEPT_ENCODING,
+                        http::HeaderValue::from_str(&new_encoding).unwrap_or_else(|_| {
+                            http::HeaderValue::from_static("gzip, deflate, br")
+                        }),
+                    );
+                } else {
+                    request_headers.remove(http::header::ACCEPT_ENCODING);
+                }
+            }
+        }
+    }
     let mut response = match client
         .request(req.method().clone(), req.uri().to_string())
         .headers(request_headers)
