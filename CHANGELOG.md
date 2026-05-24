@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- Built-in authentication for the web UI and API
+  - First-run setup page for choosing an admin username + password
+  - 30-day HMAC-signed session cookie
+  - `X-Api-Key` header for programmatic access; rotate from the Account settings page
+  - Recovery: delete `auth.password_hash` from the config and restart to re-trigger setup
+- PAC file generation
+- Updated uBlock assets
+- Refresh filters once a day
+
 ## v0.6.0
 
 - Remove gui app
