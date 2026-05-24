@@ -323,6 +323,15 @@ pub(crate) async fn serve(
     if is_html {
         let (sender_rewriter, receiver_rewriter) = crossbeam_channel::unbounded::<Bytes>();
 
+        // Resolve the URL-scoped scriptlet payload up-front so the rewriter can
+        // prepend it inside <head> before any page scripts execute. The
+        // end-of-body cosmetic lookup still runs for hide/style selectors,
+        // which depend on collected IDs/classes.
+        let injected_script = adblock_requester
+            .get_cosmetic_response(uri.to_string(), Vec::new(), Vec::new())
+            .await
+            .injected_script;
+
         let rewriter = Rewriter::new(
             uri.to_string(),
             adblock_requester,
@@ -330,6 +339,7 @@ pub(crate) async fn serve(
             sender,
             statistics,
             csp_nonce.expect("csp_nonce is Some whenever is_html"),
+            injected_script,
         );
 
         tokio::task::spawn_blocking(|| rewriter.rewrite());
