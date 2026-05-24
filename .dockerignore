@@ -1,0 +1,10 @@
+.vscode
+.github
+images
+target
+testing
+LICENSE.txt
+README.md
+CHANGELOG.md
+.gitignore
+docker-compose.example.yml
