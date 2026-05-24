@@ -11,6 +11,8 @@
 - Updated uBlock assets
 - Refresh filters once a day
 - Fix(?) memory leak
+- Inject into CSP-protected websites
+- Add docker compose example
 
 ## v0.6.0
 
