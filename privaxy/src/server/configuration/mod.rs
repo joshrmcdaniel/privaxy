@@ -2,10 +2,12 @@ use serde::{Deserialize, Serialize};
 use std::{collections::BTreeSet, time::Duration};
 use thiserror::Error;
 use tokio::fs;
+mod auth;
 mod ca;
 mod filter;
 mod network;
 mod updater;
+pub use auth::*;
 pub use ca::*;
 pub use filter::*;
 use futures::future::try_join_all;
@@ -51,6 +53,8 @@ pub struct Configuration {
     pub ca: Ca,
     pub network: NetworkConfig,
     pub filters: Vec<Filter>,
+    #[serde(default)]
+    pub auth: Auth,
 }
 
 #[derive(Error, Debug)]
@@ -80,7 +84,14 @@ impl Configuration {
         };
 
         match fs::read(&configuration_file_path).await {
-            Ok(bytes) => Ok(toml::from_str(std::str::from_utf8(&bytes)?)?),
+            Ok(bytes) => {
+                let mut configuration: Configuration =
+                    toml::from_str(std::str::from_utf8(&bytes)?)?;
+                if configuration.ensure_auth_keys() {
+                    configuration.save().await?;
+                }
+                Ok(configuration)
+            }
             Err(err) => {
                 log::debug!("Configuration file not found, creating one");
 
@@ -94,6 +105,22 @@ impl Configuration {
                 }
             }
         }
+    }
+
+    /// Populate `auth.api_key` and `auth.session_signing_key` if missing
+    /// (e.g. legacy config from before auth was added). Returns true if any
+    /// change was made and the caller should persist the configuration.
+    fn ensure_auth_keys(&mut self) -> bool {
+        let mut changed = false;
+        if self.auth.api_key.is_empty() {
+            self.auth.api_key = generate_random_hex(32);
+            changed = true;
+        }
+        if self.auth.session_signing_key.is_empty() {
+            self.auth.session_signing_key = generate_random_hex(64);
+            changed = true;
+        }
+        changed
     }
 
     pub async fn save(&self) -> ConfigurationResult<()> {
@@ -262,9 +289,15 @@ impl Configuration {
                 tls_cert_path: None,
                 tls_key_path: None,
                 listen_url: None,
+                pac_enabled: false,
+                pac_proxy_host: None,
+                pac_direct_ips: Vec::new(),
+                pac_direct_cidrs: std::collections::BTreeMap::new(),
+                pac_direct_fqdns: Vec::new(),
             },
             exclusions: BTreeSet::new(),
             custom_filters: Vec::new(),
+            auth: Auth::new_initialized(),
         })
     }
 }

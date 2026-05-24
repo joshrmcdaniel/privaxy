@@ -1,6 +1,7 @@
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
+use std::collections::BTreeMap;
 use std::str::FromStr;
 use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
@@ -47,6 +48,24 @@ pub struct NetworkConfig {
     /// URL to listen on. Only used when TLS is enabled.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub listen_url: Option<String>,
+    /// Serve a proxy auto-config (PAC) file at `/proxy.pac`.
+    #[serde(default)]
+    pub pac_enabled: bool,
+    /// Host:port advertised to PAC clients. Falls back to
+    /// `{bind_addr}:{proxy_port}` when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pac_proxy_host: Option<String>,
+    /// Local IPs that should bypass the proxy (matched against
+    /// `myIpAddress()` in the PAC script).
+    #[serde(default)]
+    pub pac_direct_ips: Vec<String>,
+    /// Subnet → netmask pairs for IP-literal hosts that bypass the
+    /// proxy (rendered as `isInNet(host, subnet, netmask)`).
+    #[serde(default)]
+    pub pac_direct_cidrs: BTreeMap<String, String>,
+    /// FQDNs (and their subdomains) that bypass the proxy.
+    #[serde(default)]
+    pub pac_direct_fqdns: Vec<String>,
 }
 
 #[derive(Error, Debug)]

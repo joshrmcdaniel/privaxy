@@ -11,12 +11,14 @@ use warp::http::Response;
 use warp::path::Tail;
 use warp::{http, Filter, Reply};
 
+pub(crate) mod auth;
 pub(crate) mod blocking_enabled;
 pub(crate) mod custom_filters;
 pub(crate) mod events;
 pub(crate) mod exclusions;
 mod filterlists;
 pub(crate) mod filters;
+mod pac;
 pub(crate) mod settings;
 pub(crate) mod statistics;
 
@@ -57,7 +59,19 @@ pub(crate) fn get_frontend(
         notify_reload,
     );
 
-    api_routes.or(static_files_routes).with(cors).boxed()
+    let pac_route = pac::create_routes(configuration_save_lock.clone());
+
+    api_routes
+        .or(pac_route)
+        .or(static_files_routes)
+        .with(cors)
+        .boxed()
+}
+
+pub(self) fn with_arc<T: Clone + Send + Sync + 'static>(
+    value: T,
+) -> impl Filter<Extract = (T,), Error = std::convert::Infallible> + Clone {
+    warp::any().map(move || value.clone())
 }
 
 fn create_static_routes() -> BoxedFilter<(impl warp::Reply,)> {
@@ -76,7 +90,7 @@ fn create_static_routes() -> BoxedFilter<(impl warp::Reply,)> {
 
             let mime = mime_guess::from_path(tail_str).first_raw().unwrap_or("");
 
-            Response::builder()
+            Response::builder() 
                 .header(http::header::CONTENT_TYPE, mime)
                 .body(file_contents)
         })
@@ -97,7 +111,15 @@ fn create_api_routes(
         warp::filters::reply::default_header(http::header::CONTENT_TYPE, "application/json");
     let api_path = warp::path("api");
 
+    let auth_routes = warp::path("auth").and(auth::routes::create_routes(
+        configuration_updater_sender.clone(),
+        configuration_save_lock.clone(),
+    ));
+
+    let require_auth = auth::require_auth(configuration_save_lock.clone());
+
     let events_route = warp::path("events")
+        .and(require_auth.clone())
         .and(warp::ws())
         .map(move |ws: warp::ws::Ws| {
             let events_sender = events_sender.clone();
@@ -105,74 +127,109 @@ fn create_api_routes(
         });
 
     let statistics_route = warp::path("statistics")
+        .and(require_auth.clone())
         .and(warp::ws())
         .map(move |ws: warp::ws::Ws| {
             let statistics = statistics.clone();
             ws.on_upgrade(move |websocket| statistics::statistics(websocket, statistics))
         });
 
-    let filters_route = warp::path("filters").and(filters::create_routes(
-        configuration_updater_sender.clone(),
-        configuration_save_lock.clone(),
-        http_client.clone(),
-    ));
+    let filters_route = warp::path("filters")
+        .and(require_auth.clone())
+        .and(filters::create_routes(
+            configuration_updater_sender.clone(),
+            configuration_save_lock.clone(),
+            http_client.clone(),
+        ));
 
-    let custom_filters_route = warp::path("custom-filters").and(custom_filters::create_routes(
-        configuration_updater_sender.clone(),
-        configuration_save_lock.clone(),
-    ));
+    let custom_filters_route = warp::path("custom-filters")
+        .and(require_auth.clone())
+        .and(custom_filters::create_routes(
+            configuration_updater_sender.clone(),
+            configuration_save_lock.clone(),
+        ));
 
-    let exclusions_route = warp::path("exclusions").and(exclusions::create_routes(
-        configuration_updater_sender.clone(),
-        configuration_save_lock.clone(),
-        local_exclusions_store.clone(),
-    ));
+    let exclusions_route = warp::path("exclusions")
+        .and(require_auth.clone())
+        .and(exclusions::create_routes(
+            configuration_updater_sender.clone(),
+            configuration_save_lock.clone(),
+            local_exclusions_store.clone(),
+        ));
 
-    let settings_route = warp::path("settings").and(settings::create_routes(
-        configuration_updater_sender.clone(),
-        configuration_save_lock.clone(),
-        notify_reload.clone(),
-    ));
+    let settings_route = warp::path("settings")
+        .and(require_auth.clone())
+        .and(settings::create_routes(
+            configuration_updater_sender.clone(),
+            configuration_save_lock.clone(),
+            notify_reload.clone(),
+        ));
 
-    let blocking_enabled_route = warp::path("blocking-enabled").and(
-        blocking_enabled::create_routes(blocking_disabled_store.clone()),
-    );
+    let blocking_enabled_route = warp::path("blocking-enabled")
+        .and(require_auth.clone())
+        .and(blocking_enabled::create_routes(
+            blocking_disabled_store.clone(),
+        ));
 
     let options_route = warp::options().map(|| "");
 
-    let filterlists_route = warp::path("filterlists").and(filterlists::create_routes());
+    let filterlists_route = warp::path("filterlists")
+        .and(require_auth.clone())
+        .and(filterlists::create_routes());
 
-    let not_found = warp::path::tail()
-        .map(move |tail: Tail| {
-            let tail_str = tail.as_str();
-            log::warn!("Path not found: /api/{}", tail_str);
-            Response::builder()
-                .status(http::StatusCode::NOT_FOUND)
-                .body(
-                    serde_json::to_string(&ApiError {
-                        error: format!("Path not found: /api/{}", tail_str),
-                    })
-                    .unwrap(),
-                )
-                .unwrap()
-        })
-        .boxed();
+    // Note: `.recover` is attached to the inner combinator, NOT to the
+    // outer `api_path.and(...)`. If we attached it to the outer filter,
+    // recover would also fire when `api_path` itself didn't match (e.g.
+    // a request to `/`), turning every non-API request into a JSON 404
+    // and preventing the static-files branch from serving the SPA.
+    let api_inner = auth_routes
+        .or(events_route)
+        .or(statistics_route)
+        .or(filters_route)
+        .or(custom_filters_route)
+        .or(exclusions_route)
+        .or(blocking_enabled_route)
+        .or(settings_route)
+        .or(options_route)
+        .or(filterlists_route)
+        .recover(handle_rejection);
 
-    api_path
-        .and(
-            events_route
-                .or(statistics_route)
-                .or(filters_route)
-                .or(custom_filters_route)
-                .or(exclusions_route)
-                .or(blocking_enabled_route)
-                .or(settings_route)
-                .or(options_route)
-                .or(filterlists_route)
-                .or(not_found),
-        )
-        .with(def_headers)
-        .boxed()
+    api_path.and(api_inner).with(def_headers).boxed()
+}
+
+async fn handle_rejection(
+    err: warp::Rejection,
+) -> Result<Box<dyn Reply>, warp::Rejection> {
+    if err.find::<auth::Unauthorized>().is_some() {
+        return Ok(json_status(
+            http::StatusCode::UNAUTHORIZED,
+            "unauthenticated",
+        ));
+    }
+    if err.find::<auth::ConfigUnavailable>().is_some() {
+        return Ok(json_status(
+            http::StatusCode::INTERNAL_SERVER_ERROR,
+            "configuration unavailable",
+        ));
+    }
+    // Any other rejection inside the /api scope (path not found, method
+    // not allowed, body deserialize failure, etc.) becomes a JSON 404 so
+    // unmatched API paths don't fall through to the static-files
+    // catch-all and accidentally serve index.html.
+    Ok(json_status(http::StatusCode::NOT_FOUND, "Not found"))
+}
+
+fn json_status(status: http::StatusCode, message: &str) -> Box<dyn Reply> {
+    let body = serde_json::to_string(&ApiError {
+        error: message.to_string(),
+    })
+    .unwrap();
+    let response = Response::builder()
+        .status(status)
+        .header(http::header::CONTENT_TYPE, "application/json")
+        .body(body)
+        .unwrap();
+    Box::new(response)
 }
 
 pub(crate) fn with_local_exclusions_store(
