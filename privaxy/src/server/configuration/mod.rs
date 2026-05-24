@@ -16,7 +16,7 @@ use std::env;
 use std::path::{Path, PathBuf};
 pub use updater::*;
 pub(crate) type ConfigurationResult<T> = Result<T, ConfigurationError>;
-pub(crate) const FILTERS_UPDATE_AFTER: Duration = Duration::from_secs(60 * 10);
+pub(crate) const FILTERS_UPDATE_AFTER: Duration = Duration::from_secs(60 * 60 * 24); // 24h
 
 /// Filename of the configuration file.
 pub(crate) const CONFIGURATION_FILE_NAME: &str = "config";
