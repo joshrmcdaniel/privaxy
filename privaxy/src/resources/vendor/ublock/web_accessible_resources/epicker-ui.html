@@ -15,10 +15,11 @@
 </head>
 
 <body>
-<aside>
+<aside style="right: 2px; bottom: 2px;">
+<div id="windowbar"><div id="minimize"><svg viewBox="0 0 64 64"><path d="M 16,48 H 48" /><rect x="16" y="16" height="32" width="32" /></svg></div><div id="move"></div><div id="quit" data-i18n-title="pickerQuit"><svg viewBox="0 0 64 64"><path d="M16 16L48 48M16 48L48 16" /></svg></div></div>
 <section>
     <div>
-        <div class="codeMirrorContainer codeMirrorBreakAll"></div>
+        <div class="codeMirrorContainer codeMirrorBreakAll cm-theme-override"></div>
         <div class="resultsetWidgets">
             <span id="resultsetModifiers">
                 <span id="resultsetDepth" class="resultsetModifier">
@@ -35,14 +36,10 @@
     </div>
     <div id="toolbar">
         <div>
+            <button id="pick" type="button" data-i18n="pickerPick">_<span class="hover"></span></button>
             <button id="preview" type="button" data-i18n="pickerPreview">_<span class="hover"></span></button>
         </div>
-        <div id="move"></div>
-        <div>
-            <button id="create" type="button" class="preferred" disabled data-i18n="pickerCreate">_<span class="hover"></span></button>
-            <button id="pick" type="button" data-i18n="pickerPick">_<span class="hover"></span></button>
-            <button id="quit" type="button" data-i18n="pickerQuit">_<span class="hover"></span></button>
-        </div>
+        <button id="create" type="button" class="preferred" disabled data-i18n="pickerCreate">_<span class="hover"></span></button>
     </div>
 </section>
 <ul id="candidateFilters">
@@ -56,7 +53,7 @@
     </li>
 </ul>
 </aside>
-<svg><path d></path><path d></path></svg>
+<svg id="sea"><path d></path><path d></path></svg>
 
 <script src="../lib/codemirror/lib/codemirror.js"></script>
 <script src="../lib/codemirror/addon/edit/closebrackets.js"></script>
@@ -67,7 +64,6 @@
 <script src="../js/vapi.js"></script>
 <script src="../js/vapi-common.js"></script>
 <script src="../js/vapi-client.js"></script>
-<script src="../js/vapi-client-extra.js"></script>
 <script src="../js/theme.js" type="module"></script>
 <script src="../js/i18n.js" type="module"></script>
 <script src="../js/epicker-ui.js" type="module"></script>
