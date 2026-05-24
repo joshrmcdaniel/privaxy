@@ -26,6 +26,7 @@ pub struct Rewriter {
     body_sender: hyper::body::Sender,
     statistics: Statistics,
     internal_body_channel: InternalBodyChannel,
+    csp_nonce: String,
 }
 
 impl Rewriter {
@@ -35,6 +36,7 @@ impl Rewriter {
         receiver: Receiver<Bytes>,
         body_sender: hyper::body::Sender,
         statistics: Statistics,
+        csp_nonce: String,
     ) -> Self {
         Self {
             url,
@@ -43,6 +45,7 @@ impl Rewriter {
             adblock_requester,
             receiver,
             internal_body_channel: mpsc::unbounded_channel(),
+            csp_nonce,
         }
     }
 
@@ -51,6 +54,7 @@ impl Rewriter {
         let body_sender = self.body_sender;
         let adblock_requester = self.adblock_requester.clone();
         let statistics = self.statistics.clone();
+        let csp_nonce = self.csp_nonce.clone();
 
         let internal_body_sender = Arc::new(Mutex::new(internal_body_sender));
 
@@ -62,6 +66,7 @@ impl Rewriter {
             body_sender,
             adblock_requester,
             statistics,
+            csp_nonce,
         ));
 
         let re = Regex::new(r"\s+").unwrap();
@@ -86,6 +91,22 @@ impl Rewriter {
                                 .map(String::from)
                                 .collect();
                             classes_clone.lock().unwrap().extend(class_set);
+                        }
+                        Ok(())
+                    }),
+                    // Strip meta-tag CSP. Header CSP gets nonce-augmented by the
+                    // proxy; meta CSP would intersect with that and re-block our
+                    // injected <style>/<script>, so it has to go.
+                    element!("meta", |element| {
+                        if let Some(http_equiv) = element.get_attribute("http-equiv") {
+                            let name = http_equiv.trim().to_ascii_lowercase();
+                            if name == "content-security-policy"
+                                || name == "content-security-policy-report-only"
+                                || name == "x-content-security-policy"
+                                || name == "x-webkit-csp"
+                            {
+                                element.remove();
+                            }
                         }
                         Ok(())
                     }),
@@ -129,6 +150,7 @@ impl Rewriter {
         mut body_sender: hyper::body::Sender,
         adblock_requester: AdblockRequester,
         statistics: Statistics,
+        csp_nonce: String,
     ) {
         while let Some((bytes, adblock_properties)) = receiver.recv().await {
             if let Err(_err) = body_sender.send_data(bytes).await {
@@ -163,7 +185,7 @@ impl Rewriter {
                 let mut to_append_to_response = format!(
                     r#"
 <!-- privaxy proxy -->
-<style>{hidden_selectors}
+<style nonce="{csp_nonce}">{hidden_selectors}
 {style_selectors}
 </style>
 <!-- privaxy proxy -->"#
@@ -175,13 +197,17 @@ impl Rewriter {
                         to_append_to_response,
                         r#"
 <!-- Privaxy proxy -->
-<script type="application/javascript">{}</script>
+<script type="application/javascript" nonce="{}">{}</script>
 <!-- privaxy proxy -->
 "#,
-                        injected_script
+                        csp_nonce, injected_script
                     )
                     .unwrap();
                 }
+
+                // The element handler above strips </body></html> so our injection
+                // lands inside <body>; put them back so the document is well-formed.
+                to_append_to_response.push_str("</body></html>");
 
                 if response_has_been_modified {
                     statistics.increment_modified_responses();
