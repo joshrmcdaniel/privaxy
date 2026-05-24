@@ -13,6 +13,7 @@ mod dashboard;
 mod filterlists;
 mod filters;
 mod general;
+mod pac;
 mod requests;
 mod save_button;
 mod settings;
