@@ -1,3 +1,4 @@
+use crate::account::AccountSettings;
 use crate::filters::Filters;
 use crate::general::GeneralSettings;
 use crate::set_title;
@@ -16,6 +17,8 @@ pub enum SettingsRoute {
     Exclusions,
     #[at("/settings/custom-filters")]
     CustomFilters,
+    #[at("/settings/account")]
+    Account,
 }
 
 pub fn switch_settings(route: &SettingsRoute) -> Html {
@@ -90,6 +93,11 @@ pub fn switch_settings(route: &SettingsRoute) -> Html {
 
             html! {<SettingsTextarea h1="Custom Filters" {description} input_name="custom_filters" {textarea_description} {resource_url} />}
         }
+        SettingsRoute::Account => {
+            set_title("Settings - Account");
+
+            html! { <AccountSettings /> }
+        }
     };
 
     html! {<div class="md:grid md:grid-cols-8">
@@ -98,6 +106,7 @@ pub fn switch_settings(route: &SettingsRoute) -> Html {
         <Link<SettingsRoute> classes={get_classes(*route, SettingsRoute::Filters)} to={SettingsRoute::Filters}> <span class="truncate">{ "Filters" }</span></Link<SettingsRoute>>
         <Link<SettingsRoute> classes={get_classes(*route, SettingsRoute::Exclusions)} to={SettingsRoute::Exclusions}> <span class="truncate">{ "Exclusions" }</span></Link<SettingsRoute>>
         <Link<SettingsRoute> classes={get_classes(*route, SettingsRoute::CustomFilters)} to={SettingsRoute::CustomFilters}> <span class="truncate">{ "Custom filters" }</span></Link<SettingsRoute>>
+        <Link<SettingsRoute> classes={get_classes(*route, SettingsRoute::Account)} to={SettingsRoute::Account}> <span class="truncate">{ "Account" }</span></Link<SettingsRoute>>
     </nav>
         <div class="container mx-auto px-4 sm:px-6 lg:px-8 mt-4 sm:col-span-6">{ content }</div>
     </div>
