@@ -15,6 +15,8 @@ pub use network::*;
 use std::env;
 use std::path::{Path, PathBuf};
 pub use updater::*;
+
+use crate::proxy::exclusions::recommended_exclusions;
 pub(crate) type ConfigurationResult<T> = Result<T, ConfigurationError>;
 pub(crate) const FILTERS_UPDATE_AFTER: Duration = Duration::from_secs(60 * 60 * 24); // 24h
 
@@ -295,7 +297,9 @@ impl Configuration {
                 pac_direct_cidrs: std::collections::BTreeMap::new(),
                 pac_direct_fqdns: Vec::new(),
             },
-            exclusions: BTreeSet::new(),
+            exclusions: BTreeSet::from_iter(
+                recommended_exclusions().iter().map(|entry| entry.to_string()),
+            ),
             custom_filters: Vec::new(),
             auth: Auth::new_initialized(),
         })

@@ -75,11 +75,16 @@ pub fn switch_settings(route: &SettingsRoute) -> Html {
                         {"Exclusions are hosts or domains that are not passed through the MITM pipeline. "}
                         {"Excluded entries will be transparently tunneled."}
                     </p>
+                    <p class="mt-2">
+                        {"Use "}<span class="font-medium">{"Reset to defaults"}</span>
+                        {" to populate the textarea with a list of commonly cert-pinned hosts. You can then edit it and click Save."}
+                    </p>
                 </div>
             };
             let textarea_description = "Insert one entry per line";
+            let defaults_url = Some("/api/exclusions/defaults".to_string());
 
-            html! {<SettingsTextarea h1="Exclusions" {description} input_name="exclusions" {textarea_description} {resource_url} />}
+            html! {<SettingsTextarea h1="Exclusions" {description} input_name="exclusions" {textarea_description} {resource_url} {defaults_url} />}
         }
         SettingsRoute::CustomFilters => {
             set_title("Settings - Custom Filters");
