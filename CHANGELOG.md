@@ -10,6 +10,7 @@
 - PAC file generation
 - Updated uBlock assets
 - Refresh filters once a day
+- Fix(?) memory leak
 
 ## v0.6.0
 
