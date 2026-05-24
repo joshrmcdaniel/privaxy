@@ -282,7 +282,7 @@ impl Configuration {
                 ca_private_key_path: None,
             },
             network: NetworkConfig {
-                bind_addr: "127.0.0.1".to_string(),
+                bind_addr: "0.0.0.0".to_string(),
                 proxy_port: 8100,
                 web_port: 8200,
                 tls: false,
