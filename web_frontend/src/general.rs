@@ -33,6 +33,8 @@ pub enum Message {
     UploadCaKey(web_sys::File),
     ValidateCertificates,
     ValidationFailed(String),
+    ValidationSucceeded,
+    CaSaveSuccess,
     UpdateTls(bool),
     SaveSuccess,
     SaveFailed(ApiError),
@@ -63,6 +65,42 @@ struct CaConfig {
     ca_cert_pem: String,
     ca_cert_error: Option<String>,
     private_key_error: Option<String>,
+    dirty: bool,
+}
+
+#[derive(Serialize)]
+struct CaPayload<'a> {
+    ca_certificate: &'a str,
+    ca_private_key: &'a str,
+}
+
+async fn save_ca_certificate(cert_pem: &str, key_pem: &str) -> Result<(), ApiError> {
+    let body = serde_json::to_string(&CaPayload {
+        ca_certificate: cert_pem,
+        ca_private_key: key_pem,
+    })
+    .unwrap();
+    let req = reqwasm::http::Request::put("/api/settings/ca-certificate")
+        .body(body)
+        .header("Content-Type", "application/json");
+    match req.send().await {
+        Ok(resp) => {
+            if resp.ok() {
+                Ok(())
+            } else {
+                log::error!("Failed to save CA certificate");
+                Err(resp.json::<ApiError>().await.unwrap_or_else(|_| ApiError {
+                    error: format!("Failed to save CA certificate (HTTP {})", resp.status()),
+                }))
+            }
+        }
+        Err(err) => {
+            log::error!("{}", err);
+            Err(ApiError {
+                error: format!("{:?}", err),
+            })
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -145,13 +183,22 @@ impl GeneralSettings {
                 network_settings.current_config != network_settings.remote_config
             }
         };
-        net_changed
+        net_changed || self.ca_config.dirty
     }
     fn validate(&self) -> bool {
-        match &self.network_settings {
-            None => false,
+        let network_valid = match &self.network_settings {
+            None => return false,
             Some(network_settings) => network_settings.validate(),
-        }
+        };
+        let ca_valid = if self.ca_config.dirty {
+            !self.ca_config.ca_cert_pem.is_empty()
+                && !self.ca_config.private_key_pem.is_empty()
+                && self.ca_config.ca_cert_error.is_none()
+                && self.ca_config.private_key_error.is_none()
+        } else {
+            true
+        };
+        network_valid && ca_valid
     }
 }
 
@@ -168,6 +215,7 @@ impl Component for GeneralSettings {
                 ca_cert_pem: String::new(),
                 ca_cert_error: None,
                 private_key_error: None,
+                dirty: false,
             },
             network_settings: None,
             loading: true,
@@ -208,6 +256,7 @@ impl Component for GeneralSettings {
             Message::Save => {
                 let link = ctx.link().clone();
                 let network_settings = self.network_settings.clone();
+                let ca_config = self.ca_config.clone();
                 spawn_local(async move {
                     if let Some(mut network_settings) = network_settings {
                         if network_settings.config_has_changed() {
@@ -227,6 +276,21 @@ impl Component for GeneralSettings {
                             link.send_message(Message::NetworkLoadSuccess(
                                 network_settings.remote_config,
                             ));
+                        }
+                    }
+                    if ca_config.dirty {
+                        match save_ca_certificate(
+                            &ca_config.ca_cert_pem,
+                            &ca_config.private_key_pem,
+                        )
+                        .await
+                        {
+                            Ok(_) => link.send_message(Message::CaSaveSuccess),
+                            Err(err) => {
+                                log::error!("Failed to save CA certificate: {:?}", err);
+                                link.send_message(Message::SaveFailed(err));
+                                return;
+                            }
                         }
                     }
                     link.send_message(Message::SaveSuccess);
@@ -308,14 +372,18 @@ impl Component for GeneralSettings {
                 }
             }
             Message::UpdateCaCert(value) => {
-                let link = ctx.link().clone();
-                link.send_message(Message::ValidateCertificates);
                 self.ca_config.ca_cert_pem = value;
+                self.ca_config.dirty = true;
+                self.ca_config.ca_cert_error = None;
+                self.ca_config.private_key_error = None;
+                ctx.link().send_message(Message::ValidateCertificates);
             }
             Message::UpdateCaKey(value) => {
-                let link = ctx.link().clone();
-                link.send_message(Message::ValidateCertificates);
                 self.ca_config.private_key_pem = value;
+                self.ca_config.dirty = true;
+                self.ca_config.ca_cert_error = None;
+                self.ca_config.private_key_error = None;
+                ctx.link().send_message(Message::ValidateCertificates);
             }
             Message::UploadCaCert(file) => {
                 let link = ctx.link().clone();
@@ -340,6 +408,11 @@ impl Component for GeneralSettings {
             Message::ValidateCertificates => {
                 let cert_pem = self.ca_config.ca_cert_pem.clone();
                 let key_pem = self.ca_config.private_key_pem.clone();
+                if cert_pem.is_empty() || key_pem.is_empty() {
+                    self.ca_config.ca_cert_error = None;
+                    self.ca_config.private_key_error = None;
+                    return true;
+                }
                 let link = ctx.link().clone();
                 spawn_local(async move {
                     match validateCertificate(&cert_pem, &key_pem).await {
@@ -349,8 +422,12 @@ impl Component for GeneralSettings {
                                     &result,
                                 )
                                 .unwrap();
-                            if !result.valid {
-                                link.send_message(Message::ValidationFailed(result.error.unwrap()));
+                            if result.valid {
+                                link.send_message(Message::ValidationSucceeded);
+                            } else {
+                                link.send_message(Message::ValidationFailed(
+                                    result.error.unwrap_or_default(),
+                                ));
                             }
                         }
                         Err(err) => {
@@ -364,6 +441,13 @@ impl Component for GeneralSettings {
                 log::error!("{}", err);
                 self.ca_config.private_key_error = Some(err.clone());
                 self.ca_config.ca_cert_error = Some(err);
+            }
+            Message::ValidationSucceeded => {
+                self.ca_config.ca_cert_error = None;
+                self.ca_config.private_key_error = None;
+            }
+            Message::CaSaveSuccess => {
+                self.ca_config.dirty = false;
             }
         }
         true

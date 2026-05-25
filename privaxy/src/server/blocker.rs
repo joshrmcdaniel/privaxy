@@ -1,5 +1,5 @@
 use crate::blocker_utils::{
-    build_resource_from_file_contents, read_redirectable_resource_mapping, read_template_resources,
+    build_resource_from_file_contents, read_redirectable_resource_mapping,
 };
 use adblock::blocker::BlockerResult as AdblockerBlockerResult;
 use adblock::lists::FilterSet;
@@ -75,8 +75,15 @@ pub struct Blocker {
 
 lazy_static! {
     static ref ADBLOCKING_RESOURCES: Vec<Resource> = {
-        let mut resources =
-            read_template_resources(include_str!("../resources/vendor/ublock/scriptlets.js"));
+        // uBO's modern `scriptlets.js` is preprocessed at build time into the
+        // adblock-rust Resource JSON schema (see build.rs / build-scriptlets.mjs).
+        // The legacy `/// name`-header parser in `blocker_utils` no longer
+        // matches the upstream format and would yield an empty list.
+        let mut resources: Vec<Resource> = serde_json::from_str(include_str!(concat!(
+            env!("OUT_DIR"),
+            "/scriptlets-resources.json"
+        )))
+        .expect("generated scriptlets-resources.json must be valid JSON");
 
         static WEB_ACCESSIBLE_RESOURCES: Dir = include_dir!(
             "$CARGO_MANIFEST_DIR/src/resources/vendor/ublock/web_accessible_resources/"
@@ -104,10 +111,13 @@ impl Blocker {
         receiver: Receiver<BlockerRequest>,
         blocking_disabled: BlockingDisabledStore,
     ) -> Self {
+        // adblock 0.12 removed `Engine::new`; the empty-filterset constructor
+        // is the documented replacement. A `ReplaceEngine` request swaps this
+        // out as soon as filters are loaded.
         Self {
             sender,
             receiver,
-            engine: Engine::new(true),
+            engine: Engine::from_filter_set(FilterSet::new(true), true),
             blocking_disabled,
         }
     }
@@ -150,12 +160,33 @@ impl Blocker {
                         None
                     };
 
+                    // adblock 0.12 replaced UrlSpecificResources::style_selectors
+                    // with `procedural_actions`, a HashSet of JSON-encoded
+                    // ProceduralOrActionFilter records. Re-derive the
+                    // (selector -> style) map from the ones that reduce to
+                    // pure CSS via `as_css()`; non-CSS procedural filters
+                    // (those needing in-page JS to apply) are dropped — the
+                    // proxy can't run JS-driven procedural matching.
+                    let mut style_selectors: HashMap<String, Vec<String>> = HashMap::new();
+                    for raw in url_specific_resources.procedural_actions.iter() {
+                        let Ok(filter) =
+                            serde_json::from_str::<
+                                adblock::cosmetic_filter_cache::ProceduralOrActionFilter,
+                            >(raw)
+                        else {
+                            continue;
+                        };
+                        if let Some((selector, style)) = filter.as_css() {
+                            style_selectors.entry(selector).or_default().push(style);
+                        }
+                    }
+
                     let _ =
                         request
                             .respond_to
                             .send(BlockerResult::Cosmetic(CosmeticBlockerResult {
                                 hidden_selectors,
-                                style_selectors: url_specific_resources.style_selectors,
+                                style_selectors,
                                 injected_script,
                             }));
                 }

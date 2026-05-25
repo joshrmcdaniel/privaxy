@@ -14,6 +14,10 @@ pub struct Props {
     pub input_name: String,
     pub textarea_description: String,
     pub resource_url: String,
+    #[prop_or_default]
+    pub defaults_url: Option<String>,
+    #[prop_or_default]
+    pub defaults_button_label: Option<String>,
 }
 
 pub struct SettingsTextarea {
@@ -30,6 +34,7 @@ pub enum Message {
     Save,
     Saved,
     AckChanges,
+    LoadDefaults,
 }
 
 impl Component for SettingsTextarea {
@@ -102,6 +107,24 @@ impl Component for SettingsTextarea {
             Message::UpdatePreviousInputData => {
                 self.previous_input_data = self.input_data.clone();
             }
+            Message::LoadDefaults => {
+                let Some(defaults_url) = ctx.props().defaults_url.clone() else {
+                    return false;
+                };
+
+                let request = Request::get(&defaults_url);
+                let message_callback = ctx.link().callback(|message: Message| message);
+
+                spawn_local(async move {
+                    if let Ok(response) = request.send().await {
+                        if response.ok() {
+                            if let Ok(response_content) = response.json::<String>().await {
+                                message_callback.emit(Message::UpdateInput(response_content));
+                            };
+                        }
+                    }
+                });
+            }
         }
         true
     }
@@ -153,6 +176,25 @@ impl Component for SettingsTextarea {
 
         let props = ctx.props();
 
+        let defaults_button = if props.defaults_url.is_some() {
+            let on_defaults_click = ctx.link().callback(|_| Message::LoadDefaults);
+            let label = props
+                .defaults_button_label
+                .clone()
+                .unwrap_or_else(|| "Reset to defaults".to_string());
+            html! {
+                <button onclick={on_defaults_click} type="button"
+                    class="ml-2 mt-5 inline-flex items-center justify-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md shadow-sm text-gray-700 bg-white hover:bg-gray-50 transition ease-in-out duration-150 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-gray-100 focus:ring-blue-500">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="-ml-0.5 mr-2 h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                    </svg>
+                    {label}
+                </button>
+            }
+        } else {
+            html! {}
+        };
+
         html! {
             <>
             <div class="pt-1.5 mb-4">
@@ -168,7 +210,10 @@ impl Component for SettingsTextarea {
                     <textarea {oninput} value={self.input_data.clone()} rows="8" name={props.input_name.clone()} id={props.input_name.clone()} class="shadow-sm focus:ring-blue-500 focus:border-blue-500 block w-full sm:text-sm border-gray-300 rounded-md"></textarea>
                 </div>
             </div>
-            <save_button::SaveButton state={button_state} {onclick} />
+            <div class="flex items-center">
+                <save_button::SaveButton state={button_state} {onclick} />
+                {defaults_button}
+            </div>
             </>
         }
     }

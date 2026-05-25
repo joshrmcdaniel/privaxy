@@ -1,17 +1,12 @@
 [package]
 name = "privaxy"
 description = "Next generation tracker and advertisement blocker"
-version = "0.6.0"
+version = "0.7.0"
 edition = "2021"
 authors = [
   "Pierre Barre <pierre@barre.sh>",
   "Josh McDaniel <80354972+joshrmcdaniel@users.noreply.github.com>"
 ]
-
-[profile.release]
-lto = true
-codegen-units = 8
-opt-level = 3
 
 [package.metadata.deb]
 maintainer = "Josh McDaniel <80354972+joshrmcdaniel@users.noreply.github.com>"
@@ -38,17 +33,17 @@ serde_json = "1.0.89"
 toml = "0.8.13"
 serde = { version = "1.0.148", features = ["derive"] }
 tokio-util = { version = "0.7.4", features = ["full"] }
-adblock = { version = "0.8.9" }
+adblock = { version = "0.12.5" }
 openssl = { version = "0.10.43", features = ["vendored"] }
 include_dir = "0.7.3"
 chrono = { version = "0.4.23", features = ["serde"] }
-rustls = { version = "0.20.9" }
+rustls = { version = "0.21.12" }
 futures-util = "0.3.25"
 wildmatch = "2.1.1"
 http = "0.2.12"
 mime_guess = "2.0.4"
-tokio-rustls = "0.23.4"
-hyper-rustls = { version = "0.23.2", features = ["http1", "http2"] }
+tokio-rustls = "0.24.1"
+hyper-rustls = { version = "0.24.2", features = ["http1", "http2"] }
 log = "0.4.17"
 env_logger = "0.11.3"
 uluru = "3.0.0"
@@ -76,4 +71,7 @@ warp = { version = "0.3.7", features = ["tls"] }
 sha2 = "0.10.8"
 hex = "0.4.3"
 serde_with = "3.8.1"
+tera = { version = "1.20", default-features = false }
+argon2 = "0.5"
+hmac = "0.12"
 filterlists-api = { path = "../filterlists-api", features = ["reqwest"] }

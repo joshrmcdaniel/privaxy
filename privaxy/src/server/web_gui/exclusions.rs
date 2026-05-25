@@ -1,10 +1,18 @@
 use super::get_error_response;
-use crate::{configuration::Configuration, proxy::exclusions::LocalExclusionStore};
+use crate::{
+    configuration::Configuration,
+    proxy::exclusions::{recommended_exclusions, LocalExclusionStore},
+};
 use std::{convert::Infallible, sync::Arc};
 use tokio::sync::mpsc::Sender;
 use warp::filters::BoxedFilter;
 use warp::http::StatusCode;
 use warp::Filter as RouteFilter;
+
+async fn get_default_exclusions() -> Result<Box<dyn warp::Reply>, Infallible> {
+    let defaults = recommended_exclusions().join("\n");
+    Ok(Box::new(warp::reply::json(&defaults)))
+}
 
 async fn get_exclusions() -> Result<Box<dyn warp::Reply>, Infallible> {
     let configuration = match Configuration::read_from_home().await {
@@ -56,17 +64,26 @@ pub fn create_routes(
     configuration_save_lock: Arc<tokio::sync::Mutex<()>>,
     local_exclusions_store: LocalExclusionStore,
 ) -> BoxedFilter<(impl warp::Reply,)> {
-    warp::get()
-        .and_then(self::get_exclusions)
-        .or(warp::put()
-            .and(warp::body::json())
-            .and(super::with_configuration_updater_sender(
-                configuration_updater_sender.clone(),
-            ))
-            .and(super::with_configuration_save_lock(
-                configuration_save_lock.clone(),
-            ))
-            .and(super::with_local_exclusions_store(local_exclusions_store))
-            .and_then(self::put_exclusions))
-        .boxed()
+    let defaults_route = warp::path("defaults")
+        .and(warp::path::end())
+        .and(warp::get())
+        .and_then(self::get_default_exclusions);
+
+    let root_get = warp::path::end()
+        .and(warp::get())
+        .and_then(self::get_exclusions);
+
+    let root_put = warp::path::end()
+        .and(warp::put())
+        .and(warp::body::json())
+        .and(super::with_configuration_updater_sender(
+            configuration_updater_sender.clone(),
+        ))
+        .and(super::with_configuration_save_lock(
+            configuration_save_lock.clone(),
+        ))
+        .and(super::with_local_exclusions_store(local_exclusions_store))
+        .and_then(self::put_exclusions);
+
+    defaults_route.or(root_get).or(root_put).boxed()
 }

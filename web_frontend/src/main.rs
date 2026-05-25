@@ -1,14 +1,19 @@
+use reqwasm::http::Request;
 use serde::Deserialize;
+use wasm_bindgen_futures::spawn_local;
 use yew::functional::*;
 use yew::prelude::*;
 use yew_router::prelude::*;
 
+mod account;
+mod auth;
 mod blocking_enabled;
 mod button;
 mod dashboard;
 mod filterlists;
 mod filters;
 mod general;
+mod pac;
 mod requests;
 mod save_button;
 mod settings;
@@ -94,6 +99,7 @@ fn switch(route: &Route) -> Html {
                <Link<settings::SettingsRoute> classes={ get_classes(*route, Route::Settings) } to={settings::SettingsRoute::Filters}>{ "Settings" }</Link<settings::SettingsRoute>>
                </div>
           </div>
+          <LogoutButton />
         </div>
       </div>
     </nav> };
@@ -121,9 +127,33 @@ fn switch(route: &Route) -> Html {
 #[function_component(App)]
 fn app() -> Html {
     html! {
-        <BrowserRouter>
-            <Switch<Route> render={Switch::render(switch)} />
-        </BrowserRouter>
+        <auth::AuthGate>
+            <BrowserRouter>
+                <Switch<Route> render={Switch::render(switch)} />
+            </BrowserRouter>
+        </auth::AuthGate>
+    }
+}
+
+#[function_component(LogoutButton)]
+fn logout_button() -> Html {
+    let onclick = Callback::from(|_| {
+        spawn_local(async move {
+            let _ = Request::post("/api/auth/logout").send().await;
+            // Force a full reload so AuthGate re-evaluates status from
+            // scratch and the user lands on the login screen.
+            if let Some(window) = web_sys::window() {
+                let _ = window.location().reload();
+            }
+        });
+    });
+    html! {
+        <button
+            onclick={onclick}
+            class="text-gray-300 hover:bg-gray-700 hover:text-white px-3 py-2 rounded-md text-sm font-medium"
+            type="button">
+            { "Sign out" }
+        </button>
     }
 }
 

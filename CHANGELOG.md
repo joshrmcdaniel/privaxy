@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased
+
+- Built-in authentication for the web UI and API
+  - First-run setup page for choosing an admin username + password
+  - 30-day HMAC-signed session cookie
+  - `X-Api-Key` header for programmatic access; rotate from the Account settings page
+  - Recovery: delete `auth.password_hash` from the config and restart to re-trigger setup
+- PAC file generation
+- Updated uBlock assets
+- Scriptlet (`##+js(...)`) support repaired
+  - uBlock Origin's modern `scriptlets.js` (the `builtinScriptlets.push({...})` format) is now compiled at build time into the JSON `Resource` schema adblock-rust consumes, with each scriptlet's transitive dependencies inlined. The legacy `///`-header parser was silently producing zero scriptlets against the current upstream format.
+  - Scriptlets are now injected at the top of `<head>` instead of appended at end-of-body, so they execute before page scripts.
+- Bump `adblock` crate from 0.8.9 to 0.12.5
+  - Procedural cosmetic filters that reduce to pure CSS are still applied as styles; non-CSS procedural filters (those that need in-page JS) are dropped
+- Refresh filters once a day
+- Fix(?) memory leak
+- Inject into CSP-protected websites
+- Add docker compose example
+
 ## v0.6.0
 
 - Remove gui app

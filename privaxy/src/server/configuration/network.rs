@@ -1,6 +1,7 @@
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
+use std::collections::BTreeMap;
 use std::str::FromStr;
 use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
@@ -47,6 +48,24 @@ pub struct NetworkConfig {
     /// URL to listen on. Only used when TLS is enabled.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub listen_url: Option<String>,
+    /// Serve a proxy auto-config (PAC) file at `/proxy.pac`.
+    #[serde(default)]
+    pub pac_enabled: bool,
+    /// Host:port advertised to PAC clients. Falls back to
+    /// `{bind_addr}:{proxy_port}` when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pac_proxy_host: Option<String>,
+    /// Local IPs that should bypass the proxy (matched against
+    /// `myIpAddress()` in the PAC script).
+    #[serde(default)]
+    pub pac_direct_ips: Vec<String>,
+    /// Subnet → netmask pairs for IP-literal hosts that bypass the
+    /// proxy (rendered as `isInNet(host, subnet, netmask)`).
+    #[serde(default)]
+    pub pac_direct_cidrs: BTreeMap<String, String>,
+    /// FQDNs (and their subdomains) that bypass the proxy.
+    #[serde(default)]
+    pub pac_direct_fqdns: Vec<String>,
 }
 
 #[derive(Error, Debug)]
@@ -230,11 +249,28 @@ impl NetworkConfig {
         ca_cert: X509,
         ca_key: PKey<Private>,
     ) -> ConfigurationResult<X509> {
-        if let Ok(cert) = self.get_tls_cert().await {
-            Ok(cert)
-        } else {
-            self.gen_self_signed_tls_cert(ca_cert, ca_key).await
+        let Ok(cert) = self.get_tls_cert().await else {
+            return self.gen_self_signed_tls_cert(ca_cert, ca_key).await;
+        };
+
+        let renew_threshold = Asn1Time::days_from_now(30)?;
+        let needs_renewal = cert.not_after() <= &renew_threshold;
+        if !needs_renewal {
+            return Ok(cert);
         }
+
+        let ca_pubkey = ca_cert.public_key()?;
+        let signed_by_ca = cert.verify(&ca_pubkey).unwrap_or(false);
+        if !signed_by_ca {
+            log::warn!(
+                "TLS certificate is expiring or expired but is not signed by the Privaxy CA; \
+                 leaving it in place."
+            );
+            return Ok(cert);
+        }
+
+        log::info!("TLS certificate is expiring; regenerating from Privaxy CA.");
+        self.gen_self_signed_tls_cert(ca_cert, ca_key).await
     }
 
     pub(crate) fn parsed_ip_address(&self) -> IpAddr {

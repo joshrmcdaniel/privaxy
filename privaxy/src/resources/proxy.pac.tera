@@ -1,0 +1,32 @@
+function FindProxyForURL(url, host) {
+    if (!(url.startsWith("https:") || url.startsWith("http:"))) {
+        return "DIRECT";
+    }
+    host = host.toLowerCase();
+    if (isPlainHostName(host)) return "DIRECT";
+{%- if ips | length > 0 %}
+    var myIp = myIpAddress();
+    {%- for ip in ips %}
+    if (myIp === "{{ ip }}") return "DIRECT";
+    {%- endfor %}
+{%- endif %}
+{%- if cidrs | length > 0 %}
+    if (/^\d+\.\d+\.\d+\.\d+$/.test(host)) {
+    {%- for ip, netmask in cidrs %}
+        if (isInNet(host, "{{ ip }}", "{{ netmask }}")) return "DIRECT";
+    {%- endfor %}
+    }
+{%- endif %}
+{%- if fqdns | length > 0 %}
+    var directDomains = [
+    {%- for fqdn in fqdns %}
+        "{{ fqdn }}",
+    {%- endfor %}
+    ];
+    for (var i = 0; i < directDomains.length; i++) {
+        var d = directDomains[i];
+        if (host === d || dnsDomainIs(host, "." + d)) return "DIRECT";
+    }
+{%- endif %}
+    return "PROXY {{ proxy_host }}";
+}

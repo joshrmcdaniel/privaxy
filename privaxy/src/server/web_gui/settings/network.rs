@@ -39,6 +39,11 @@ impl Into<NetworkConfig> for NetworkConfigRequest {
             tls_cert_path: None,
             tls_key_path: None,
             listen_url: None,
+            pac_enabled: false,
+            pac_proxy_host: None,
+            pac_direct_ips: Vec::new(),
+            pac_direct_cidrs: std::collections::BTreeMap::new(),
+            pac_direct_fqdns: Vec::new(),
         }
     }
 }
@@ -76,6 +81,11 @@ async fn put_network_settings(
     net_cfg.tls_cert_path = current_cfg.tls_cert_path;
     net_cfg.tls_key_path = current_cfg.tls_key_path;
     net_cfg.listen_url = current_cfg.listen_url;
+    net_cfg.pac_enabled = current_cfg.pac_enabled;
+    net_cfg.pac_proxy_host = current_cfg.pac_proxy_host;
+    net_cfg.pac_direct_ips = current_cfg.pac_direct_ips;
+    net_cfg.pac_direct_cidrs = current_cfg.pac_direct_cidrs;
+    net_cfg.pac_direct_fqdns = current_cfg.pac_direct_fqdns;
     if let Err(err) = &net_cfg.validate().await {
         log::error!("Invalid network settings: {}", err);
         return Ok(Box::new(get_error_response(err)));

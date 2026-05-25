@@ -51,6 +51,9 @@ export default new Map([
     [ 'addthis_widget.js', {
         alias: 'addthis.com/addthis_widget.js',
     } ],
+    [ 'adthrive_abd.js', {
+        data: 'text',
+    } ],
     [ 'amazon_ads.js', {
         alias: 'amazon-adsystem.com/aax2/amzn_ads.js',
         data: 'text',
@@ -118,6 +121,9 @@ export default new Map([
     } ],
     [ 'nobab.js', {
         alias: [ 'bab-defuser.js', 'prevent-bab.js' ],
+        data: 'text',
+    } ],
+    [ 'nitropay_ads.js', {
         data: 'text',
     } ],
     [ 'nobab2.js', {
@@ -191,6 +197,9 @@ export default new Map([
     } ],
     [ 'window.open-defuser.js', {
         alias: 'nowoif.js',
+        data: 'text',
+    } ],
+    [ 'sensors-analytics.js', {
         data: 'text',
     } ],
 ]);

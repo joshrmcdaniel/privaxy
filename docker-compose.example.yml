@@ -1,0 +1,10 @@
+services:
+  privaxy:
+    image: ghcr.io/joshrmcdaniel/privaxy
+    ports:
+      - "8100:8100"
+      - "8200:8200"
+    volumes:
+      - ./conf:/conf
+    restart: unless-stopped
+      

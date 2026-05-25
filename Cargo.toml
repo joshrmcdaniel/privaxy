@@ -1,5 +1,6 @@
 [workspace]
 members = ["web_frontend", "privaxy"]
+resolver = "2"
 
 [profile.release]
 lto = true

@@ -160,13 +160,13 @@ impl DefaultFilters {
     fn get_malware_filters() -> Vec<DefaultFilter> {
         vec![
             (
-                "https://curben.gitlab.io/malware-filter/phishing-filter.txt",
+                "https://malware-filter.gitlab.io/malware-filter/phishing-filter.txt",
                 "Phishing URL Blocklist",
                 FilterGroup::Malware,
                 false,
             ),
             (
-                "https://curben.gitlab.io/malware-filter/pup-filter.txt",
+                "https://malware-filter.gitlab.io/pup-filter/pup-filter.txt",
                 "PUP Domains Blocklist",
                 FilterGroup::Malware,
                 false,
@@ -311,9 +311,10 @@ pub(crate) async fn get_filter(
         let content = response.text().await?;
         Ok(content)
     } else {
-        log::error!("Failed to fetch filter content: {}", response.status());
+        log::error!("Failed to fetch filter content for {}: {}", filter.title, response.status());
         Err(super::ConfigurationError::FilterError(format!(
-            "Failed to fetch filter content: {}",
+            "Failed to fetch filter content for {}: {}",
+            filter.title,
             response.status()
         )))
     }

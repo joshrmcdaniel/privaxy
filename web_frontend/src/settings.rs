@@ -1,5 +1,7 @@
+use crate::account::AccountSettings;
 use crate::filters::Filters;
 use crate::general::GeneralSettings;
+use crate::pac::PacSettingsPage;
 use crate::set_title;
 use crate::settings_textarea::SettingsTextarea;
 use yew::prelude::*;
@@ -16,6 +18,10 @@ pub enum SettingsRoute {
     Exclusions,
     #[at("/settings/custom-filters")]
     CustomFilters,
+    #[at("/settings/pac")]
+    Pac,
+    #[at("/settings/account")]
+    Account,
 }
 
 pub fn switch_settings(route: &SettingsRoute) -> Html {
@@ -69,11 +75,16 @@ pub fn switch_settings(route: &SettingsRoute) -> Html {
                         {"Exclusions are hosts or domains that are not passed through the MITM pipeline. "}
                         {"Excluded entries will be transparently tunneled."}
                     </p>
+                    <p class="mt-2">
+                        {"Use "}<span class="font-medium">{"Reset to defaults"}</span>
+                        {" to populate the textarea with a list of commonly cert-pinned hosts. You can then edit it and click Save."}
+                    </p>
                 </div>
             };
             let textarea_description = "Insert one entry per line";
+            let defaults_url = Some("/api/exclusions/defaults".to_string());
 
-            html! {<SettingsTextarea h1="Exclusions" {description} input_name="exclusions" {textarea_description} {resource_url} />}
+            html! {<SettingsTextarea h1="Exclusions" {description} input_name="exclusions" {textarea_description} {resource_url} {defaults_url} />}
         }
         SettingsRoute::CustomFilters => {
             set_title("Settings - Custom Filters");
@@ -90,6 +101,16 @@ pub fn switch_settings(route: &SettingsRoute) -> Html {
 
             html! {<SettingsTextarea h1="Custom Filters" {description} input_name="custom_filters" {textarea_description} {resource_url} />}
         }
+        SettingsRoute::Pac => {
+            set_title("Settings - PAC");
+
+            html! { <PacSettingsPage /> }
+        }
+        SettingsRoute::Account => {
+            set_title("Settings - Account");
+
+            html! { <AccountSettings /> }
+        }
     };
 
     html! {<div class="md:grid md:grid-cols-8">
@@ -98,6 +119,8 @@ pub fn switch_settings(route: &SettingsRoute) -> Html {
         <Link<SettingsRoute> classes={get_classes(*route, SettingsRoute::Filters)} to={SettingsRoute::Filters}> <span class="truncate">{ "Filters" }</span></Link<SettingsRoute>>
         <Link<SettingsRoute> classes={get_classes(*route, SettingsRoute::Exclusions)} to={SettingsRoute::Exclusions}> <span class="truncate">{ "Exclusions" }</span></Link<SettingsRoute>>
         <Link<SettingsRoute> classes={get_classes(*route, SettingsRoute::CustomFilters)} to={SettingsRoute::CustomFilters}> <span class="truncate">{ "Custom filters" }</span></Link<SettingsRoute>>
+        <Link<SettingsRoute> classes={get_classes(*route, SettingsRoute::Pac)} to={SettingsRoute::Pac}> <span class="truncate">{ "PAC" }</span></Link<SettingsRoute>>
+        <Link<SettingsRoute> classes={get_classes(*route, SettingsRoute::Account)} to={SettingsRoute::Account}> <span class="truncate">{ "Account" }</span></Link<SettingsRoute>>
     </nav>
         <div class="container mx-auto px-4 sm:px-6 lg:px-8 mt-4 sm:col-span-6">{ content }</div>
     </div>
