@@ -18,7 +18,7 @@ log = "0.4.17"
 wasm-logger = "0.2.0"
 gloo-timers = { version = "0.2.4", features = ["futures"] }
 serde-tuple-vec-map = "1.0.1"
-web-sys = { version = "0.3.69", features = ["InputEvent",  "InputEventInit", "HtmlSelectElement", "Window", "Location", "Clipboard", "Navigator", "SubmitEvent"]}
+web-sys = { version = "0.3.69", features = ["InputEvent",  "InputEventInit", "HtmlSelectElement", "Window", "Location", "Clipboard", "Navigator", "SubmitEvent", "KeyboardEvent"]}
 reqwasm = "0.5.0"
 serde_with = "3.8.1"
 url = "2.5.0"
