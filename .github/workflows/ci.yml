@@ -25,11 +25,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - uses: actions-rs/toolchain@v1
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: nightly
           components: clippy
-          override: true
 
       - name: Cache cargo + target
         uses: actions/cache@v4
@@ -62,12 +60,9 @@ jobs:
         uses: actions/checkout@v1
 
       - name: Install rust
-        uses: actions-rs/toolchain@v1
+        uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: stable
           components: rustfmt
-          profile: minimal
-          override: true
 
       - name: Run cargo fmt
         uses: actions-rs/cargo@v1
@@ -85,7 +80,7 @@ jobs:
         id: vars
         run: |
           rel="${GITHUB_REF#refs/*/}"
-          if grep -qE '^\d+\.\d+\.\d+' <<< "$rel" ; then
+          if grep -qE '^v?\d+\.\d+\.\d+' <<< "$rel" ; then
             tag="$rel"
           elif [ "$rel" = "main" ]; then
             tag="dev"
@@ -229,12 +224,9 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install rust
-        uses: actions-rs/toolchain@v1
+        uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: stable
-          profile: minimal
-          override: true
-          target: wasm32-unknown-unknown
+          toolchain: wasm32-unknown-unknown
 
       - name: Cache cargo + wasm target
         uses: Swatinem/rust-cache@v2
@@ -328,7 +320,7 @@ jobs:
       - name: Install rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: ${{ matrix.rust }}
+          toolchain: ${{ matrix.target }}
 
       - name: Install cross build dependencies
         if: matrix.target == 'aarch64-unknown-linux-gnu'
