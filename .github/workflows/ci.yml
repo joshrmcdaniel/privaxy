@@ -18,20 +18,16 @@ permissions:
 jobs:
   clippy_check:
     name: Run clippy check
+    needs: [build_frontend]
     runs-on: ubuntu-latest
     continue-on-error: true
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - uses: actions-rs/toolchain@v1
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: nightly
           components: clippy
-          override: true
-
-      - name: Install webassembly rust target
-        run: rustup target add wasm32-unknown-unknown
 
       - name: Cache cargo + target
         uses: actions/cache@v4
@@ -44,25 +40,13 @@ jobs:
             ~/.cargo/git
             ./target
 
-      - name: Install trunk
-        uses: actions-rs/cargo@v1
-        with:
-          command: install
-          args: --locked --debug trunk
-
-      # Required for tailwindcss
-      - name: Install node
-        uses: actions/setup-node@v3
-        with:
-          node-version: 24
-      - name: Install node packages
-        working-directory: ./web_frontend
-        run: npm i
-
       # Frontend dist/ must exist for the server's include_dir! to compile.
-      - name: Build web frontend
-        run: trunk build
-        working-directory: ./web_frontend
+      # Reuses the artifact produced by the `build_frontend` job.
+      - name: Download prebuilt web frontend
+        uses: actions/download-artifact@v4
+        with:
+          name: web_frontend-dist
+          path: web_frontend/dist
 
       - name: Run clippy
         run: cargo clippy --all-targets -- -D warnings
@@ -76,12 +60,9 @@ jobs:
         uses: actions/checkout@v1
 
       - name: Install rust
-        uses: actions-rs/toolchain@v1
+        uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: stable
           components: rustfmt
-          profile: minimal
-          override: true
 
       - name: Run cargo fmt
         uses: actions-rs/cargo@v1
@@ -99,7 +80,7 @@ jobs:
         id: vars
         run: |
           rel="${GITHUB_REF#refs/*/}"
-          if grep -qE '^\d+\.\d+\.\d+' <<< "$rel" ; then
+          if grep -qE '^v?\d+\.\d+\.\d+' <<< "$rel" ; then
             tag="$rel"
           elif [ "$rel" = "main" ]; then
             tag="dev"
@@ -230,9 +211,80 @@ jobs:
           IMAGE_NAME: ${{ needs.image_meta.outputs.image_name }}
           IMAGE_TAG: ${{ needs.image_meta.outputs.image_tag }}
         run: docker buildx imagetools inspect "${IMAGE_NAME}:${IMAGE_TAG}"
+  # Builds the Yew/WASM frontend once and uploads `web_frontend/dist/` as an
+  # artifact. Every downstream Rust build job downloads it and places it back
+  # at `web_frontend/dist/` so the server's `include_dir!` can pick it up.
+  # The frontend output is platform-agnostic
+  build_frontend:
+    name: Build web frontend
+    needs: [rustfmt]
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache cargo + wasm target
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: web_frontend -> target
+          shared-key: build-frontend
+
+      - name: Install node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web_frontend/package-lock.json
+      - name: Install node packages
+        working-directory: ./web_frontend
+        run: npm ci
+
+      - name: Install trunk
+        uses: taiki-e/install-action@v2
+        with:
+          tool: trunk
+
+      - name: Build web frontend
+        run: trunk build --release
+        working-directory: ./web_frontend
+
+      # Preprocess uBlock scriptlets into the JSON form expected by adblock-rust.
+      # This is normally done by privaxy/build.rs via Node, but the cross-rs
+      # containers used by the MIPS jobs don't have Node. Running it here lets
+      # downstream jobs skip Node entirely — build.rs picks up the file from
+      # privaxy/prebuilt/ if present.
+      - name: Preprocess uBlock scriptlets
+        working-directory: ./privaxy
+        run: |
+          mkdir -p prebuilt
+          node build-scriptlets.mjs \
+            src/resources/vendor/ublock/scriptlets.js \
+            prebuilt/scriptlets-resources.json
+
+      - name: Upload web_frontend/dist
+        uses: actions/upload-artifact@v4
+        with:
+          name: web_frontend-dist
+          path: web_frontend/dist
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Upload prebuilt scriptlets resource
+        uses: actions/upload-artifact@v4
+        with:
+          name: scriptlets-resources
+          path: privaxy/prebuilt/scriptlets-resources.json
+          if-no-files-found: error
+          retention-days: 1
+
   ci:
     name: Build
-    needs: [rustfmt]
+    needs: [rustfmt, build_frontend]
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
@@ -266,35 +318,29 @@ jobs:
             ~/.cargo
 
       - name: Install rust
-        uses: actions-rs/toolchain@v1
+        uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: ${{ matrix.rust }}
-          profile: minimal
-          override: true
+          targets: ${{ matrix.target }}
 
-      - name: Install rust target
-        run: rustup target add ${{ matrix.target }}
       - name: Install cross build dependencies
         if: matrix.target == 'aarch64-unknown-linux-gnu'
         run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu libc6-dev-arm64-cross
       - name: Install musl build dependencies
         if: endsWith(matrix.target, '-musl')
         run: sudo apt-get update && sudo apt-get install -y musl-tools musl-dev
-      - name: Install node
-        uses: actions/setup-node@v3
+
+      - name: Download prebuilt web frontend
+        uses: actions/download-artifact@v4
         with:
-          node-version: 24
-      - name: Install node packages
-        working-directory: ./web_frontend
-        run: npm i
-      - name: Install trunk
-        uses: actions-rs/cargo@v1
+          name: web_frontend-dist
+          path: web_frontend/dist
+
+      - name: Download prebuilt scriptlets resource
+        uses: actions/download-artifact@v4
         with:
-          command: install
-          args: --locked --debug trunk
-      - name: Build web frontend
-        run: rustup target add wasm32-unknown-unknown && trunk build --release
-        working-directory: ./web_frontend
+          name: scriptlets-resources
+          path: privaxy/prebuilt
+
       - name: Build server
         uses: actions-rs/cargo@v1
         env:
@@ -319,6 +365,80 @@ jobs:
         with:
           name: privaxy-rpm-${{ matrix.target }}
           path: target/${{ matrix.target }}/release/*.rpm
+      - uses: actions/upload-artifact@v4
+        with:
+          name: privaxy-${{ matrix.target }}
+          path: |
+            target/${{ matrix.target }}/release/privaxy
+
+  # MIPS targets are tier-3 in rustc as of 1.72
+  ci_mips:
+    name: Build (MIPS)
+    needs: [rustfmt, build_frontend]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - build: linux
+            os: ubuntu-22.04
+            target: mipsel-unknown-linux-gnu
+          - build: linux
+            os: ubuntu-22.04
+            target: mipsel-unknown-linux-musl
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Cache build artifacts
+        uses: actions/cache@v3
+        with:
+          key:  ${{ matrix.os }}-${{ matrix.target }}-artifacts
+          path: |
+            ./target
+            ~/.cargo
+
+      - name: Install rust
+        uses: dtolnay/rust-toolchain@nightly
+
+      - name: Install cross
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cross
+
+      - name: Download prebuilt web frontend
+        uses: actions/download-artifact@v4
+        with:
+          name: web_frontend-dist
+          path: web_frontend/dist
+
+      - name: Download prebuilt scriptlets resource
+        uses: actions/download-artifact@v4
+        with:
+          name: scriptlets-resources
+          path: privaxy/prebuilt
+
+      - name: Build server
+        run: cross build --release --target ${{ matrix.target }} --bin privaxy --target-dir target
+
+      - name: Build packages
+        if: matrix.target == 'mipsel-unknown-linux-gnu'
+        run: |
+          cargo install cargo-deb && cargo deb --no-build --no-strip --variant mipsel -p privaxy --target ${{ matrix.target }} -o target/${{ matrix.target }}/release
+          cargo install cargo-generate-rpm && cargo generate-rpm -p privaxy --target ${{ matrix.target }} -o target/${{ matrix.target }}/release
+
+      - uses: actions/upload-artifact@v4
+        if: matrix.target == 'mipsel-unknown-linux-gnu'
+        with:
+          name: privaxy-deb-${{ matrix.target }}
+          path: target/${{ matrix.target }}/release/privaxy_*.deb
+
+      - uses: actions/upload-artifact@v4
+        if: matrix.target == 'mipsel-unknown-linux-gnu'
+        with:
+          name: privaxy-rpm-${{ matrix.target }}
+          path: target/${{ matrix.target }}/release/*.rpm
+
       - uses: actions/upload-artifact@v4
         with:
           name: privaxy-${{ matrix.target }}
