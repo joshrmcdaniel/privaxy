@@ -249,11 +249,28 @@ impl NetworkConfig {
         ca_cert: X509,
         ca_key: PKey<Private>,
     ) -> ConfigurationResult<X509> {
-        if let Ok(cert) = self.get_tls_cert().await {
-            Ok(cert)
-        } else {
-            self.gen_self_signed_tls_cert(ca_cert, ca_key).await
+        let Ok(cert) = self.get_tls_cert().await else {
+            return self.gen_self_signed_tls_cert(ca_cert, ca_key).await;
+        };
+
+        let renew_threshold = Asn1Time::days_from_now(30)?;
+        let needs_renewal = cert.not_after() <= &renew_threshold;
+        if !needs_renewal {
+            return Ok(cert);
         }
+
+        let ca_pubkey = ca_cert.public_key()?;
+        let signed_by_ca = cert.verify(&ca_pubkey).unwrap_or(false);
+        if !signed_by_ca {
+            log::warn!(
+                "TLS certificate is expiring or expired but is not signed by the Privaxy CA; \
+                 leaving it in place."
+            );
+            return Ok(cert);
+        }
+
+        log::info!("TLS certificate is expiring; regenerating from Privaxy CA.");
+        self.gen_self_signed_tls_cert(ca_cert, ca_key).await
     }
 
     pub(crate) fn parsed_ip_address(&self) -> IpAddr {
