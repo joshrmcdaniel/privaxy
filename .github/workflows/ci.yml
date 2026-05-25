@@ -54,7 +54,7 @@ jobs:
       - name: Install node
         uses: actions/setup-node@v3
         with:
-          node-version: 18
+          node-version: 24
       - name: Install node packages
         working-directory: ./web_frontend
         run: npm i
@@ -154,6 +154,12 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Compute OCI labels
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ needs.image_meta.outputs.image_name }}
+
       - name: Build and push by digest
         id: build
         uses: docker/build-push-action@v6
@@ -164,6 +170,8 @@ jobs:
           build-args: |
             BUILD_MODE=prebuilt
             PREBUILT_BINARY=privaxy-prebuilt
+          labels: ${{ steps.meta.outputs.labels }}
+          annotations: ${{ steps.meta.outputs.annotations }}
           cache-from: type=gha,scope=${{ matrix.cache_scope }}
           cache-to: type=gha,mode=max,scope=${{ matrix.cache_scope }}
           outputs: type=image,name=${{ needs.image_meta.outputs.image_name }},push-by-digest=true,name-canonical=true,push=true
@@ -275,7 +283,7 @@ jobs:
       - name: Install node
         uses: actions/setup-node@v3
         with:
-          node-version: 18
+          node-version: 24
       - name: Install node packages
         working-directory: ./web_frontend
         run: npm i
