@@ -77,14 +77,6 @@ impl Component for SearchFilterList {
             SearchFilterMessage::Close => self.is_open = false,
             SearchFilterMessage::FilterChanged(query) => self.filter_query = query,
             SearchFilterMessage::AddFilter(filter) => {
-                let parsed_url =
-                    match Url::parse(&filter.primary_view_url.clone().unwrap_or_default()) {
-                        Ok(url) => url,
-                        Err(err) => {
-                            log::error!("Failed to parse URL: {}", err);
-                            return false;
-                        }
-                    };
                 let group: FilterGroup = self
                     .tags
                     .clone()
@@ -103,17 +95,23 @@ impl Component for SearchFilterList {
                     .next()
                     .unwrap_or(FilterGroup::Regional);
 
-                let request_body: AddFilterRequest =
-                    AddFilterRequest::new(filter.name.clone(), group, parsed_url);
-                let request = Request::post("/api/filters")
-                    .header("Content-Type", "application/json")
-                    .body(serde_json::to_string(&request_body).unwrap());
                 self.active_filters.push(Filter::new(
                     filter.name.clone(),
                     FilterGroup::Malware,
                     "".to_string(),
                 ));
+                let filter_name = filter.name.clone();
+                let filter_id = filter.id;
                 spawn_local(async move {
+                    let parsed_url = match resolve_primary_view_url(filter_id).await {
+                        Some(url) => url,
+                        None => return,
+                    };
+                    let request_body =
+                        AddFilterRequest::new(filter_name, group, parsed_url);
+                    let request = Request::post("/api/filters")
+                        .header("Content-Type", "application/json")
+                        .body(serde_json::to_string(&request_body).unwrap());
                     match request.send().await {
                         Ok(response) => {
                             if response.ok() {
@@ -129,19 +127,22 @@ impl Component for SearchFilterList {
                 })
             }
             SearchFilterMessage::RemoveFilter(filter) => {
-                let parsed_url = match Url::parse(&filter.primary_view_url.clone().unwrap()) {
-                    Ok(url) => url,
-                    Err(err) => {
-                        log::error!("Failed to parse URL: {}", err);
-                        return false;
-                    }
-                };
-                let request_body: AddFilterRequest =
-                    AddFilterRequest::new(filter.name.clone(), FilterGroup::Malware, parsed_url);
-                let request = Request::delete("/api/filters")
-                    .header("Content-Type", "application/json")
-                    .body(serde_json::to_string(&request_body).unwrap());
+                self.active_filters.retain(|f| f.title != filter.name);
+                let filter_name = filter.name.clone();
+                let filter_id = filter.id;
                 spawn_local(async move {
+                    let parsed_url = match resolve_primary_view_url(filter_id).await {
+                        Some(url) => url,
+                        None => return,
+                    };
+                    let request_body = AddFilterRequest::new(
+                        filter_name,
+                        FilterGroup::Malware,
+                        parsed_url,
+                    );
+                    let request = Request::delete("/api/filters")
+                        .header("Content-Type", "application/json")
+                        .body(serde_json::to_string(&request_body).unwrap());
                     match request.send().await {
                         Ok(response) => {
                             if response.ok() {
@@ -466,5 +467,60 @@ impl SearchFilterList {
             .map(|license| license.name.clone())
             .collect::<Vec<String>>()
             .join(", ")
+    }
+}
+
+async fn resolve_primary_view_url(filter_id: u32) -> Option<Url> {
+    let response = match Request::get(&format!("/api/filterlists/list/{}", filter_id))
+        .send()
+        .await
+    {
+        Ok(response) => response,
+        Err(err) => {
+            log::error!("Failed to fetch filter details for {}: {:?}", filter_id, err);
+            return None;
+        }
+    };
+    if !response.ok() {
+        log::error!(
+            "Failed to fetch filter details for {}: status {:?}",
+            filter_id,
+            response.status()
+        );
+        return None;
+    }
+    let details = match response.json::<filterlists_api::FilterDetails>().await {
+        Ok(details) => details,
+        Err(err) => {
+            log::error!(
+                "Failed to parse filter details for {}: {:?}",
+                filter_id,
+                err
+            );
+            return None;
+        }
+    };
+
+    let chosen = details
+        .view_urls
+        .iter()
+        .filter(|v| v.segment_number == 1)
+        .min_by_key(|v| v.primariness)
+        .or_else(|| details.view_urls.iter().min_by_key(|v| v.primariness));
+
+    let url_str = match chosen {
+        Some(view) => view.url.as_str(),
+        None => {
+            log::error!("Filter {} has no view URLs", filter_id);
+            return None;
+        }
+    };
+
+    match Url::parse(url_str) {
+        Ok(url) => Some(url),
+        Err(err) => {
+            log::error!("Failed to parse URL '{}': {}", url_str, err);
+            None
+        }
     }
 }

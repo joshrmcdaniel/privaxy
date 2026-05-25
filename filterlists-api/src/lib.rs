@@ -26,9 +26,9 @@ pub async fn get_filter_information(filter: FilterArgs) -> Result<FilterDetails,
 }
 
 #[cfg(any(feature = "reqwasm", feature = "reqwest"))]
-/// Gets the tags of the FilterLists.
-pub async fn get_syntaxes() -> Result<Vec<Filter>, FilterListError> {
-    _get::<Vec<Filter>>(&format!("{FILTERLISTS_API_URL}/syntaxes")).await
+/// Gets the syntaxes of the FilterLists.
+pub async fn get_syntaxes() -> Result<Vec<FilterListSyntax>, FilterListError> {
+    _get::<Vec<FilterListSyntax>>(&format!("{FILTERLISTS_API_URL}/syntaxes")).await
 }
 
 #[cfg(any(feature = "reqwasm", feature = "reqwest"))]

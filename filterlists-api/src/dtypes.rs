@@ -60,7 +60,7 @@ pub struct FilterLanguage {
     /// The unique ISO name
     pub name: String,
     /// The identifiers of the FilterLists targeted by this Language
-    pub filter_list_ids: Vec<u32>,
+    pub filter_list_ids: Option<Vec<u32>>,
 }
 
 #[derive(Serialize, Deserialize, PartialEq, Clone, Debug)]
@@ -72,48 +72,69 @@ pub struct FilterDetails {
     pub id: u32,
     /// The unique name in title case
     pub name: String,
+    #[serde(default)]
     /// The brief description in English (preferably quoted from the project).
-    pub description: String,
+    pub description: Option<String>,
     /// The identifier of the License under which this FilterList is released
     pub license_id: u32,
+    #[serde(default)]
     /// The identifiers of the Syntaxes implemented by this FilterList.
     pub syntax_ids: Vec<u32>,
+    #[serde(default)]
     /// The identifiers of the Languages targeted by this FilterList.
     pub language_ids: Vec<u32>,
+    #[serde(default)]
     /// The identifiers of the Tags applied to this FilterList.
     pub tag_ids: Vec<u32>,
+    #[serde(default)]
     /// The view URLs.
     pub view_urls: Vec<FilterViewURL>,
+    #[serde(default)]
     /// The URL of the homepage
-    pub home_url: String,
+    pub home_url: Option<String>,
+    #[serde(default)]
     /// The URL of the Tor / Onion page.
-    pub onion_url: String,
+    pub onion_url: Option<String>,
+    #[serde(default)]
     /// The URL of the policy/guidelines for the types of rules this FilterList includes.
-    pub policy_url: String,
+    pub policy_url: Option<String>,
+    #[serde(default)]
     /// The URL of the submission/contact form for adding rules to this FilterList.
-    pub submission_url: String,
+    pub submission_url: Option<String>,
+    #[serde(default)]
     /// The URL of the GitHub Issues page.
-    pub issues_url: String,
+    pub issues_url: Option<String>,
+    #[serde(default)]
     /// The URL of the forum page.
-    pub forum_url: String,
+    pub forum_url: Option<String>,
+    #[serde(default)]
     /// The URL of the chat room.
-    pub chat_url: String,
+    pub chat_url: Option<String>,
+    #[serde(default)]
     /// The email address at which the project can be contacted.
-    pub email_address: String,
+    pub email_address: Option<String>,
+    #[serde(default)]
     /// The URL at which donations to the project can be made.
-    pub donate_url: String,
+    pub donate_url: Option<String>,
+    #[serde(default)]
     /// The identifiers of the Maintainers of this FilterList.
     pub maintainer_ids: Vec<u32>,
+    #[serde(default)]
     /// The identifiers of the FilterLists from which this FilterList was forked.
     pub upstream_filter_list_ids: Vec<u32>,
+    #[serde(default)]
     /// The identifiers of the FilterLists that have been forked from this FilterList.
     pub fork_filter_list_ids: Vec<u32>,
+    #[serde(default)]
     /// The identifiers of the FilterLists that include this FilterList.
     pub included_in_filter_list_ids: Vec<u32>,
+    #[serde(default)]
     /// The identifiers of the FilterLists that this FilterList includes.
     pub includes_filter_list_ids: Vec<u32>,
+    #[serde(default)]
     /// The identifiers of the FilterLists that this FilterList depends upon.
     pub dependency_filter_list_ids: Vec<u32>,
+    #[serde(default)]
     /// The identifiers of the FilterLists dependent upon this FilterList.
     pub dependent_filter_list_ids: Vec<u32>,
 }
@@ -125,11 +146,14 @@ pub struct FilterSoftware {
     pub id: u32,
     pub name: String,
     #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
     pub home_url: Option<String>,
     #[serde(default)]
     pub download_url: Option<String>,
     pub supports_abp_url_scheme: bool,
-    pub syntax_ids: Vec<u32>,
+    #[serde(default)]
+    pub syntax_ids: Option<Vec<u32>>,
 }
 
 #[derive(Serialize, Deserialize, PartialEq, Clone)]
@@ -138,9 +162,14 @@ pub struct FilterSoftware {
 pub struct FilterListSyntax {
     pub id: u32,
     pub name: String,
-    pub url: String,
-    pub filter_list_ids: Vec<u32>,
-    pub software_ids: Vec<u32>,
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub filter_list_ids: Option<Vec<u32>>,
+    #[serde(default)]
+    pub software_ids: Option<Vec<u32>>,
 }
 
 #[derive(Serialize, Deserialize, PartialEq, Clone)]
@@ -154,17 +183,18 @@ pub struct FilterLicense {
     #[serde(default)]
     /// The URL of the license
     pub url: Option<String>,
-    #[serde(default)]
+    #[serde(default, rename = "permitsModification")]
     /// If the license permits modification
     pub permit_modifications: Option<bool>,
-    #[serde(default)]
+    #[serde(default, rename = "permitsDistribution")]
     /// If the license permits distribution
     pub permit_distribution: Option<bool>,
-    #[serde(default)]
+    #[serde(default, rename = "permitsCommercialUse")]
     /// If the license permits commercial use
     pub permit_commercial_use: Option<bool>,
+    #[serde(default)]
     /// The identifiers of the FilterLists released under this License.
-    pub filter_list_ids: Vec<u32>,
+    pub filter_list_ids: Option<Vec<u32>>,
 }
 
 #[derive(Serialize, Deserialize, PartialEq, Clone)]
@@ -173,7 +203,10 @@ pub struct FilterLicense {
 pub struct FilterTag {
     pub id: u32,
     pub name: String,
-    pub filter_list_ids: Vec<u32>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub filter_list_ids: Option<Vec<u32>>,
 }
 
 #[derive(Serialize, Deserialize, PartialEq, Clone, Debug, Error)]
@@ -193,8 +226,14 @@ pub struct FilterListAPIError {
 pub struct FilterMaintainer {
     pub id: u32,
     pub name: String,
-    pub url: String,
-    pub filter_list_ids: Vec<u32>,
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default)]
+    pub email_address: Option<String>,
+    #[serde(default)]
+    pub twitter_handle: Option<String>,
+    #[serde(default)]
+    pub filter_list_ids: Option<Vec<u32>>,
 }
 
 pub enum FilterArgs {
