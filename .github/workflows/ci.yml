@@ -432,7 +432,7 @@ jobs:
       - name: Build packages
         if: matrix.target == 'mipsel-unknown-linux-gnu'
         run: |
-          cargo install cargo-deb && cargo deb --no-build -p privaxy --target ${{ matrix.target }} -o target/${{ matrix.target }}/release
+          cargo install cargo-deb && cargo deb --no-build --no-strip --variant mipsel -p privaxy --target ${{ matrix.target }} -o target/${{ matrix.target }}/release
           cargo install cargo-generate-rpm && cargo generate-rpm -p privaxy --target ${{ matrix.target }} -o target/${{ matrix.target }}/release
 
       - uses: actions/upload-artifact@v4
