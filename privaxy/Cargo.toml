@@ -42,13 +42,13 @@ adblock = { version = "0.8.9" }
 openssl = { version = "0.10.43", features = ["vendored"] }
 include_dir = "0.7.3"
 chrono = { version = "0.4.23", features = ["serde"] }
-rustls = { version = "0.20.9" }
+rustls = { version = "0.21.12" }
 futures-util = "0.3.25"
 wildmatch = "2.1.1"
 http = "0.2.12"
 mime_guess = "2.0.4"
-tokio-rustls = "0.23.4"
-hyper-rustls = { version = "0.23.2", features = ["http1", "http2"] }
+tokio-rustls = "0.24.1"
+hyper-rustls = { version = "0.24.2", features = ["http1", "http2"] }
 log = "0.4.17"
 env_logger = "0.11.3"
 uluru = "3.0.0"
