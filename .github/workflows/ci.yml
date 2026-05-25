@@ -385,8 +385,6 @@ jobs:
 
       - name: Install rust
         uses: dtolnay/rust-toolchain@nightly
-        with:
-          targets: ${{ matrix.target }}
 
       - name: Install cross
         uses: taiki-e/install-action@v2
