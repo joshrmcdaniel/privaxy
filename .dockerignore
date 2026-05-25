@@ -8,3 +8,5 @@ README.md
 CHANGELOG.md
 .gitignore
 docker-compose.example.yml
+web_frontend/dist
+web_frontend/node_modules

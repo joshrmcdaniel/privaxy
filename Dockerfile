@@ -15,14 +15,15 @@
 #
 ARG BUILD_MODE=compile
 #
-FROM rust:1-bookworm AS compile-base
+FROM rust:1-trixie AS compile-base
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
+    && curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash \
     && apt-get install -qy --no-install-recommends \
-        nodejs pkg-config build-essential cmake clang libssl-dev \
+         nodejs pkg-config build-essential cmake clang libssl-dev \
     && rustup target add wasm32-unknown-unknown \
-    && cargo install trunk --locked
+    && cargo binstall trunk --locked && node -v
 
 FROM compile-base AS compile
 WORKDIR /app
@@ -47,19 +48,19 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     && chmod +x /privaxy-out
 
 # Prebuilt path: expect $PREBUILT_BINARY to exist in the build context.
-FROM debian:bookworm-slim AS prebuilt
+FROM debian:trixie-slim AS prebuilt
 ARG PREBUILT_BINARY=privaxy
 COPY ${PREBUILT_BINARY} /privaxy-out
 RUN chmod +x /privaxy-out
 
 FROM ${BUILD_MODE} AS source
 
-FROM debian:bookworm-slim AS confdir
+FROM debian:trixie-slim AS confdir
 ARG PRIVAXY_BASE_PATH="/conf"
 RUN mkdir -p "${PRIVAXY_BASE_PATH}"
 
 # --- Final image ---
-FROM gcr.io/distroless/cc-debian12:nonroot
+FROM gcr.io/distroless/cc-debian13:nonroot
 ARG PRIVAXY_BASE_PATH="/conf"
 ARG PRIVAXY_PROXY_PORT=8100
 ARG PRIVAXY_WEB_PORT=8200

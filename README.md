@@ -59,11 +59,19 @@ Privaxy is also way more capable than DNS-based blockers as it is able to operat
 
 ## Installation
 
-You can either utilize the docker image or the deb avaiable in releases.
+You can either utilize the docker image, binary, or the deb avaiable in releases.
 
 ### Debian/Ubuntu
 
 Download and install the .deb from the release
+
+### RHEL/Fedora/Rocky
+
+Download and install the .rpm from the release
+
+### MIPS
+
+Download and install the deb/rpm/binary with mips in the name
 
 ### Docker
 
