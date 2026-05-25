@@ -261,11 +261,32 @@ jobs:
         run: trunk build --release
         working-directory: ./web_frontend
 
+      # Preprocess uBlock scriptlets into the JSON form expected by adblock-rust.
+      # This is normally done by privaxy/build.rs via Node, but the cross-rs
+      # containers used by the MIPS jobs don't have Node. Running it here lets
+      # downstream jobs skip Node entirely — build.rs picks up the file from
+      # privaxy/prebuilt/ if present.
+      - name: Preprocess uBlock scriptlets
+        working-directory: ./privaxy
+        run: |
+          mkdir -p prebuilt
+          node build-scriptlets.mjs \
+            src/resources/vendor/ublock/scriptlets.js \
+            prebuilt/scriptlets-resources.json
+
       - name: Upload web_frontend/dist
         uses: actions/upload-artifact@v4
         with:
           name: web_frontend-dist
           path: web_frontend/dist
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Upload prebuilt scriptlets resource
+        uses: actions/upload-artifact@v4
+        with:
+          name: scriptlets-resources
+          path: privaxy/prebuilt/scriptlets-resources.json
           if-no-files-found: error
           retention-days: 1
 
@@ -325,6 +346,12 @@ jobs:
         with:
           name: web_frontend-dist
           path: web_frontend/dist
+
+      - name: Download prebuilt scriptlets resource
+        uses: actions/download-artifact@v4
+        with:
+          name: scriptlets-resources
+          path: privaxy/prebuilt
 
       - name: Build server
         uses: actions-rs/cargo@v1
@@ -396,6 +423,12 @@ jobs:
         with:
           name: web_frontend-dist
           path: web_frontend/dist
+
+      - name: Download prebuilt scriptlets resource
+        uses: actions/download-artifact@v4
+        with:
+          name: scriptlets-resources
+          path: privaxy/prebuilt
 
       - name: Build server
         run: cross build --release --target ${{ matrix.target }} --bin privaxy --target-dir target

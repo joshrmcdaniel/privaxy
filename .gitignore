@@ -1,6 +1,7 @@
 /target
 /data
 web_frontend/dist
+privaxy/prebuilt
 .DS_Store
 filters/__pycache__
 node_modules

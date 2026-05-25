@@ -11,6 +11,22 @@ fn main() {
     println!("cargo:rerun-if-changed={}", scriptlets_src.display());
     println!("cargo:rerun-if-changed={}", builder.display());
 
+    // Allow cross-compile environments without Node (e.g. the cross-rs MIPS
+    // container) to skip the Node preprocessing step by dropping a pre-built
+    // JSON at a known workspace-relative path. CI generates this artifact in
+    // the host-side build_frontend job and downloads it before cross-building.
+    let prebuilt = manifest_dir.join("prebuilt/scriptlets-resources.json");
+    println!("cargo:rerun-if-changed={}", prebuilt.display());
+    if prebuilt.exists() {
+        std::fs::copy(&prebuilt, &out_path).unwrap_or_else(|e| {
+            panic!(
+                "failed to copy prebuilt scriptlets from {}: {e}",
+                prebuilt.display()
+            )
+        });
+        return;
+    }
+
     let status = Command::new("node")
         .arg(&builder)
         .arg(&scriptlets_src)
