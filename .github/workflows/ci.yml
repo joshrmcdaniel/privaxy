@@ -7,6 +7,14 @@ on:
   pull_request:
     branches:
       - main 
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
 jobs:
   clippy_check:
     name: Run clippy check
@@ -106,6 +114,9 @@ jobs:
     name: Build docker image (${{ matrix.platform }})
     needs: [image_meta, ci]
     runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
     strategy:
       fail-fast: false
       matrix:
