@@ -186,6 +186,9 @@ jobs:
     name: Merge multi-arch manifest
     needs: [image_meta, image_build]
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
     steps:
       - name: Download digests
         uses: actions/download-artifact@v4
