@@ -234,23 +234,28 @@ jobs:
           toolchain: stable
           profile: minimal
           override: true
+          target: wasm32-unknown-unknown
 
-      - name: Install webassembly rust target
-        run: rustup target add wasm32-unknown-unknown
+      - name: Cache cargo + wasm target
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: web_frontend -> target
+          shared-key: build-frontend
 
       - name: Install node
-        uses: actions/setup-node@v3
+        uses: actions/setup-node@v4
         with:
           node-version: 24
+          cache: npm
+          cache-dependency-path: web_frontend/package-lock.json
       - name: Install node packages
         working-directory: ./web_frontend
-        run: npm i
+        run: npm ci
 
       - name: Install trunk
-        uses: actions-rs/cargo@v1
+        uses: taiki-e/install-action@v2
         with:
-          command: install
-          args: --locked --debug trunk
+          tool: trunk
 
       - name: Build web frontend
         run: trunk build --release
@@ -379,11 +384,9 @@ jobs:
             ~/.cargo
 
       - name: Install rust
-        uses: actions-rs/toolchain@v1
+        uses: dtolnay/rust-toolchain@nightly
         with:
-          toolchain: stable
-          profile: minimal
-          override: true
+          targets: ${{ matrix.target }}
 
       - name: Install cross
         uses: taiki-e/install-action@v2
