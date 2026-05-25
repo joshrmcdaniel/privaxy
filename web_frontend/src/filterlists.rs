@@ -107,8 +107,7 @@ impl Component for SearchFilterList {
                         Some(url) => url,
                         None => return,
                     };
-                    let request_body =
-                        AddFilterRequest::new(filter_name, group, parsed_url);
+                    let request_body = AddFilterRequest::new(filter_name, group, parsed_url);
                     let request = Request::post("/api/filters")
                         .header("Content-Type", "application/json")
                         .body(serde_json::to_string(&request_body).unwrap());
@@ -135,11 +134,8 @@ impl Component for SearchFilterList {
                         Some(url) => url,
                         None => return,
                     };
-                    let request_body = AddFilterRequest::new(
-                        filter_name,
-                        FilterGroup::Malware,
-                        parsed_url,
-                    );
+                    let request_body =
+                        AddFilterRequest::new(filter_name, FilterGroup::Malware, parsed_url);
                     let request = Request::delete("/api/filters")
                         .header("Content-Type", "application/json")
                         .body(serde_json::to_string(&request_body).unwrap());
@@ -531,7 +527,11 @@ async fn resolve_primary_view_url(filter_id: u32) -> Option<Url> {
     {
         Ok(response) => response,
         Err(err) => {
-            log::error!("Failed to fetch filter details for {}: {:?}", filter_id, err);
+            log::error!(
+                "Failed to fetch filter details for {}: {:?}",
+                filter_id,
+                err
+            );
             return None;
         }
     };
