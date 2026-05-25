@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1
 #
 # ---------------------------------------------------------------------------
 #
@@ -17,7 +18,7 @@ ARG BUILD_MODE=compile
 FROM rust:1-bookworm AS compile-base
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
-    curl -fsSL https://deb.nodesource.com/setup_23.x | bash - \
+    curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
     && apt-get install -qy --no-install-recommends \
         nodejs pkg-config build-essential cmake clang libssl-dev \
     && rustup target add wasm32-unknown-unknown \
