@@ -69,6 +69,27 @@ Download and install the .deb from the release
 
 `docker run -d --name privaxy --restart unless-stopped -p 8100:8100 -p 8200:8200 -v /path/to/conf:/conf privaxy:ghcr.io/joshrmcdaniel/privaxy:dev`
 
+### From source
+
+```sh
+# 1. Frontend 
+cd web_frontend
+npm i
+trunk build --release
+
+# 2. Backend
+cd ..
+cargo build --release
+```
+
+**The frontend must be built before the backend — the server embeds `web_frontend/dist/` via `include_dir!` and won't compile without it.**
+
+Build requirements:
+
+- Rust 1.87+
+- Node.js
+- Trunk
+
 ### Docker Compose
 
 
