@@ -1,4 +1,3 @@
-# syntax=docker/dockerfile:1
 #
 # ---------------------------------------------------------------------------
 #
@@ -54,6 +53,10 @@ RUN chmod +x /privaxy-out
 
 FROM ${BUILD_MODE} AS source
 
+FROM debian:bookworm-slim AS confdir
+ARG PRIVAXY_BASE_PATH="/conf"
+RUN mkdir -p "${PRIVAXY_BASE_PATH}"
+
 # --- Final image ---
 FROM gcr.io/distroless/cc-debian12:nonroot
 ARG PRIVAXY_BASE_PATH="/conf"
@@ -61,6 +64,7 @@ ARG PRIVAXY_PROXY_PORT=8100
 ARG PRIVAXY_WEB_PORT=8200
 ENV PRIVAXY_BASE_PATH="${PRIVAXY_BASE_PATH}"
 COPY --from=source /privaxy-out /app/privaxy
+COPY --from=confdir --chown=nonroot:nonroot ${PRIVAXY_BASE_PATH} ${PRIVAXY_BASE_PATH}
 VOLUME ["${PRIVAXY_BASE_PATH}"]
 EXPOSE ${PRIVAXY_PROXY_PORT} ${PRIVAXY_WEB_PORT}
 WORKDIR /app
