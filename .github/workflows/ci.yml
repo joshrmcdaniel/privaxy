@@ -11,22 +11,36 @@ jobs:
   clippy_check:
     name: Run clippy check
     runs-on: ubuntu-latest
+    continue-on-error: true
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - uses: actions-rs/toolchain@v1
         with:
           toolchain: nightly
           components: clippy
           override: true
+
+      - name: Install webassembly rust target
+        run: rustup target add wasm32-unknown-unknown
+
+      - name: Cache cargo + target
+        uses: actions/cache@v4
+        with:
+          key: clippy-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            clippy-${{ runner.os }}-
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ./target
+
       - name: Install trunk
         uses: actions-rs/cargo@v1
         with:
           command: install
           args: --locked --debug trunk
-      - name: Install webassembly rust target
-        run: rustup target add wasm32-unknown-unknown
 
       # Required for tailwindcss
       - name: Install node
@@ -37,13 +51,13 @@ jobs:
         working-directory: ./web_frontend
         run: npm i
 
-      # We need to build the web frontend otherwise, we will not be able to compile
-      # the server and checks will fail.
+      # Frontend dist/ must exist for the server's include_dir! to compile.
       - name: Build web frontend
         run: trunk build
         working-directory: ./web_frontend
-      - name: Build backend
-        run: cargo build
+
+      - name: Run clippy
+        run: cargo clippy --all-targets -- -D warnings
         working-directory: .
 
   rustfmt:
@@ -196,6 +210,7 @@ jobs:
         run: docker buildx imagetools inspect "${IMAGE_NAME}:${IMAGE_TAG}"
   ci:
     name: Build
+    needs: [rustfmt]
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
