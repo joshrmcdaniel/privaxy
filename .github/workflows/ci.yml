@@ -18,6 +18,7 @@ permissions:
 jobs:
   clippy_check:
     name: Run clippy check
+    needs: [build_frontend]
     runs-on: ubuntu-latest
     continue-on-error: true
     steps:
@@ -30,9 +31,6 @@ jobs:
           components: clippy
           override: true
 
-      - name: Install webassembly rust target
-        run: rustup target add wasm32-unknown-unknown
-
       - name: Cache cargo + target
         uses: actions/cache@v4
         with:
@@ -44,25 +42,13 @@ jobs:
             ~/.cargo/git
             ./target
 
-      - name: Install trunk
-        uses: actions-rs/cargo@v1
-        with:
-          command: install
-          args: --locked --debug trunk
-
-      # Required for tailwindcss
-      - name: Install node
-        uses: actions/setup-node@v3
-        with:
-          node-version: 24
-      - name: Install node packages
-        working-directory: ./web_frontend
-        run: npm i
-
       # Frontend dist/ must exist for the server's include_dir! to compile.
-      - name: Build web frontend
-        run: trunk build
-        working-directory: ./web_frontend
+      # Reuses the artifact produced by the `build_frontend` job.
+      - name: Download prebuilt web frontend
+        uses: actions/download-artifact@v4
+        with:
+          name: web_frontend-dist
+          path: web_frontend/dist
 
       - name: Run clippy
         run: cargo clippy --all-targets -- -D warnings
@@ -230,9 +216,57 @@ jobs:
           IMAGE_NAME: ${{ needs.image_meta.outputs.image_name }}
           IMAGE_TAG: ${{ needs.image_meta.outputs.image_tag }}
         run: docker buildx imagetools inspect "${IMAGE_NAME}:${IMAGE_TAG}"
+  # Builds the Yew/WASM frontend once and uploads `web_frontend/dist/` as an
+  # artifact. Every downstream Rust build job downloads it and places it back
+  # at `web_frontend/dist/` so the server's `include_dir!` can pick it up.
+  # The frontend output is platform-agnostic
+  build_frontend:
+    name: Build web frontend
+    needs: [rustfmt]
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          profile: minimal
+          override: true
+
+      - name: Install webassembly rust target
+        run: rustup target add wasm32-unknown-unknown
+
+      - name: Install node
+        uses: actions/setup-node@v3
+        with:
+          node-version: 24
+      - name: Install node packages
+        working-directory: ./web_frontend
+        run: npm i
+
+      - name: Install trunk
+        uses: actions-rs/cargo@v1
+        with:
+          command: install
+          args: --locked --debug trunk
+
+      - name: Build web frontend
+        run: trunk build --release
+        working-directory: ./web_frontend
+
+      - name: Upload web_frontend/dist
+        uses: actions/upload-artifact@v4
+        with:
+          name: web_frontend-dist
+          path: web_frontend/dist
+          if-no-files-found: error
+          retention-days: 1
+
   ci:
     name: Build
-    needs: [rustfmt]
+    needs: [rustfmt, build_frontend]
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
@@ -280,21 +314,13 @@ jobs:
       - name: Install musl build dependencies
         if: endsWith(matrix.target, '-musl')
         run: sudo apt-get update && sudo apt-get install -y musl-tools musl-dev
-      - name: Install node
-        uses: actions/setup-node@v3
+
+      - name: Download prebuilt web frontend
+        uses: actions/download-artifact@v4
         with:
-          node-version: 24
-      - name: Install node packages
-        working-directory: ./web_frontend
-        run: npm i
-      - name: Install trunk
-        uses: actions-rs/cargo@v1
-        with:
-          command: install
-          args: --locked --debug trunk
-      - name: Build web frontend
-        run: rustup target add wasm32-unknown-unknown && trunk build --release
-        working-directory: ./web_frontend
+          name: web_frontend-dist
+          path: web_frontend/dist
+
       - name: Build server
         uses: actions-rs/cargo@v1
         env:
@@ -319,6 +345,90 @@ jobs:
         with:
           name: privaxy-rpm-${{ matrix.target }}
           path: target/${{ matrix.target }}/release/*.rpm
+      - uses: actions/upload-artifact@v4
+        with:
+          name: privaxy-${{ matrix.target }}
+          path: |
+            target/${{ matrix.target }}/release/privaxy
+
+  # MIPS targets are tier-3 in rustc as of 1.72
+  ci_mips:
+    name: Build (MIPS)
+    needs: [rustfmt, build_frontend]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - build: linux
+            os: ubuntu-22.04
+            target: mipsel-unknown-linux-gnu
+          - build: linux
+            os: ubuntu-22.04
+            target: mipsel-unknown-linux-musl
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Cache build artifacts
+        uses: actions/cache@v3
+        with:
+          key:  ${{ matrix.os }}-${{ matrix.target }}-artifacts
+          path: |
+            ./target
+            ~/.cargo
+
+      - name: Install rust (nightly + rust-src)
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: nightly
+          profile: minimal
+          override: true
+          components: rust-src
+
+      - name: Install MIPS gnu cross toolchain
+        if: matrix.target == 'mipsel-unknown-linux-gnu'
+        run: sudo apt-get update && sudo apt-get install -y gcc-mipsel-linux-gnu g++-mipsel-linux-gnu libc6-dev-mipsel-cross
+
+      - name: Install MIPS musl cross toolchain
+        # No apt package for mipsel-linux-musl
+        if: matrix.target == 'mipsel-unknown-linux-musl'
+        run: |
+          curl -fL https://musl.cc/mipsel-linux-musl-cross.tgz | sudo tar xz -C /opt
+          echo "/opt/mipsel-linux-musl-cross/bin" >> "$GITHUB_PATH"
+
+      - name: Download prebuilt web frontend
+        uses: actions/download-artifact@v4
+        with:
+          name: web_frontend-dist
+          path: web_frontend/dist
+
+      - name: Build server
+        env:
+          CC_mipsel_unknown_linux_gnu: mipsel-linux-gnu-gcc
+          AR_mipsel_unknown_linux_gnu: mipsel-linux-gnu-ar
+          CC_mipsel_unknown_linux_musl: mipsel-linux-musl-gcc
+          AR_mipsel_unknown_linux_musl: mipsel-linux-musl-ar
+        run: cargo build --release -Z build-std=std,panic_abort --target ${{ matrix.target }} --bin privaxy --target-dir target
+
+      - name: Build packages
+        if: matrix.target == 'mipsel-unknown-linux-gnu'
+        run: |
+          cargo install cargo-deb && cargo deb --no-build -p privaxy --target ${{ matrix.target }} -o target/${{ matrix.target }}/release
+          cargo install cargo-generate-rpm && cargo generate-rpm -p privaxy --target ${{ matrix.target }} -o target/${{ matrix.target }}/release
+
+      - uses: actions/upload-artifact@v4
+        if: matrix.target == 'mipsel-unknown-linux-gnu'
+        with:
+          name: privaxy-deb-${{ matrix.target }}
+          path: target/${{ matrix.target }}/release/privaxy_*.deb
+
+      - uses: actions/upload-artifact@v4
+        if: matrix.target == 'mipsel-unknown-linux-gnu'
+        with:
+          name: privaxy-rpm-${{ matrix.target }}
+          path: target/${{ matrix.target }}/release/*.rpm
+
       - uses: actions/upload-artifact@v4
         with:
           name: privaxy-${{ matrix.target }}
