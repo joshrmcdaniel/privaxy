@@ -90,7 +90,7 @@ fn create_static_routes() -> BoxedFilter<(impl warp::Reply,)> {
 
             let mime = mime_guess::from_path(tail_str).first_raw().unwrap_or("");
 
-            Response::builder() 
+            Response::builder()
                 .header(http::header::CONTENT_TYPE, mime)
                 .body(file_contents)
         })
@@ -134,36 +134,40 @@ fn create_api_routes(
             ws.on_upgrade(move |websocket| statistics::statistics(websocket, statistics))
         });
 
-    let filters_route = warp::path("filters")
-        .and(require_auth.clone())
-        .and(filters::create_routes(
-            configuration_updater_sender.clone(),
-            configuration_save_lock.clone(),
-            http_client.clone(),
-        ));
+    let filters_route =
+        warp::path("filters")
+            .and(require_auth.clone())
+            .and(filters::create_routes(
+                configuration_updater_sender.clone(),
+                configuration_save_lock.clone(),
+                http_client.clone(),
+            ));
 
-    let custom_filters_route = warp::path("custom-filters")
-        .and(require_auth.clone())
-        .and(custom_filters::create_routes(
-            configuration_updater_sender.clone(),
-            configuration_save_lock.clone(),
-        ));
+    let custom_filters_route =
+        warp::path("custom-filters")
+            .and(require_auth.clone())
+            .and(custom_filters::create_routes(
+                configuration_updater_sender.clone(),
+                configuration_save_lock.clone(),
+            ));
 
-    let exclusions_route = warp::path("exclusions")
-        .and(require_auth.clone())
-        .and(exclusions::create_routes(
-            configuration_updater_sender.clone(),
-            configuration_save_lock.clone(),
-            local_exclusions_store.clone(),
-        ));
+    let exclusions_route =
+        warp::path("exclusions")
+            .and(require_auth.clone())
+            .and(exclusions::create_routes(
+                configuration_updater_sender.clone(),
+                configuration_save_lock.clone(),
+                local_exclusions_store.clone(),
+            ));
 
-    let settings_route = warp::path("settings")
-        .and(require_auth.clone())
-        .and(settings::create_routes(
-            configuration_updater_sender.clone(),
-            configuration_save_lock.clone(),
-            notify_reload.clone(),
-        ));
+    let settings_route =
+        warp::path("settings")
+            .and(require_auth.clone())
+            .and(settings::create_routes(
+                configuration_updater_sender.clone(),
+                configuration_save_lock.clone(),
+                notify_reload.clone(),
+            ));
 
     let blocking_enabled_route = warp::path("blocking-enabled")
         .and(require_auth.clone())
@@ -197,9 +201,7 @@ fn create_api_routes(
     api_path.and(api_inner).with(def_headers).boxed()
 }
 
-async fn handle_rejection(
-    err: warp::Rejection,
-) -> Result<Box<dyn Reply>, warp::Rejection> {
+async fn handle_rejection(err: warp::Rejection) -> Result<Box<dyn Reply>, warp::Rejection> {
     if err.find::<auth::Unauthorized>().is_some() {
         return Ok(json_status(
             http::StatusCode::UNAUTHORIZED,

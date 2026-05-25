@@ -79,14 +79,20 @@ fn augment_csp_value(value: &str, nonce: &str) -> String {
         )
     });
     fn has(directives: &[String], name: &str) -> bool {
-        directives
-            .iter()
-            .any(|d| directive_name(d).map(|t| t.eq_ignore_ascii_case(name)).unwrap_or(false))
+        directives.iter().any(|d| {
+            directive_name(d)
+                .map(|t| t.eq_ignore_ascii_case(name))
+                .unwrap_or(false)
+        })
     }
     fn find_directive<'a>(directives: &'a [String], name: &str) -> Option<&'a str> {
         directives
             .iter()
-            .find(|d| directive_name(d).map(|t| t.eq_ignore_ascii_case(name)).unwrap_or(false))
+            .find(|d| {
+                directive_name(d)
+                    .map(|t| t.eq_ignore_ascii_case(name))
+                    .unwrap_or(false)
+            })
             .map(|d| d.as_str())
     }
     fn has_unsafe_inline(directive: &str) -> bool {
@@ -114,7 +120,10 @@ fn augment_csp_value(value: &str, nonce: &str) -> String {
     }
     fn append_to(directives: &mut [String], name: &str, nonce_source: &str) {
         for d in directives.iter_mut() {
-            if directive_name(d).map(|t| t.eq_ignore_ascii_case(name)).unwrap_or(false) {
+            if directive_name(d)
+                .map(|t| t.eq_ignore_ascii_case(name))
+                .unwrap_or(false)
+            {
                 d.push(' ');
                 d.push_str(nonce_source);
                 return;
@@ -303,7 +312,11 @@ pub(crate) async fn serve(
     // When we rewrite HTML we need a CSP nonce so the inline <style>/<script>
     // we append survive the page's Content-Security-Policy without us having
     // to strip CSP entirely.
-    let csp_nonce = if is_html { Some(generate_csp_nonce()) } else { None };
+    let csp_nonce = if is_html {
+        Some(generate_csp_nonce())
+    } else {
+        None
+    };
 
     if let Some(nonce) = csp_nonce.as_deref() {
         let headers = new_response.headers_mut();

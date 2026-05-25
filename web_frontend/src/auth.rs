@@ -247,14 +247,17 @@ impl Component for LoginPage {
             LoginMessage::Submit
         });
 
-        render_card("Sign in to Privaxy", html! {
-            <form onsubmit={on_submit}>
-                {form_field("Username", "text", "username", &self.username, on_username)}
-                {form_field("Password", "password", "current-password", &self.password, on_password)}
-                {error_banner(&self.error)}
-                {primary_button("Sign in", self.submitting)}
-            </form>
-        })
+        render_card(
+            "Sign in to Privaxy",
+            html! {
+                <form onsubmit={on_submit}>
+                    {form_field("Username", "text", "username", &self.username, on_username)}
+                    {form_field("Password", "password", "current-password", &self.password, on_password)}
+                    {error_banner(&self.error)}
+                    {primary_button("Sign in", self.submitting)}
+                </form>
+            },
+        )
     }
 }
 
@@ -316,8 +319,7 @@ impl Component for SetupPage {
                     return true;
                 }
                 if self.password.len() < 8 {
-                    self.error =
-                        Some("Password must be at least 8 characters".to_string());
+                    self.error = Some("Password must be at least 8 characters".to_string());
                     return true;
                 }
                 if self.password != self.confirm {
@@ -386,16 +388,19 @@ impl Component for SetupPage {
             </p>
         };
 
-        render_card("Set up your Privaxy account", html! {
-            <form onsubmit={on_submit}>
-                {helper}
-                {form_field("Username", "text", "username", &self.username, on_username)}
-                {form_field("Password", "password", "new-password", &self.password, on_password)}
-                {form_field("Confirm password", "password", "new-password", &self.confirm, on_confirm)}
-                {error_banner(&self.error)}
-                {primary_button("Create account", self.submitting)}
-            </form>
-        })
+        render_card(
+            "Set up your Privaxy account",
+            html! {
+                <form onsubmit={on_submit}>
+                    {helper}
+                    {form_field("Username", "text", "username", &self.username, on_username)}
+                    {form_field("Password", "password", "new-password", &self.password, on_password)}
+                    {form_field("Confirm password", "password", "new-password", &self.confirm, on_confirm)}
+                    {error_banner(&self.error)}
+                    {primary_button("Create account", self.submitting)}
+                </form>
+            },
+        )
     }
 }
 

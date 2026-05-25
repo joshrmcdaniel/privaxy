@@ -298,7 +298,9 @@ impl Configuration {
                 pac_direct_fqdns: Vec::new(),
             },
             exclusions: BTreeSet::from_iter(
-                recommended_exclusions().iter().map(|entry| entry.to_string()),
+                recommended_exclusions()
+                    .iter()
+                    .map(|entry| entry.to_string()),
             ),
             custom_filters: Vec::new(),
             auth: Auth::new_initialized(),

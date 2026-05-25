@@ -53,14 +53,18 @@ pub fn create_routes(
         .and(warp::get())
         .and(warp::header::optional::<String>("cookie"))
         .and(warp::header::optional::<String>("x-api-key"))
-        .and(with_configuration_save_lock(configuration_save_lock.clone()))
+        .and(with_configuration_save_lock(
+            configuration_save_lock.clone(),
+        ))
         .and_then(get_status);
 
     let setup_route = warp::path("setup")
         .and(warp::path::end())
         .and(warp::post())
         .and(warp::body::json())
-        .and(with_configuration_save_lock(configuration_save_lock.clone()))
+        .and(with_configuration_save_lock(
+            configuration_save_lock.clone(),
+        ))
         .and(with_configuration_updater_sender(
             configuration_updater_sender.clone(),
         ))
@@ -70,13 +74,17 @@ pub fn create_routes(
         .and(warp::path::end())
         .and(warp::post())
         .and(warp::body::json())
-        .and(with_configuration_save_lock(configuration_save_lock.clone()))
+        .and(with_configuration_save_lock(
+            configuration_save_lock.clone(),
+        ))
         .and_then(post_login);
 
     let logout_route = warp::path("logout")
         .and(warp::path::end())
         .and(warp::post())
-        .and(with_configuration_save_lock(configuration_save_lock.clone()))
+        .and(with_configuration_save_lock(
+            configuration_save_lock.clone(),
+        ))
         .and_then(post_logout);
 
     // Routes below require auth. The auth filter is invoked inside each
@@ -88,7 +96,9 @@ pub fn create_routes(
         .and(warp::header::optional::<String>("cookie"))
         .and(warp::header::optional::<String>("x-api-key"))
         .and(warp::body::json())
-        .and(with_configuration_save_lock(configuration_save_lock.clone()))
+        .and(with_configuration_save_lock(
+            configuration_save_lock.clone(),
+        ))
         .and(with_configuration_updater_sender(
             configuration_updater_sender.clone(),
         ))
@@ -99,7 +109,9 @@ pub fn create_routes(
         .and(warp::post())
         .and(warp::header::optional::<String>("cookie"))
         .and(warp::header::optional::<String>("x-api-key"))
-        .and(with_configuration_save_lock(configuration_save_lock.clone()))
+        .and(with_configuration_save_lock(
+            configuration_save_lock.clone(),
+        ))
         .and(with_configuration_updater_sender(
             configuration_updater_sender.clone(),
         ))
@@ -110,7 +122,9 @@ pub fn create_routes(
         .and(warp::get())
         .and(warp::header::optional::<String>("cookie"))
         .and(warp::header::optional::<String>("x-api-key"))
-        .and(with_configuration_save_lock(configuration_save_lock.clone()))
+        .and(with_configuration_save_lock(
+            configuration_save_lock.clone(),
+        ))
         .and_then(get_api_key);
 
     status_route
@@ -233,7 +247,10 @@ async fn post_login(
         ));
     }
 
-    if !configuration.auth.verify_credentials(&body.username, &body.password) {
+    if !configuration
+        .auth
+        .verify_credentials(&body.username, &body.password)
+    {
         return Ok(json_error(StatusCode::UNAUTHORIZED, "Invalid credentials"));
     }
 

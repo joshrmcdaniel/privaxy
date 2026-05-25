@@ -19,9 +19,7 @@ struct PacContext<'a> {
     fqdns: &'a [String],
 }
 
-pub(crate) fn create_routes(
-    configuration_save_lock: Arc<Mutex<()>>,
-) -> BoxedFilter<(impl Reply,)> {
+pub(crate) fn create_routes(configuration_save_lock: Arc<Mutex<()>>) -> BoxedFilter<(impl Reply,)> {
     let mut tera = Tera::default();
     tera.add_raw_template("proxy.pac", PAC_TEMPLATE)
         .expect("proxy.pac template failed to parse");
@@ -51,9 +49,11 @@ async fn render_pac(
         return Ok(not_found_response());
     }
 
-    let proxy_host = cfg.network.pac_proxy_host.clone().unwrap_or_else(|| {
-        format!("{}:{}", cfg.network.bind_addr, cfg.network.proxy_port)
-    });
+    let proxy_host = cfg
+        .network
+        .pac_proxy_host
+        .clone()
+        .unwrap_or_else(|| format!("{}:{}", cfg.network.bind_addr, cfg.network.proxy_port));
 
     let ctx_data = PacContext {
         proxy_host: &proxy_host,

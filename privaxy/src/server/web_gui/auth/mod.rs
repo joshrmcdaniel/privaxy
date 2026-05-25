@@ -56,7 +56,10 @@ async fn check_auth(
 
     if let Some(provided_key) = api_key.as_deref() {
         if !configuration.auth.api_key.is_empty()
-            && constant_time_eq(provided_key.as_bytes(), configuration.auth.api_key.as_bytes())
+            && constant_time_eq(
+                provided_key.as_bytes(),
+                configuration.auth.api_key.as_bytes(),
+            )
         {
             return Ok(());
         }
