@@ -378,24 +378,17 @@ jobs:
             ./target
             ~/.cargo
 
-      - name: Install rust (nightly + rust-src)
+      - name: Install rust
         uses: actions-rs/toolchain@v1
         with:
-          toolchain: nightly
+          toolchain: stable
           profile: minimal
           override: true
-          components: rust-src
 
-      - name: Install MIPS gnu cross toolchain
-        if: matrix.target == 'mipsel-unknown-linux-gnu'
-        run: sudo apt-get update && sudo apt-get install -y gcc-mipsel-linux-gnu g++-mipsel-linux-gnu libc6-dev-mipsel-cross
-
-      - name: Install MIPS musl cross toolchain
-        # No apt package for mipsel-linux-musl
-        if: matrix.target == 'mipsel-unknown-linux-musl'
-        run: |
-          curl -fL https://musl.cc/mipsel-linux-musl-cross.tgz | sudo tar xz -C /opt
-          echo "/opt/mipsel-linux-musl-cross/bin" >> "$GITHUB_PATH"
+      - name: Install cross
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cross
 
       - name: Download prebuilt web frontend
         uses: actions/download-artifact@v4
@@ -404,12 +397,7 @@ jobs:
           path: web_frontend/dist
 
       - name: Build server
-        env:
-          CC_mipsel_unknown_linux_gnu: mipsel-linux-gnu-gcc
-          AR_mipsel_unknown_linux_gnu: mipsel-linux-gnu-ar
-          CC_mipsel_unknown_linux_musl: mipsel-linux-musl-gcc
-          AR_mipsel_unknown_linux_musl: mipsel-linux-musl-ar
-        run: cargo build --release -Z build-std=std,panic_abort --target ${{ matrix.target }} --bin privaxy --target-dir target
+        run: cross build --release --target ${{ matrix.target }} --bin privaxy --target-dir target
 
       - name: Build packages
         if: matrix.target == 'mipsel-unknown-linux-gnu'
