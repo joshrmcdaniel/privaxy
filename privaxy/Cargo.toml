@@ -8,11 +8,6 @@ authors = [
   "Josh McDaniel <80354972+joshrmcdaniel@users.noreply.github.com>"
 ]
 
-[profile.release]
-lto = true
-codegen-units = 8
-opt-level = 3
-
 [package.metadata.deb]
 maintainer = "Josh McDaniel <80354972+joshrmcdaniel@users.noreply.github.com>"
 license-file = ["../LICENSE.txt", "4"]
@@ -38,7 +33,7 @@ serde_json = "1.0.89"
 toml = "0.8.13"
 serde = { version = "1.0.148", features = ["derive"] }
 tokio-util = { version = "0.7.4", features = ["full"] }
-adblock = { version = "0.8.9" }
+adblock = { version = "0.12.5" }
 openssl = { version = "0.10.43", features = ["vendored"] }
 include_dir = "0.7.3"
 chrono = { version = "0.4.23", features = ["serde"] }
