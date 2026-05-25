@@ -13,6 +13,8 @@
 #
 # ---------------------------------------------------------------------------
 #
+ARG BUILD_MODE=compile
+#
 FROM rust:1-bookworm AS compile-base
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
@@ -50,8 +52,6 @@ ARG PREBUILT_BINARY=privaxy
 COPY ${PREBUILT_BINARY} /privaxy-out
 RUN chmod +x /privaxy-out
 
-# Switch between the two via BUILD_MODE.
-ARG BUILD_MODE=compile
 FROM ${BUILD_MODE} AS source
 
 # --- Final image ---
