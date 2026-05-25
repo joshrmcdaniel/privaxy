@@ -1,0 +1,14 @@
+#!/bin/sh
+# $1 == 1 on initial install, $1 == 2 on upgrade
+
+mkdir -p /etc/privaxy
+chown privaxy:privaxy /etc/privaxy
+
+mkdir -p /var/log/privaxy
+chown privaxy:privaxy /var/log/privaxy
+
+if [ -x /usr/bin/systemctl ]; then
+    systemctl daemon-reload >/dev/null 2>&1 || true
+fi
+
+exit 0

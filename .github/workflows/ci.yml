@@ -109,13 +109,21 @@ jobs:
       matrix:
         include:
           - build: linux
-            os: ubuntu-latest
+            os: ubuntu-22.04
             rust: stable
             target: x86_64-unknown-linux-gnu
           - build: linux
-            os: ubuntu-24.04-arm
+            os: ubuntu-22.04-arm
             rust: stable
             target: aarch64-unknown-linux-gnu
+          - build: linux
+            os: ubuntu-22.04
+            rust: stable
+            target: x86_64-unknown-linux-musl
+          - build: linux
+            os: ubuntu-22.04-arm
+            rust: stable
+            target: aarch64-unknown-linux-musl
     steps:
       - name: Checkout
         uses: actions/checkout@v2
@@ -140,6 +148,9 @@ jobs:
       - name: Install cross build dependencies
         if: matrix.target == 'aarch64-unknown-linux-gnu'
         run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu libc6-dev-arm64-cross
+      - name: Install musl build dependencies
+        if: endsWith(matrix.target, '-musl')
+        run: sudo apt-get update && sudo apt-get install -y musl-tools musl-dev
       - name: Install node
         uses: actions/setup-node@v3
         with:
@@ -157,16 +168,28 @@ jobs:
         working-directory: ./web_frontend
       - name: Build server
         uses: actions-rs/cargo@v1
+        env:
+          CC_x86_64_unknown_linux_musl: musl-gcc
+          CC_aarch64_unknown_linux_musl: musl-gcc
         with:
           command: build
           working-directory: .
           args: --release --target ${{ matrix.target }} --bin privaxy --target-dir target
-      - name: Build deb
-        run: cargo install cargo-deb && cargo deb -p privaxy --target ${{ matrix.target }} -o target/${{ matrix.target }}/release
+      - name: Build packages
+        if: ${{ !endsWith(matrix.target, '-musl') }}
+        run: |
+          cargo install cargo-deb && cargo deb -p privaxy --target ${{ matrix.target }} -o target/${{ matrix.target }}/release
+          cargo install cargo-generate-rpm && cargo generate-rpm -p privaxy --target ${{ matrix.target }} -o target/${{ matrix.target }}/release
       - uses: actions/upload-artifact@v4
+        if: ${{ !endsWith(matrix.target, '-musl') }}
         with:
           name: privaxy-deb-${{ matrix.target }}
           path: target/${{ matrix.target }}/release/privaxy_*.deb
+      - uses: actions/upload-artifact@v4
+        if: ${{ !endsWith(matrix.target, '-musl') }}
+        with:
+          name: privaxy-rpm-${{ matrix.target }}
+          path: target/${{ matrix.target }}/release/*.rpm
       - uses: actions/upload-artifact@v4
         with:
           name: privaxy-${{ matrix.target }}

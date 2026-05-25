@@ -1,0 +1,15 @@
+#!/bin/sh
+# $1 == 0 on uninstall, $1 == 1 on upgrade
+
+if [ "$1" = "0" ]; then
+    if [ -x /usr/bin/systemctl ]; then
+        if systemctl is-active --quiet privaxy; then
+            systemctl stop privaxy || true
+        fi
+        if systemctl is-enabled --quiet privaxy; then
+            systemctl disable privaxy || true
+        fi
+    fi
+fi
+
+exit 0

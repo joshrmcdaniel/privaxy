@@ -10,6 +10,7 @@ authors = [
 
 [package.metadata.deb]
 maintainer = "Josh McDaniel <80354972+joshrmcdaniel@users.noreply.github.com>"
+summary = "Next generation tracker and advertisement blocker"
 license-file = ["../LICENSE.txt", "4"]
 maintainer-scripts = "debian/"
 depends = "$auto"
@@ -17,6 +18,22 @@ assets = [
   ["debian/privaxy.service", "/lib/systemd/system/privaxy.service", "644"],
   ["target/release/privaxy", "/usr/bin/", "755"],
 ]
+
+[package.metadata.generate-rpm]
+license = "AGPL-3.0-or-later"
+summary = "Next generation tracker and advertisement blocker"
+assets = [
+  { source = "target/release/privaxy", dest = "/usr/bin/privaxy", mode = "755" },
+  { source = "debian/privaxy.service", dest = "/lib/systemd/system/privaxy.service", mode = "644" },
+  { source = "../LICENSE.txt", dest = "/usr/share/licenses/privaxy/LICENSE.txt", mode = "644", doc = true },
+]
+pre_install_script = "rpm/preinstall"
+post_install_script = "rpm/postinstall"
+pre_uninstall_script = "rpm/preuninstall"
+post_uninstall_script = "rpm/postuninstall"
+
+[package.metadata.generate-rpm.requires]
+systemd = "*"
 
 [[bin]]
 name = "privaxy"
