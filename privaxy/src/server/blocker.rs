@@ -1,6 +1,4 @@
-use crate::blocker_utils::{
-    build_resource_from_file_contents, read_redirectable_resource_mapping,
-};
+use crate::blocker_utils::{build_resource_from_file_contents, read_redirectable_resource_mapping};
 use adblock::blocker::BlockerResult as AdblockerBlockerResult;
 use adblock::lists::FilterSet;
 use adblock::request::Request;
@@ -169,11 +167,9 @@ impl Blocker {
                     // proxy can't run JS-driven procedural matching.
                     let mut style_selectors: HashMap<String, Vec<String>> = HashMap::new();
                     for raw in url_specific_resources.procedural_actions.iter() {
-                        let Ok(filter) =
-                            serde_json::from_str::<
-                                adblock::cosmetic_filter_cache::ProceduralOrActionFilter,
-                            >(raw)
-                        else {
+                        let Ok(filter) = serde_json::from_str::<
+                            adblock::cosmetic_filter_cache::ProceduralOrActionFilter,
+                        >(raw) else {
                             continue;
                         };
                         if let Some((selector, style)) = filter.as_css() {
