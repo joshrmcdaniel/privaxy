@@ -9,8 +9,8 @@ use url::Url;
 use wasm_bindgen_futures::spawn_local;
 use web_sys::HtmlInputElement;
 use yew::prelude::*;
-use yew::InputEvent;
 use yew::{html, Component, Context, Html};
+use yew::{InputEvent, KeyboardEvent, MouseEvent};
 pub enum SearchFilterMessage {
     Open,
     Close,
@@ -332,17 +332,6 @@ impl Component for SearchFilterList {
                 </svg>
         };
 
-        let cancel_button = html! {
-            <div class="flex space-x-4">
-            <PrivaxyButton
-                state={ButtonState::Enabled}
-                onclick={self.link.callback(|_| SearchFilterMessage::Close)}
-                color={ButtonColor::Red}
-                button_text={"Cancel"}
-            />
-            </div>
-        };
-
         let search_button = html! {
             <div class="mt-5">
             <PrivaxyButton
@@ -360,53 +349,116 @@ impl Component for SearchFilterList {
             body.set_class_name(if self.is_open { "modal-open" } else { "" });
         }
 
-        html! {
-            <>
-            {search_button}
-                { if self.is_open {
-                    html! {
-                        <div class="fixed inset-0 bg-gray-600 bg-opacity-75 flex items-center justify-center z-50">
-                            <div class="bg-white p-6 rounded-lg shadow-lg z-60" style="width: 50vw; height: 80vh; overflow: hidden;">
-                                <div class="flex flex-col space-y-4" style="height: 100%;">
-                                    <input type="text" placeholder="Search by name" class="border border-gray-300 p-2 rounded"
+        let close_on_backdrop = self.link.callback(|_| SearchFilterMessage::Close);
+        let stop_propagation = Callback::from(|e: MouseEvent| e.stop_propagation());
+        let on_keydown = self.link.batch_callback(|e: KeyboardEvent| {
+            if e.key() == "Escape" {
+                vec![SearchFilterMessage::Close]
+            } else {
+                vec![]
+            }
+        });
+        let total_count = self.filters.len();
+        let match_count = filtered_filters_len(&self.filters, &self.filter_query);
+
+        let modal_overlay = html! {
+                        <div
+                            class="fixed inset-0 bg-gray-600 bg-opacity-75 flex items-center justify-center z-50"
+                            onclick={close_on_backdrop}
+                            onkeydown={on_keydown}
+                            tabindex="-1"
+                        >
+                            <div
+                                class="bg-white rounded-lg shadow-xl flex flex-col"
+                                style="width: 70vw; max-width: 1100px; max-height: 80vh; overflow: hidden;"
+                                onclick={stop_propagation}
+                            >
+                                <div class="flex items-center justify-between px-6 py-4 border-b border-gray-200">
+                                    <h2 class="text-lg font-semibold text-gray-800">{"Search filterlists.com"}</h2>
+                                    <button
+                                        type="button"
+                                        aria-label="Close"
+                                        class="text-gray-400 hover:text-gray-700 rounded p-1 focus:outline-none focus:ring-2 focus:ring-gray-300"
+                                        onclick={self.link.callback(|_| SearchFilterMessage::Close)}
+                                    >
+                                        <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                                            <path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd"/>
+                                        </svg>
+                                    </button>
+                                </div>
+                                <div class="flex flex-col flex-grow px-6 py-4 space-y-3 overflow-hidden">
+                                    <input type="text" placeholder="Search by name" class="border border-gray-300 p-2 rounded focus:outline-none focus:ring-2 focus:ring-blue-300"
                                         value={self.filter_query.clone()}
                                         oninput={_ctx.link().callback(|e: InputEvent| {
                                             let input = e.target_dyn_into::<HtmlInputElement>().expect("input element");
                                             SearchFilterMessage::FilterChanged(input.value())
                                         })}
                                     />
-                                    <div style="flex-grow: 1; overflow: auto;">
-                                        <table class="table-fixed bg-white">
-                                            <thead>
-                                                <tr style="height: 5vh;">
-                                                    <th class="py-2" style="width: 5vw;">{"Name"}</th>
-                                                    <th class="py-2" style="width: 10vw;">{"Description"}</th>
-                                                    <th class="py-2" style="width: 8vw;">{"Language"}</th>
-                                                    <th class="py-2" style="width: 8vw;">{"License"}</th>
-                                                    <th class="py-2" style="width: 2vw;">{"Select"}</th>
-                                                </tr>
-                                            </thead>
-                                            <tbody>
-                                                { for paginated_filters.map(|filter| self.view_filter_row(filter, _ctx)) }
-                                            </tbody>
-                                        </table>
+                                    <div class="overflow-auto border border-gray-200 rounded" style="height: 60vh;">
+                                        { if self.loading {
+                                            html! {
+                                                <div class="flex items-center justify-center h-full text-gray-500 text-sm">
+                                                    {"Loading filterlists\u{2026}"}
+                                                </div>
+                                            }
+                                        } else if match_count == 0 && !self.filter_query.is_empty() {
+                                            html! {
+                                                <div class="flex items-center justify-center h-full text-gray-500 text-sm">
+                                                    {format!("No filterlists match \u{201c}{}\u{201d}", self.filter_query)}
+                                                </div>
+                                            }
+                                        } else {
+                                            html! {
+                                                <table class="table-fixed w-full bg-white">
+                                                    <thead class="sticky top-0 bg-gray-50 border-b border-gray-200">
+                                                        <tr>
+                                                            <th class="px-4 py-2 text-left text-xs font-semibold text-gray-600 uppercase" style="width: 22%;">{"Name"}</th>
+                                                            <th class="px-4 py-2 text-left text-xs font-semibold text-gray-600 uppercase" style="width: 38%;">{"Description"}</th>
+                                                            <th class="px-4 py-2 text-left text-xs font-semibold text-gray-600 uppercase" style="width: 14%;">{"Language"}</th>
+                                                            <th class="px-4 py-2 text-left text-xs font-semibold text-gray-600 uppercase" style="width: 14%;">{"License"}</th>
+                                                            <th class="px-2 py-2 text-center text-xs font-semibold text-gray-600 uppercase" style="width: 12%;">{"Action"}</th>
+                                                        </tr>
+                                                    </thead>
+                                                    <tbody>
+                                                        { for paginated_filters.map(|filter| self.view_filter_row(filter, _ctx)) }
+                                                    </tbody>
+                                                </table>
+                                            }
+                                        }}
                                     </div>
-                                    <div class="flex justify-between mt-4">
+                                    <div class="flex items-center justify-between pt-2">
                                         {prev_button}
-                                        <span>{"Page "} {self.current_page} {" of "} {total_pages}</span>
-                                       {next_button}
+                                        <span class="text-sm text-gray-600">
+                                            {"Page "} {self.current_page} {" of "} {total_pages.max(1)}
+                                            {" \u{00b7} "}
+                                            { if self.filter_query.is_empty() {
+                                                format!("{} total", total_count)
+                                            } else {
+                                                format!("{} matches", match_count)
+                                            }}
+                                        </span>
+                                        {next_button}
                                     </div>
-                                    {cancel_button}
                                 </div>
                             </div>
                         </div>
-                    }
-                } else {
-                    html! {}
-                }}
+        };
+
+        html! {
+            <>
+                {search_button}
+                { if self.is_open { modal_overlay } else { html! {} } }
             </>
         }
     }
+}
+
+fn filtered_filters_len(filters: &[filterlists_api::Filter], query: &str) -> usize {
+    let q = query.to_lowercase();
+    filters
+        .iter()
+        .filter(|filter| filter.name.to_lowercase().contains(&q))
+        .count()
 }
 
 impl SearchFilterList {
@@ -427,24 +479,26 @@ impl SearchFilterList {
             }
         };
         html! {
-            <tr>
-                <td class="border px-4 py-2 overflow-hidden" style="height: 5vh; white-space: normal; text-overflow: ellipsis;">
+            <tr class="hover:bg-gray-50">
+                <td class="border px-4 py-2 align-top text-sm font-medium text-gray-900">
                     { if let Some(url) = &filter.primary_view_url {
-                        html! { <a href={url.clone()} target="_blank" class="text-blue-600 underline"> { &filter.name } </a> }
+                        html! { <a href={url.clone()} target="_blank" rel="noopener noreferrer" class="text-blue-600 hover:underline break-words"> { &filter.name } </a> }
                     } else {
-                        html! { &filter.name }
+                        html! { <span class="break-words">{ &filter.name }</span> }
                     }}
                 </td>
-                <td class="border px-4 py-2 overflow-auto" style="height: 5vh; max-width: 10vw; white-space: normal;">
-                    { &filter.description.clone().unwrap_or_default() }
+                <td class="border px-4 py-2 align-top text-sm text-gray-600">
+                    <div class="line-clamp-3" title={filter.description.clone().unwrap_or_default()}>
+                        { &filter.description.clone().unwrap_or_default() }
+                    </div>
                 </td>
-                <td class="border px-4 py-2 overflow-hidden" style="height: 5vh; white-space: nowrap; text-overflow: ellipsis;">
+                <td class="border px-4 py-2 align-top text-sm text-gray-700 break-words">
                     { self.get_language_name(filter.language_ids.clone()) }
                 </td>
-                <td class="border px-4 py-2 overflow-hidden" style="height: 5vh; white-space: nowrap; text-overflow: ellipsis;">
+                <td class="border px-4 py-2 align-top text-sm text-gray-700 break-words">
                     { self.get_license_name(filter.license_id) }
                 </td>
-                <td class="border px-4 py-2 text-center overflow-hidden" style="height: 5vh; white-space: nowrap; text-overflow: ellipsis;">
+                <td class="border px-2 py-2 align-middle text-center">
                 { button }
                 </td>
             </tr>

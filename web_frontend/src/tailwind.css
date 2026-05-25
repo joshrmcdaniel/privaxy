@@ -43,25 +43,6 @@ body.modal-open {
   overflow: hidden;
 }
 
-.table-fixed {
-  table-layout: fixed;
-  width: 100%;
-}
-
-.table-fixed th,
-.table-fixed td {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.table-fixed th {
-  height: 5vh;
-}
-
-.table-fixed td {
-  height: 5vh;
-}
 
 .w-200 {
   width: 200px;
