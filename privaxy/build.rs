@@ -19,6 +19,9 @@ fn main() {
         .expect("failed to invoke `node` for scriptlet preprocessing — is Node.js installed and on PATH?");
 
     if !status.success() {
-        panic!("build-scriptlets.mjs exited with non-zero status: {:?}", status);
+        panic!(
+            "build-scriptlets.mjs exited with non-zero status: {:?}",
+            status
+        );
     }
 }

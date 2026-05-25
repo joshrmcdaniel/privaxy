@@ -311,7 +311,11 @@ pub(crate) async fn get_filter(
         let content = response.text().await?;
         Ok(content)
     } else {
-        log::error!("Failed to fetch filter content for {}: {}", filter.title, response.status());
+        log::error!(
+            "Failed to fetch filter content for {}: {}",
+            filter.title,
+            response.status()
+        );
         Err(super::ConfigurationError::FilterError(format!(
             "Failed to fetch filter content for {}: {}",
             filter.title,

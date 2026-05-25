@@ -1,0 +1,16 @@
+#!/bin/sh
+# $1 == 0 on uninstall, $1 == 1 on upgrade
+
+if [ "$1" = "0" ]; then
+    if [ -x /usr/bin/systemctl ]; then
+        systemctl daemon-reload >/dev/null 2>&1 || true
+        systemctl reset-failed >/dev/null 2>&1 || true
+    fi
+
+    if id -u privaxy >/dev/null 2>&1 ; then
+        userdel privaxy >/dev/null 2>&1 || true
+    fi
+    rm -rf /etc/privaxy
+fi
+
+exit 0
