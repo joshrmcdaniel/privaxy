@@ -10,7 +10,6 @@ authors = [
 
 [package.metadata.deb]
 maintainer = "Josh McDaniel <80354972+joshrmcdaniel@users.noreply.github.com>"
-summary = "Next generation tracker and advertisement blocker"
 license-file = ["../LICENSE.txt", "4"]
 maintainer-scripts = "debian/"
 depends = "$auto"
