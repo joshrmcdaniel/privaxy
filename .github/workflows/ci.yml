@@ -83,7 +83,7 @@ jobs:
         run: |
           rel="${GITHUB_REF#refs/*/}"
           if grep -qE '^v?\d+\.\d+\.\d+' <<< "$rel" ; then
-            tag="$rel"
+            tag="${rel#v}"
           elif [ "$rel" = "develop" ]; then
             tag="dev"
           elif [ "$rel" = "main" ]; then
