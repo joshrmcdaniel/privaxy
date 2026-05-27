@@ -4,9 +4,13 @@ on:
   push:
     branches:
       - main
+      - develop
+    tags:
+      - 'v*'
   pull_request:
     branches:
-      - main 
+      - main
+      - develop
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -23,7 +27,7 @@ jobs:
     continue-on-error: true
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -57,7 +61,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v1
+        uses: actions/checkout@v6
 
       - name: Install rust
         uses: dtolnay/rust-toolchain@stable
@@ -81,9 +85,11 @@ jobs:
         run: |
           rel="${GITHUB_REF#refs/*/}"
           if grep -qE '^v?\d+\.\d+\.\d+' <<< "$rel" ; then
-            tag="$rel"
-          elif [ "$rel" = "main" ]; then
+            tag="${rel#v}"
+          elif [ "$rel" = "develop" ]; then
             tag="dev"
+          elif [ "$rel" = "main" ]; then
+            tag="latest"
           else
             tag="$(echo "$GITHUB_SHA" | cut -c1-7)"
           fi
@@ -112,7 +118,7 @@ jobs:
             cache_scope: docker-arm64
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Download prebuilt binary
         uses: actions/download-artifact@v4
@@ -221,7 +227,7 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install rust
         uses: dtolnay/rust-toolchain@stable
@@ -307,7 +313,7 @@ jobs:
             target: aarch64-unknown-linux-musl
     steps:
       - name: Checkout
-        uses: actions/checkout@v2
+        uses: actions/checkout@v6
 
       - name: Cache build artifacts
         uses: actions/cache@v3
@@ -386,9 +392,15 @@ jobs:
           - build: linux
             os: ubuntu-22.04
             target: mipsel-unknown-linux-musl
+          - build: linux
+            os: ubuntu-22.04
+            target: mips-unknown-linux-musl
+          - build: linux
+            os: ubuntu-22.04
+            target: mips-unknown-linux-gnu
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Cache build artifacts
         uses: actions/cache@v3
@@ -444,3 +456,37 @@ jobs:
           name: privaxy-${{ matrix.target }}
           path: |
             target/${{ matrix.target }}/release/privaxy
+
+  release:
+    name: Create GitHub Release
+    needs: [ci, ci_mips, image_merge]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ./artifacts
+          pattern: privaxy-*
+          merge-multiple: false
+      - name: Set package version from tag
+        run: |
+          echo "PKG_VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_ENV
+      - name: Flatten artifacts for release
+        run: |
+          mkdir ./release-assets
+          for dir in ./artifacts/privaxy-*/; do
+            target=$(basename "$dir" | sed 's/^privaxy-//')
+            cp "$dir/privaxy" "./release-assets/privaxy-${PKG_VERSION}-${target}"
+          done
+          find ./artifacts -name '*.deb' -exec cp {} ./release-assets/ \;
+          find ./artifacts -name '*.rpm' -exec cp {} ./release-assets/ \;e '*.rpm' -exec cp {} ./release-assets/ \;
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ./release-assets/*
+          generate_release_notes: true
+          fail_on_unmatched_files: true
