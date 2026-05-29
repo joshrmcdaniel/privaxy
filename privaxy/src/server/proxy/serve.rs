@@ -192,10 +192,7 @@ fn augment_csp_value(value: &str, nonce: &str) -> String {
 /// Modern browsers send `Sec-Fetch-Dest`, which maps cleanly onto these types.
 /// When it's absent we fall back to sniffing `Accept`, and finally to `other`.
 fn request_type_from_headers(headers: &HeaderMap) -> &'static str {
-    if let Some(dest) = headers
-        .get("sec-fetch-dest")
-        .and_then(|v| v.to_str().ok())
-    {
+    if let Some(dest) = headers.get("sec-fetch-dest").and_then(|v| v.to_str().ok()) {
         return match dest {
             "document" => "document",
             "frame" | "iframe" => "sub_frame",
@@ -220,11 +217,7 @@ fn request_type_from_headers(headers: &HeaderMap) -> &'static str {
         Some(accept) if accept.contains("text/html") => "document",
         Some(accept) if accept.contains("text/css") => "stylesheet",
         Some(accept) if accept.contains("image/") => "image",
-        Some(accept)
-            if accept.contains("javascript") || accept.contains("ecmascript") =>
-        {
-            "script"
-        }
+        Some(accept) if accept.contains("javascript") || accept.contains("ecmascript") => "script",
         _ => "other",
     }
 }
