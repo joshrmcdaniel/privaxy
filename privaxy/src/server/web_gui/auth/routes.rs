@@ -156,11 +156,33 @@ async fn get_status(
         (false, None)
     };
 
-    Ok(Box::new(warp::reply::json(&AuthStatusResponse {
+    let body = serde_json::to_string(&AuthStatusResponse {
         authenticated,
         setup_required,
         username,
-    })))
+    })
+    .unwrap();
+    let mut response = Response::builder()
+        .status(StatusCode::OK)
+        .header("Content-Type", "application/json");
+
+    // If the caller presented a session cookie that did not authenticate them
+    // (expired, signed with a rotated key, or otherwise stale), clear it from
+    // the browser.
+    if !authenticated && has_invalid_session_cookie(&configuration, &cookie) {
+        response = response.header("Set-Cookie", build_logout_cookie(configuration.network.tls));
+    }
+
+    Ok(Box::new(response.body(body).unwrap()))
+}
+
+/// Returns true when a `privaxy_session` cookie is present but fails
+/// verification against the current signing key.
+fn has_invalid_session_cookie(configuration: &Configuration, cookie: &Option<String>) -> bool {
+    match cookie.as_deref().and_then(extract_session_cookie) {
+        Some(token) => verify(&token, &configuration.auth.session_signing_key).is_err(),
+        None => false,
+    }
 }
 
 async fn post_setup(
