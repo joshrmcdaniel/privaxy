@@ -222,6 +222,27 @@ fn request_type_from_headers(headers: &HeaderMap) -> &'static str {
     }
 }
 
+/// adblock-rust matches against the literal URL string, so an explicit default
+/// port (`:443` for https, `:80` for http) wedges itself between the host and the
+/// path and breaks hostname-anchored rules (`||host/path`) — the path no longer
+/// follows the host directly. Browsers and uBO match on the canonical URL with
+/// the default port stripped, so we normalise the same way before handing URLs to
+/// the blocker/cosmetic engine. Non-default ports are preserved.
+fn url_for_matching(uri: &Uri) -> String {
+    let scheme = uri.scheme_str().unwrap_or("https");
+    let host = uri.host().unwrap_or("");
+    let path = uri.path_and_query().map(|pq| pq.as_str()).unwrap_or("/");
+    let default_port = match scheme {
+        "https" => Some(443),
+        "http" => Some(80),
+        _ => None,
+    };
+    match uri.port_u16() {
+        Some(port) if Some(port) != default_port => format!("{scheme}://{host}:{port}{path}"),
+        _ => format!("{scheme}://{host}{path}"),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn serve(
     adblock_requester: AdblockRequester,
@@ -268,14 +289,19 @@ pub(crate) async fn serve(
 
     let request_type = request_type_from_headers(req.headers()).to_string();
 
+    // Canonical URL (default port stripped) for all adblock-engine matching —
+    // see `url_for_matching`. The raw `uri` (which may carry `:443`) is still
+    // used for the actual outbound request below.
+    let match_url = url_for_matching(&uri);
+
     let (is_request_blocked, blocker_result) = adblock_requester
         .is_network_url_blocked(
-            uri.to_string(),
+            match_url.clone(),
             match req.headers().get(http::header::REFERER) {
                 Some(referer) => referer.to_str().unwrap().to_string(),
                 // When no referer, we default to `uri` as we otherwise may get many false
                 // positives due to the blocker thinking it's third party requests.
-                None => uri.to_string(),
+                None => match_url.clone(),
             },
             request_type.clone(),
         )
@@ -401,12 +427,12 @@ pub(crate) async fn serve(
         // end-of-body cosmetic lookup still runs for hide/style selectors,
         // which depend on collected IDs/classes.
         let injected_script = adblock_requester
-            .get_cosmetic_response(uri.to_string(), Vec::new(), Vec::new())
+            .get_cosmetic_response(match_url.clone(), Vec::new(), Vec::new())
             .await
             .injected_script;
 
         let rewriter = Rewriter::new(
-            uri.to_string(),
+            match_url.clone(),
             adblock_requester,
             receiver_rewriter,
             sender,
