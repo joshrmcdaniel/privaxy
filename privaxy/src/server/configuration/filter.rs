@@ -355,7 +355,7 @@ pub(crate) async fn get_filters_content(
         }
     }
 
-    filters.append(&mut configuration.custom_filters);
+    filters.extend(configuration.custom_filters.iter().cloned());
     filters.sort_unstable();
     // Filter out duplicate lines, if present
     filters.dedup();

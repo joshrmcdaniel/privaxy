@@ -37,6 +37,11 @@ pub struct CosmeticRequest {
 pub struct NetworkUrl {
     url: String,
     referer: String,
+    // adblock-rust request type string (e.g. "script", "xmlhttprequest",
+    // "image", "sub_frame", "document"). Required for the engine to honour
+    // type-scoped filter and exception rules ($script, $xhr, $image, …);
+    // passing a constant here silently defeats those rules.
+    request_type: String,
 }
 
 #[derive(Debug)]
@@ -204,7 +209,7 @@ impl Blocker {
                     let req = Request::new(
                         network_url.url.as_str(),
                         network_url.referer.as_str(),
-                        "other",
+                        network_url.request_type.as_str(),
                     )
                     .unwrap();
                     let blocker_result = self.engine.check_network_request(&req);
@@ -284,6 +289,7 @@ impl AdblockRequester {
         &self,
         network_url: String,
         referer: String,
+        request_type: String,
     ) -> (bool, adblock::blocker::BlockerResult) {
         let (sender, receiver) = oneshot::channel();
 
@@ -293,6 +299,7 @@ impl AdblockRequester {
                 kind: RequestKind::Url(NetworkUrl {
                     url: network_url,
                     referer,
+                    request_type,
                 }),
             })
             .unwrap();

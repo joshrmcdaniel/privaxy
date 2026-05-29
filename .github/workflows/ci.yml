@@ -434,19 +434,20 @@ jobs:
         run: cross build --release --target ${{ matrix.target }} --bin privaxy --target-dir target
 
       - name: Build packages
-        if: matrix.target == 'mipsel-unknown-linux-gnu'
+        if: ${{ endsWith(matrix.target, '-linux-gnu') }}
         run: |
-          cargo install cargo-deb && cargo deb --no-build --no-strip --variant mipsel -p privaxy --target ${{ matrix.target }} -o target/${{ matrix.target }}/release
+          variant=$(echo "${{ matrix.target }}" | cut -d- -f1)
+          cargo install cargo-deb && cargo deb --no-build --no-strip --variant "$variant" -p privaxy --target ${{ matrix.target }} -o target/${{ matrix.target }}/release
           cargo install cargo-generate-rpm && cargo generate-rpm -p privaxy --target ${{ matrix.target }} -o target/${{ matrix.target }}/release
 
       - uses: actions/upload-artifact@v4
-        if: matrix.target == 'mipsel-unknown-linux-gnu'
+        if: ${{ endsWith(matrix.target, '-linux-gnu') }}
         with:
           name: privaxy-deb-${{ matrix.target }}
           path: target/${{ matrix.target }}/release/privaxy_*.deb
 
       - uses: actions/upload-artifact@v4
-        if: matrix.target == 'mipsel-unknown-linux-gnu'
+        if: ${{ endsWith(matrix.target, '-linux-gnu') }}
         with:
           name: privaxy-rpm-${{ matrix.target }}
           path: target/${{ matrix.target }}/release/*.rpm
