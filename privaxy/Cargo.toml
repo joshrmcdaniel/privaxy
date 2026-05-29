@@ -22,6 +22,10 @@ assets = [
 name = "privaxy"
 depends = "libc6, libgcc-s1, libatomic1"
 
+[package.metadata.deb.variants.mips]
+name = "privaxy"
+depends = "libc6, libgcc-s1, libatomic1"
+
 [package.metadata.generate-rpm]
 license = "AGPL-3.0-or-later"
 summary = "Next generation tracker and advertisement blocker"
