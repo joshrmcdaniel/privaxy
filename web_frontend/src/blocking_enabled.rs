@@ -50,12 +50,8 @@ impl Component for BlockingEnabled {
                     match request.send().await {
                         Ok(response) => {
                             if response.ok() {
-                                message_callback.emit(Message::BlockingEnabled);
-
-                                return;
+                                message_callback.emit(Message::BlockingEnabled)
                             }
-
-                            message_callback.emit(Message::BlockingDisabled)
                         }
                         Err(_) => message_callback.emit(Message::BlockingDisabled),
                     }

@@ -18,7 +18,7 @@ pub async fn put_blocking_enabled(
     blocking_enabled: BlockingEnabled,
     blocking_disabled_store: BlockingDisabledStore,
 ) -> Result<impl warp::Reply, Infallible> {
-    blocking_disabled_store.set(!blocking_enabled.0);
+    blocking_disabled_store.set(blocking_enabled.0);
 
     Ok(StatusCode::NO_CONTENT)
 }
