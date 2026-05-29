@@ -13,9 +13,14 @@ use hyper_rustls::HttpsConnector;
 use std::net::IpAddr;
 use tokio::sync::broadcast;
 
-const CSP_HEADERS: [&str; 4] = [
+// Only *enforcing* CSP headers are augmented. Report-only headers
+// (`content-security-policy-report-only`) are deliberately left untouched:
+// they never block our injected script/style, so augmenting them buys nothing,
+// and doing so would inject our nonce into the site's own violation telemetry
+// and suppress reports the site author relies on (e.g. while testing a strict
+// policy before enforcing it).
+const CSP_HEADERS: [&str; 3] = [
     "content-security-policy",
-    "content-security-policy-report-only",
     "x-content-security-policy",
     "x-webkit-csp",
 ];
@@ -178,6 +183,52 @@ fn augment_csp_value(value: &str, nonce: &str) -> String {
         .join("; ")
 }
 
+/// Map an outgoing request's headers to the adblock-rust request-type string
+/// the engine expects (the same vocabulary as uBO's `$type` options). Without
+/// an accurate type, type-scoped filter and exception rules — e.g. the
+/// `$script`/`$xmlhttprequest` exceptions in uBO's unbreak lists that keep
+/// sites like DuckDuckGo working — match incorrectly and cause false blocks.
+///
+/// Modern browsers send `Sec-Fetch-Dest`, which maps cleanly onto these types.
+/// When it's absent we fall back to sniffing `Accept`, and finally to `other`.
+fn request_type_from_headers(headers: &HeaderMap) -> &'static str {
+    if let Some(dest) = headers
+        .get("sec-fetch-dest")
+        .and_then(|v| v.to_str().ok())
+    {
+        return match dest {
+            "document" => "document",
+            "frame" | "iframe" => "sub_frame",
+            "script" | "serviceworker" | "sharedworker" | "worker" | "audioworklet"
+            | "paintworklet" => "script",
+            "style" => "stylesheet",
+            "image" => "image",
+            "font" => "font",
+            "audio" | "video" | "track" => "media",
+            "object" | "embed" => "object",
+            "report" => "ping",
+            // `empty` is what fetch()/XHR report; treat it as xhr.
+            "empty" | "" => "xmlhttprequest",
+            _ => "other",
+        };
+    }
+
+    match headers
+        .get(http::header::ACCEPT)
+        .and_then(|v| v.to_str().ok())
+    {
+        Some(accept) if accept.contains("text/html") => "document",
+        Some(accept) if accept.contains("text/css") => "stylesheet",
+        Some(accept) if accept.contains("image/") => "image",
+        Some(accept)
+            if accept.contains("javascript") || accept.contains("ecmascript") =>
+        {
+            "script"
+        }
+        _ => "other",
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn serve(
     adblock_requester: AdblockRequester,
@@ -222,6 +273,8 @@ pub(crate) async fn serve(
 
     statistics.increment_top_clients(client_ip_address);
 
+    let request_type = request_type_from_headers(req.headers()).to_string();
+
     let (is_request_blocked, blocker_result) = adblock_requester
         .is_network_url_blocked(
             uri.to_string(),
@@ -231,6 +284,7 @@ pub(crate) async fn serve(
                 // positives due to the blocker thinking it's third party requests.
                 None => uri.to_string(),
             },
+            request_type.clone(),
         )
         .await;
 
@@ -250,7 +304,20 @@ pub(crate) async fn serve(
             uri.path()
         ));
 
-        log::debug!("Blocked request: {}", uri);
+        // adblock-rust fuses many same-option patterns into one filter and
+        // reports the union as the matched filter, which can be enormous; cap
+        // it so debug logs stay readable.
+        let matched_filter = blocker_result.filter.as_deref().unwrap_or("<none>");
+        let matched_filter = match matched_filter.char_indices().nth(200) {
+            Some((idx, _)) => format!("{}… (truncated)", &matched_filter[..idx]),
+            None => matched_filter.to_string(),
+        };
+        log::debug!(
+            "Blocked request: {} [type={}] matched filter: {}",
+            uri,
+            request_type,
+            matched_filter
+        );
 
         return Ok(get_blocked_by_privaxy_response(blocker_result));
     }
