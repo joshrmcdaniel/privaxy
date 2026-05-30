@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.7.0-0.7.1
+## v0.7.1
 
 - Validate filter lists when added
   - Adding a filter now rejects URLs that do not serve a `text/plain` filter list (e.g. an HTML error/landing page returned with a `200`) with a `422`, instead of silently saving a broken filter. The error is surfaced in the web UI, and filters whose URL stops serving a list are dropped from the engine with a warning on the next refresh.
@@ -15,6 +15,18 @@
 - All four engine-matching call sites now use match_url (canonical, default port stripped); the outbound request and stats still use the raw uri with its port, so nothing about proxying changes. This was silently breaking every hostname-anchored (||host/path) network rule on every HTTPS site
 - Update ublock annoyances url
 - Add support for MIPS, MIPSLE
+- Injected uBlock scriptlets now actually run
+  - Even after the 0.7.0 scriptlet repair, every injected `##+js(...)` scriptlet was a silent no-op. adblock-rust emits scriptlet bodies that reference an ambient `scriptletGlobals` object (uBlock Origin supplies it in its own injector; adblock-rust leaves it to the embedder), so the first internal call threw `ReferenceError: scriptletGlobals is not defined`, which each scriptlet's own `try/catch` swallowed. Privaxy now defines `scriptletGlobals` at the top of the injected payload, so `abort-current-script`, `prevent-addEventListener`, `abort-on-property-read`, `set-cookie`, etc. take effect.
+- Procedural cosmetic filtering
+  - Non-CSS procedural filters are no longer dropped (previously only filters reducible to plain CSS were applied). `:has-text`, `:matches-css`/`-before`/`-after`, `:matches-attr`, `:matches-path`, `:min-text-length`, `:upward`, `:xpath`, and the `:remove()`/`:style()`/`remove-attr`/`remove-class` actions are now evaluated in-page by an injected shim.
+  - The shim re-runs on DOM mutations and recurses into same-origin child frames (`about:blank`/`srcdoc`/`data:` with `allow-same-origin`), so ad content written into such frames after load is also matched. Cross-origin frames and closed shadow DOM remain out of reach.
+- Scriptlet error logging (debugging)
+  - New opt-in `debug.scriptlet_console_logging` (off by default), toggleable from Settings → Debug, surfaces errors thrown by injected scriptlets in the page console as `[privaxy scriptlet]` entries instead of swallowing them.
+- Fix cosmetic "modified responses" statistic undercount
+  - Pages where only element-hiding (`display: none`) selectors were injected were not counted as modified; any injected cosmetic CSS now counts
+
+## v0.7.0
+
 - Built-in authentication for the web UI and API
   - First-run setup page for choosing an admin username + password
   - 30-day HMAC-signed session cookie
@@ -31,6 +43,7 @@
 - Fix(?) memory leak
 - Inject into CSP-protected websites
 - Add docker compose example
+
 
 ## v0.6.0
 
