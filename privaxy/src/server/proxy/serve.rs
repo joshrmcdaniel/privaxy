@@ -395,7 +395,7 @@ pub(crate) async fn serve(
         DohAction::Redirect(upstream) => {
             log::debug!("Redirecting DoH request to {}: {}", upstream, uri);
             doh::redirect_url(upstream, req.method(), &uri)
-        },
+        }
         _ => req.uri().to_string(),
     };
 
