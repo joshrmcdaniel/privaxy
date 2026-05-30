@@ -62,6 +62,11 @@ pub struct CosmeticBlockerResult {
     pub hidden_selectors: Vec<String>,
     pub style_selectors: HashMap<String, Vec<String>>,
     pub injected_script: Option<String>,
+    /// JSON-encoded `ProceduralOrActionFilter` records that cannot be reduced to
+    /// plain CSS (`:has-text`, `:matches-css`, `:upward`, `:xpath`, `:remove()`,
+    /// …). These are handed to the in-page procedural shim, which evaluates them
+    /// against the live DOM. Empty for the vast majority of hosts.
+    pub procedural_filters: Vec<String>,
 }
 
 pub struct BlockerRequest {
@@ -135,6 +140,7 @@ impl Blocker {
                                 hidden_selectors: Vec::new(),
                                 style_selectors: HashMap::new(),
                                 injected_script: None,
+                                procedural_filters: Vec::new(),
                             },
                         ));
                         continue;
@@ -165,20 +171,25 @@ impl Blocker {
 
                     // adblock 0.12 replaced UrlSpecificResources::style_selectors
                     // with `procedural_actions`, a HashSet of JSON-encoded
-                    // ProceduralOrActionFilter records. Re-derive the
-                    // (selector -> style) map from the ones that reduce to
-                    // pure CSS via `as_css()`; non-CSS procedural filters
-                    // (those needing in-page JS to apply) are dropped — the
-                    // proxy can't run JS-driven procedural matching.
+                    // ProceduralOrActionFilter records. Records that reduce to
+                    // pure CSS via `as_css()` are applied server-side as a
+                    // (selector -> style) map. The rest need in-page JS to
+                    // evaluate (`:has-text`, `:matches-css`, `:upward`, `:xpath`,
+                    // `:remove()`, …); their raw JSON is forwarded to the
+                    // procedural shim injected into the page.
                     let mut style_selectors: HashMap<String, Vec<String>> = HashMap::new();
+                    let mut procedural_filters: Vec<String> = Vec::new();
                     for raw in url_specific_resources.procedural_actions.iter() {
                         let Ok(filter) = serde_json::from_str::<
                             adblock::cosmetic_filter_cache::ProceduralOrActionFilter,
                         >(raw) else {
                             continue;
                         };
-                        if let Some((selector, style)) = filter.as_css() {
-                            style_selectors.entry(selector).or_default().push(style);
+                        match filter.as_css() {
+                            Some((selector, style)) => {
+                                style_selectors.entry(selector).or_default().push(style);
+                            }
+                            None => procedural_filters.push(raw.clone()),
                         }
                     }
 
@@ -189,6 +200,7 @@ impl Blocker {
                                 hidden_selectors,
                                 style_selectors,
                                 injected_script,
+                                procedural_filters,
                             }));
                 }
                 RequestKind::Url(network_url) => {
