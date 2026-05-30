@@ -296,6 +296,7 @@ impl Configuration {
                 pac_direct_ips: Vec::new(),
                 pac_direct_cidrs: std::collections::BTreeMap::new(),
                 pac_direct_fqdns: Vec::new(),
+                doh: DohConfig::default(),
             },
             exclusions: BTreeSet::from_iter(
                 recommended_exclusions()

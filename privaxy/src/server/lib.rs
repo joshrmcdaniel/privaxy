@@ -338,6 +338,7 @@ async fn privaxy_backend(
         .build();
     let config = read_configuration(&configuration_save_lock).await;
     let network_config = &config.network;
+    let doh_config = network_config.doh.clone();
 
     // The hyper client is only used to perform upgrades. We don't need to
     // handle compression.
@@ -355,6 +356,7 @@ async fn privaxy_backend(
         let broadcast_tx = broadcast_tx.clone();
         let statistics = statistics.clone();
         let local_exclusion_store = local_exclusion_store.clone();
+        let doh_config = doh_config.clone();
 
         async move {
             Ok::<_, Infallible>(service_fn(move |req| {
@@ -368,6 +370,7 @@ async fn privaxy_backend(
                     statistics.clone(),
                     client_ip_address,
                     local_exclusion_store.clone(),
+                    doh_config.clone(),
                 )
             }))
         }
