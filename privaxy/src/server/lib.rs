@@ -364,11 +364,20 @@ async fn privaxy_backend(
     configuration_save_lock: Arc<tokio::sync::Mutex<()>>,
     notify_reload: Arc<tokio::sync::Notify>,
 ) {
+    // Mirror the reqwest client's connection hardening (see above): without a
+    // connect timeout and OS-level keepalive, an upgrade can hang on a pooled
+    // keep-alive connection the remote has silently dropped, surfacing as
+    // "upgrade expected but not completed".
+    let mut http_connector = hyper::client::HttpConnector::new();
+    http_connector.enforce_http(false);
+    http_connector.set_connect_timeout(Some(Duration::from_secs(10)));
+    http_connector.set_keepalive(Some(Duration::from_secs(60)));
+
     let https_connector = hyper_rustls::HttpsConnectorBuilder::new()
         .with_native_roots()
         .https_or_http()
         .enable_http1()
-        .build();
+        .wrap_connector(http_connector);
     let config = read_configuration(&configuration_save_lock).await;
     let network_config = &config.network;
     let doh_config = network_config.doh.clone();
@@ -380,7 +389,12 @@ async fn privaxy_backend(
     // handle compression.
     // Hyper's client don't follow redirects, which is what we want, nothing to
     // disable here.
-    let hyper_client = Client::builder().build(https_connector);
+    // An upgraded connection is consumed by the tunnel anyway, so idle pooling
+    // buys nothing and only risks reusing a stale connection under a long-lived
+    // WebSocket — disable it.
+    let hyper_client = Client::builder()
+        .pool_max_idle_per_host(0)
+        .build(https_connector);
 
     let make_service = make_service_fn(move |conn: &AddrStream| {
         let client_ip_address = conn.remote_addr().ip();
