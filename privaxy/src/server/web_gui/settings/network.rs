@@ -33,13 +33,13 @@ pub struct NetworkConfigRequest {
     pub doh: Option<DohConfig>,
 }
 
-impl Into<NetworkConfig> for NetworkConfigRequest {
-    fn into(self) -> NetworkConfig {
+impl From<NetworkConfigRequest> for NetworkConfig {
+    fn from(val: NetworkConfigRequest) -> Self {
         NetworkConfig {
-            bind_addr: self.bind_addr,
-            proxy_port: self.proxy_port,
-            web_port: self.web_port,
-            tls: self.tls,
+            bind_addr: val.bind_addr,
+            proxy_port: val.proxy_port,
+            web_port: val.web_port,
+            tls: val.tls,
             tls_cert_path: None,
             tls_key_path: None,
             listen_url: None,

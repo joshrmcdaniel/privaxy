@@ -1,5 +1,7 @@
 use super::get_error_response;
-use crate::configuration::{calc_filter_filename, Configuration, Filter, FilterGroup};
+use crate::configuration::{
+    calc_filter_filename, Configuration, ConfigurationError, Filter, FilterGroup,
+};
 use crate::web_gui::ApiError;
 use serde::Deserialize;
 use serde_with::{serde_as, DisplayFromStr};
@@ -119,7 +121,7 @@ async fn add_filter(
         url: filter_url,
         title: filter_request.title.clone(),
         group: filter_request.group,
-        file_name: calc_filter_filename(&filter_request.url.to_string()),
+        file_name: calc_filter_filename(filter_request.url.as_ref()),
     };
 
     match configuration
@@ -127,6 +129,14 @@ async fn add_filter(
         .await
     {
         Ok(_) => {}
+        Err(ConfigurationError::FilterValidationError(message)) => {
+            log::warn!("Rejected invalid filter: {message}");
+            return Ok(Response::builder()
+                .status(http::StatusCode::UNPROCESSABLE_ENTITY)
+                .header(http::header::CONTENT_TYPE, "application/json")
+                .body(serde_json::to_string(&ApiError { error: message }).unwrap())
+                .unwrap());
+        }
         Err(err) => {
             log::error!("Failed to add filter: {err}");
             return Ok(get_error_response(err));
