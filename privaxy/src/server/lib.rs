@@ -87,6 +87,25 @@ pub async fn start_privaxy() -> PrivaxyServer {
         .gzip(true)
         .brotli(true)
         .deflate(true)
+        // Without these, a proxied request can hang indefinitely on a pooled
+        // keep-alive connection the remote has silently dropped: reqwest reuses
+        // the dead connection and waits on a peer that will never answer.
+        // Retiring idle connections quickly (well under typical server keep-alive
+        // windows) plus OS-level keepalive probes bounds that. `connect_timeout`
+        // additionally fails fast on unreachable hosts.
+        .connect_timeout(Duration::from_secs(10))
+        .pool_idle_timeout(Duration::from_secs(30))
+        .tcp_keepalive(Duration::from_secs(60))
+        // h2-heavy origins multiplex every subresource over a
+        // single connection whose flow-control window defaults to a small,
+        // shared 64 KB. When we drain one stream's body slowly (the browser
+        // reads slowly, or the HTML rewriter backpressures), that window fills
+        // and stalls *every other stream* on the connection — head-of-line
+        // stutter across the whole site. Adaptive flow control grows the
+        // stream/connection windows based on the bandwidth-delay product,
+        // relieving the stall while keeping multiplexing. (This overrides any
+        // manual http2_initial_*_window_size, which is why none are set.)
+        .http2_adaptive_window(true)
         .build()
         .unwrap();
 
@@ -376,7 +395,7 @@ async fn privaxy_backend(
         }
     });
 
-    let ip = env_or_config_ip(&network_config).await;
+    let ip = env_or_config_ip(network_config).await;
     let proxy_server_addr = SocketAddr::from((ip, network_config.proxy_port));
 
     let server = Server::bind(&proxy_server_addr)
