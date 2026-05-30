@@ -569,7 +569,11 @@ async fn perform_two_ends_upgrade(
                     tokio::io::copy_bidirectional(&mut upgraded_client, &mut duplex_client).await;
             }
             Err(e) => {
-                log::warn!("Unable to upgrade client connection for {}: {}", client_uri, e)
+                log::warn!(
+                    "Unable to upgrade client connection for {}: {}",
+                    client_uri,
+                    e
+                )
             }
         }
     });
@@ -577,7 +581,11 @@ async fn perform_two_ends_upgrade(
     let response = match hyper_client.request(new_request).await {
         Ok(response) => response,
         Err(err) => {
-            log::warn!("Upstream upgrade request failed for {}: {}", request_uri, err);
+            log::warn!(
+                "Upstream upgrade request failed for {}: {}",
+                request_uri,
+                err
+            );
             return get_empty_response(http::StatusCode::BAD_GATEWAY);
         }
     };
@@ -607,7 +615,11 @@ async fn perform_two_ends_upgrade(
             });
         }
         Err(e) => {
-            log::warn!("Unable to upgrade upstream connection for {}: {}", request_uri, e)
+            log::warn!(
+                "Unable to upgrade upstream connection for {}: {}",
+                request_uri,
+                e
+            )
         }
     }
 

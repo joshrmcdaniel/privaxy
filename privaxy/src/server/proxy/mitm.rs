@@ -11,7 +11,7 @@ use hyper::{
 use hyper_rustls::HttpsConnector;
 use std::{net::IpAddr, sync::Arc};
 use tokio::{
-    io::{AsyncRead, AsyncWrite, AsyncReadExt, AsyncWriteExt},
+    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::TcpStream,
     sync::broadcast,
 };
@@ -225,7 +225,9 @@ async fn tunnel_http_upgrade(
         http::HeaderValue::from_static("upgrade"),
     );
     if let Some(upgrade) = upgrade_value {
-        response.headers_mut().insert(http::header::UPGRADE, upgrade);
+        response
+            .headers_mut()
+            .insert(http::header::UPGRADE, upgrade);
     }
     Ok(response)
 }
