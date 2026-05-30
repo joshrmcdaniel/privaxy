@@ -358,6 +358,9 @@ async fn privaxy_backend(
     let config = read_configuration(&configuration_save_lock).await;
     let network_config = &config.network;
     let doh_config = network_config.doh.clone();
+    // Read once per (re)start; the backend loop re-runs this on reload, so
+    // toggling the setting in the UI takes effect after its notify_reload.
+    let scriptlet_debug_logging = config.debug.scriptlet_console_logging;
 
     // The hyper client is only used to perform upgrades. We don't need to
     // handle compression.
@@ -390,6 +393,7 @@ async fn privaxy_backend(
                     client_ip_address,
                     local_exclusion_store.clone(),
                     doh_config.clone(),
+                    scriptlet_debug_logging,
                 )
             }))
         }

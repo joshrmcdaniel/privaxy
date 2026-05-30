@@ -257,6 +257,7 @@ pub(crate) async fn serve(
     statistics: Statistics,
     client_ip_address: IpAddr,
     doh_config: DohConfig,
+    scriptlet_debug_logging: bool,
 ) -> Result<Response<Body>, hyper::Error> {
     let scheme_string = scheme.to_string();
 
@@ -469,6 +470,7 @@ pub(crate) async fn serve(
             csp_nonce.expect("csp_nonce is Some whenever is_html"),
             head_cosmetics.injected_script,
             head_cosmetics.procedural_filters,
+            scriptlet_debug_logging,
         );
 
         tokio::task::spawn_blocking(|| rewriter.rewrite());

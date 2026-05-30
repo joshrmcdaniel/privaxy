@@ -25,6 +25,7 @@ pub(crate) async fn serve_mitm_session(
     client_ip_address: IpAddr,
     local_exclusion_store: LocalExclusionStore,
     doh_config: DohConfig,
+    scriptlet_debug_logging: bool,
 ) -> Result<Response<Body>, hyper::Error> {
     let authority = match req.uri().authority().cloned() {
         Some(authority) => authority,
@@ -84,6 +85,7 @@ pub(crate) async fn serve_mitm_session(
                                             statistics.clone(),
                                             client_ip_address,
                                             doh_config.clone(),
+                                            scriptlet_debug_logging,
                                         )
                                     }),
                                 )
@@ -120,6 +122,7 @@ pub(crate) async fn serve_mitm_session(
             statistics,
             client_ip_address,
             doh_config,
+            scriptlet_debug_logging,
         )
         .await
     }

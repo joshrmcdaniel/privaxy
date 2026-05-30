@@ -36,6 +36,10 @@ pub struct Rewriter {
     // `ProceduralOrActionFilter`; they're handed to the in-page shim injected
     // into `<head>` alongside the scriptlets.
     procedural_filters: Vec<String>,
+    // When set (config `debug.scriptlet_console_logging`), the empty
+    // per-scriptlet `catch` emitted by adblock-rust is rewritten to log the
+    // caught error to the page console instead of swallowing it.
+    scriptlet_debug_logging: bool,
 }
 
 /// In-page evaluator for procedural cosmetic filters. Defines the idempotent
@@ -53,6 +57,7 @@ impl Rewriter {
         csp_nonce: String,
         injected_script: Option<String>,
         procedural_filters: Vec<String>,
+        scriptlet_debug_logging: bool,
     ) -> Self {
         Self {
             url,
@@ -64,6 +69,7 @@ impl Rewriter {
             csp_nonce,
             injected_script,
             procedural_filters,
+            scriptlet_debug_logging,
         }
     }
 
@@ -74,6 +80,7 @@ impl Rewriter {
     fn build_head_script(
         injected_script: Option<String>,
         procedural_filters: &[String],
+        scriptlet_debug_logging: bool,
     ) -> Option<String> {
         if injected_script.is_none() && procedural_filters.is_empty() {
             return None;
@@ -81,7 +88,16 @@ impl Rewriter {
 
         let mut payload = String::new();
 
-        if let Some(script) = injected_script {
+        if let Some(mut script) = injected_script {
+            // adblock-rust isolates each scriptlet in an empty `catch ( e ) { }`.
+            // When debugging is enabled, surface what was caught rather than
+            // swallowing it (this is what hid the missing `scriptletGlobals`).
+            if scriptlet_debug_logging {
+                script = script.replace(
+                    "} catch ( e ) { }",
+                    "} catch (e) { console.error('[privaxy scriptlet]', e); }",
+                );
+            }
             // adblock-rust emits scriptlet bodies that reference an ambient
             // `scriptletGlobals` object — uBO supplies it in its own injection
             // wrapper, but adblock-rust leaves that to the embedder. Without it
@@ -140,6 +156,7 @@ impl Rewriter {
         let pending_script = Arc::new(Mutex::new(Self::build_head_script(
             self.injected_script,
             &self.procedural_filters,
+            self.scriptlet_debug_logging,
         )));
         let head_csp_nonce = csp_nonce.clone();
         let head_statistics = statistics.clone();
