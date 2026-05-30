@@ -22,6 +22,9 @@
   - The shim re-runs on DOM mutations and recurses into same-origin child frames (`about:blank`/`srcdoc`/`data:` with `allow-same-origin`), so ad content written into such frames after load is also matched. Cross-origin frames and closed shadow DOM remain out of reach.
 - Scriptlet error logging (debugging)
   - New opt-in `debug.scriptlet_console_logging` (off by default), toggleable from Settings → Debug, surfaces errors thrown by injected scriptlets in the page console as `[privaxy scriptlet]` entries instead of swallowing them.
+- Live log streaming in the web UI
+  - Settings → Debug now shows the server's log output in real time
+  - The level can be changed in the webui
 - Fix cosmetic "modified responses" statistic undercount
   - Pages where only element-hiding (`display: none`) selectors were injected were not counted as modified; any injected cosmetic CSS now counts
 
