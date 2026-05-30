@@ -1,4 +1,5 @@
 use crate::account::AccountSettings;
+use crate::debug::DebugSettingsPage;
 use crate::filters::Filters;
 use crate::general::GeneralSettings;
 use crate::pac::PacSettingsPage;
@@ -22,6 +23,8 @@ pub enum SettingsRoute {
     Pac,
     #[at("/settings/account")]
     Account,
+    #[at("/settings/debug")]
+    Debug,
 }
 
 pub fn switch_settings(route: &SettingsRoute) -> Html {
@@ -111,6 +114,11 @@ pub fn switch_settings(route: &SettingsRoute) -> Html {
 
             html! { <AccountSettings /> }
         }
+        SettingsRoute::Debug => {
+            set_title("Settings - Debug");
+
+            html! { <DebugSettingsPage /> }
+        }
     };
 
     html! {<div class="md:grid md:grid-cols-8">
@@ -121,6 +129,7 @@ pub fn switch_settings(route: &SettingsRoute) -> Html {
         <Link<SettingsRoute> classes={get_classes(*route, SettingsRoute::CustomFilters)} to={SettingsRoute::CustomFilters}> <span class="truncate">{ "Custom filters" }</span></Link<SettingsRoute>>
         <Link<SettingsRoute> classes={get_classes(*route, SettingsRoute::Pac)} to={SettingsRoute::Pac}> <span class="truncate">{ "PAC" }</span></Link<SettingsRoute>>
         <Link<SettingsRoute> classes={get_classes(*route, SettingsRoute::Account)} to={SettingsRoute::Account}> <span class="truncate">{ "Account" }</span></Link<SettingsRoute>>
+        <Link<SettingsRoute> classes={get_classes(*route, SettingsRoute::Debug)} to={SettingsRoute::Debug}> <span class="truncate">{ "Debug" }</span></Link<SettingsRoute>>
     </nav>
         <div class="container mx-auto px-4 sm:px-6 lg:px-8 mt-4 sm:col-span-6">{ content }</div>
     </div>

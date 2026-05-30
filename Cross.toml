@@ -1,5 +1,15 @@
 [target.mipsel-unknown-linux-gnu]
 build-std = true
 
+[target.mips-unknown-linux-gnu]
+build-std = true
+
 [target.mipsel-unknown-linux-musl]
 build-std = true
+[target.mipsel-unknown-linux-musl.env]
+RUSTFLAGS = "-C target-feature=+crt-static"
+
+[target.mips-unknown-linux-musl]
+build-std = true
+[target.mips-unknown-linux-musl.env]
+RUSTFLAGS = "-C target-feature=+crt-static"

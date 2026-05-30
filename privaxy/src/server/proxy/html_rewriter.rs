@@ -31,7 +31,21 @@ pub struct Rewriter {
     // reference to the globals they hook (setTimeout, eval, etc.), so this is
     // injected early into `<head>` rather than appended at end-of-body.
     injected_script: Option<String>,
+    // Procedural cosmetic filters (`:has-text`, `:upward`, `:xpath`, …) that
+    // can't be reduced to plain CSS. Each entry is one JSON-encoded
+    // `ProceduralOrActionFilter`; they're handed to the in-page shim injected
+    // into `<head>` alongside the scriptlets.
+    procedural_filters: Vec<String>,
+    // When set (config `debug.scriptlet_console_logging`), the empty
+    // per-scriptlet `catch` emitted by adblock-rust is rewritten to log the
+    // caught error to the page console instead of swallowing it.
+    scriptlet_debug_logging: bool,
 }
+
+/// In-page evaluator for procedural cosmetic filters. Defines the idempotent
+/// `window.__privaxyApplyProcedural(filters)` global; see the source file for
+/// the supported operators and actions.
+const PROCEDURAL_COSMETICS_SHIM: &str = include_str!("../../resources/procedural_cosmetics.js");
 
 impl Rewriter {
     pub(crate) fn new(
@@ -42,6 +56,8 @@ impl Rewriter {
         statistics: Statistics,
         csp_nonce: String,
         injected_script: Option<String>,
+        procedural_filters: Vec<String>,
+        scriptlet_debug_logging: bool,
     ) -> Self {
         Self {
             url,
@@ -52,7 +68,62 @@ impl Rewriter {
             internal_body_channel: mpsc::unbounded_channel(),
             csp_nonce,
             injected_script,
+            procedural_filters,
+            scriptlet_debug_logging,
         }
+    }
+
+    /// Combine the uBO scriptlet payload and the procedural-filter shim into a
+    /// single `<head>` script body, or `None` when there's nothing to inject.
+    /// Scriptlets come first so they hook globals before page scripts run; the
+    /// procedural shim follows and sets up its own DOM observer.
+    fn build_head_script(
+        injected_script: Option<String>,
+        procedural_filters: &[String],
+        scriptlet_debug_logging: bool,
+    ) -> Option<String> {
+        if injected_script.is_none() && procedural_filters.is_empty() {
+            return None;
+        }
+
+        let mut payload = String::new();
+
+        if let Some(mut script) = injected_script {
+            // adblock-rust isolates each scriptlet in an empty `catch ( e ) { }`.
+            // When debugging is enabled, surface what was caught rather than
+            // swallowing it (this is what hid the missing `scriptletGlobals`).
+            if scriptlet_debug_logging {
+                script = script.replace(
+                    "} catch ( e ) { }",
+                    "} catch (e) { console.error('[privaxy scriptlet]', e); }",
+                );
+            }
+            // adblock-rust emits scriptlet bodies that reference an ambient
+            // `scriptletGlobals` object — uBO supplies it in its own injection
+            // wrapper, but adblock-rust leaves that to the embedder. Without it
+            // every scriptlet hits `ReferenceError: scriptletGlobals is not
+            // defined` on its first `safeSelf()`/`shouldDebug()` call, which the
+            // scriptlet's own `try { … } catch {}` swallows — so all scriptlets
+            // silently no-op. Defining it once at the top of the payload (the
+            // scriptlet bodies use dot-access, so it must be an object)
+            // so the scriptlets actually work.
+            payload.push_str("const scriptletGlobals = {};\n");
+            payload.push_str(&script);
+        }
+
+        if !procedural_filters.is_empty() {
+            if !payload.is_empty() {
+                payload.push('\n');
+            }
+            payload.push_str(PROCEDURAL_COSMETICS_SHIM);
+            // Each filter is already valid JSON, so they're spliced straight
+            // into an array literal without re-serialization.
+            payload.push_str(";window.__privaxyApplyProcedural([");
+            payload.push_str(&procedural_filters.join(","));
+            payload.push_str("]);");
+        }
+
+        Some(payload)
     }
 
     pub(crate) fn rewrite(self) {
@@ -82,7 +153,11 @@ impl Rewriter {
 
         // Mutex<Option<_>> + take() = inject at most once even if the document
         // somehow contains multiple <head> openings.
-        let pending_script = Arc::new(Mutex::new(self.injected_script));
+        let pending_script = Arc::new(Mutex::new(Self::build_head_script(
+            self.injected_script,
+            &self.procedural_filters,
+            self.scriptlet_debug_logging,
+        )));
         let head_csp_nonce = csp_nonce.clone();
         let head_statistics = statistics.clone();
 
@@ -186,8 +261,6 @@ impl Rewriter {
                 break;
             }
             if let Some(adblock_properties) = adblock_properties {
-                let mut response_has_been_modified = false;
-
                 let blocker_result = adblock_requester
                     .get_cosmetic_response(
                         adblock_properties.url,
@@ -205,11 +278,15 @@ impl Rewriter {
                 let style_selectors: String = blocker_result
                     .style_selectors
                     .into_iter()
-                    .map(|(selector, content)| {
-                        response_has_been_modified = true;
-                        format!("{} {{ {} }}", selector, content.join(";"))
-                    })
+                    .map(|(selector, content)| format!("{} {{ {} }}", selector, content.join(";")))
                     .collect();
+
+                // Count the response as modified whenever we inject any cosmetic
+                // rules — hide selectors as well as style selectors. Previously
+                // only style selectors flipped this flag, so pages where we hid
+                // ad elements via `display: none` were undercounted.
+                let response_has_been_modified =
+                    !hidden_selectors.is_empty() || !style_selectors.is_empty();
 
                 // Scriptlets (`blocker_result.injected_script`) are intentionally
                 // ignored here: they're injected into <head> from the rewriter

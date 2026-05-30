@@ -1,5 +1,7 @@
+use super::doh::{self, DohAction};
 use super::html_rewriter::Rewriter;
 use crate::blocker::AdblockRequester;
+use crate::configuration::DohConfig;
 use crate::statistics::Statistics;
 use crate::web_gui::events::Event;
 use adblock::blocker::BlockerResult;
@@ -13,9 +15,14 @@ use hyper_rustls::HttpsConnector;
 use std::net::IpAddr;
 use tokio::sync::broadcast;
 
-const CSP_HEADERS: [&str; 4] = [
+// Only *enforcing* CSP headers are augmented. Report-only headers
+// (`content-security-policy-report-only`) are deliberately left untouched:
+// they never block our injected script/style, so augmenting them buys nothing,
+// and doing so would inject our nonce into the site's own violation telemetry
+// and suppress reports the site author relies on (e.g. while testing a strict
+// policy before enforcing it).
+const CSP_HEADERS: [&str; 3] = [
     "content-security-policy",
-    "content-security-policy-report-only",
     "x-content-security-policy",
     "x-webkit-csp",
 ];
@@ -178,6 +185,66 @@ fn augment_csp_value(value: &str, nonce: &str) -> String {
         .join("; ")
 }
 
+/// Map an outgoing request's headers to the adblock-rust request-type string
+/// the engine expects (the same vocabulary as uBO's `$type` options). Without
+/// an accurate type, type-scoped filter and exception rules — e.g. the
+/// `$script`/`$xmlhttprequest` exceptions in uBO's unbreak lists that keep
+/// sites like DuckDuckGo working — match incorrectly and cause false blocks.
+///
+/// Modern browsers send `Sec-Fetch-Dest`, which maps cleanly onto these types.
+/// When it's absent we fall back to sniffing `Accept`, and finally to `other`.
+fn request_type_from_headers(headers: &HeaderMap) -> &'static str {
+    if let Some(dest) = headers.get("sec-fetch-dest").and_then(|v| v.to_str().ok()) {
+        return match dest {
+            "document" => "document",
+            "frame" | "iframe" => "sub_frame",
+            "script" | "serviceworker" | "sharedworker" | "worker" | "audioworklet"
+            | "paintworklet" => "script",
+            "style" => "stylesheet",
+            "image" => "image",
+            "font" => "font",
+            "audio" | "video" | "track" => "media",
+            "object" | "embed" => "object",
+            "report" => "ping",
+            // `empty` is what fetch()/XHR report; treat it as xhr.
+            "empty" | "" => "xmlhttprequest",
+            _ => "other",
+        };
+    }
+
+    match headers
+        .get(http::header::ACCEPT)
+        .and_then(|v| v.to_str().ok())
+    {
+        Some(accept) if accept.contains("text/html") => "document",
+        Some(accept) if accept.contains("text/css") => "stylesheet",
+        Some(accept) if accept.contains("image/") => "image",
+        Some(accept) if accept.contains("javascript") || accept.contains("ecmascript") => "script",
+        _ => "other",
+    }
+}
+
+/// adblock-rust matches against the literal URL string, so an explicit default
+/// port (`:443` for https, `:80` for http) wedges itself between the host and the
+/// path and breaks hostname-anchored rules (`||host/path`) — the path no longer
+/// follows the host directly. Browsers and uBO match on the canonical URL with
+/// the default port stripped, so we normalise the same way before handing URLs to
+/// the blocker/cosmetic engine. Non-default ports are preserved.
+fn url_for_matching(uri: &Uri) -> String {
+    let scheme = uri.scheme_str().unwrap_or("https");
+    let host = uri.host().unwrap_or("");
+    let path = uri.path_and_query().map(|pq| pq.as_str()).unwrap_or("/");
+    let default_port = match scheme {
+        "https" => Some(443),
+        "http" => Some(80),
+        _ => None,
+    };
+    match uri.port_u16() {
+        Some(port) if Some(port) != default_port => format!("{scheme}://{host}:{port}{path}"),
+        _ => format!("{scheme}://{host}{path}"),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn serve(
     adblock_requester: AdblockRequester,
@@ -189,6 +256,8 @@ pub(crate) async fn serve(
     broadcast_sender: broadcast::Sender<Event>,
     statistics: Statistics,
     client_ip_address: IpAddr,
+    doh_config: DohConfig,
+    scriptlet_debug_logging: bool,
 ) -> Result<Response<Body>, hyper::Error> {
     let scheme_string = scheme.to_string();
 
@@ -222,15 +291,38 @@ pub(crate) async fn serve(
 
     statistics.increment_top_clients(client_ip_address);
 
+    let request_type = request_type_from_headers(req.headers()).to_string();
+
+    // Canonical URL (default port stripped) for all adblock-engine matching —
+    // see `url_for_matching`. The raw `uri` (which may carry `:443`) is still
+    // used for the actual outbound request below.
+    let match_url = url_for_matching(&uri);
+
+    // DNS-over-HTTPS policy is applied before adblock matching: a DoH endpoint
+    // rarely matches a network rule, but we still want to refuse or redirect it.
+    let doh_action = doh::classify(&doh_config, req.headers(), &uri);
+    if let DohAction::Block = &doh_action {
+        log::debug!("Refusing DoH request: {}", uri);
+        let _result = broadcast_sender.send(Event {
+            now: chrono::Utc::now(),
+            method: req.method().to_string(),
+            url: req.uri().to_string(),
+            is_request_blocked: true,
+        });
+        statistics.increment_blocked_requests();
+        return Ok(get_empty_response(StatusCode::BAD_GATEWAY));
+    }
+
     let (is_request_blocked, blocker_result) = adblock_requester
         .is_network_url_blocked(
-            uri.to_string(),
+            match_url.clone(),
             match req.headers().get(http::header::REFERER) {
                 Some(referer) => referer.to_str().unwrap().to_string(),
                 // When no referer, we default to `uri` as we otherwise may get many false
                 // positives due to the blocker thinking it's third party requests.
-                None => uri.to_string(),
+                None => match_url.clone(),
             },
+            request_type.clone(),
         )
         .await;
 
@@ -250,7 +342,20 @@ pub(crate) async fn serve(
             uri.path()
         ));
 
-        log::debug!("Blocked request: {}", uri);
+        // adblock-rust fuses many same-option patterns into one filter and
+        // reports the union as the matched filter, which can be enormous; cap
+        // it so debug logs stay readable.
+        let matched_filter = blocker_result.filter.as_deref().unwrap_or("<none>");
+        let matched_filter = match matched_filter.char_indices().nth(200) {
+            Some((idx, _)) => format!("{}… (truncated)", &matched_filter[..idx]),
+            None => matched_filter.to_string(),
+        };
+        log::debug!(
+            "Blocked request: {} [type={}] matched filter: {}",
+            uri,
+            request_type,
+            matched_filter
+        );
 
         return Ok(get_blocked_by_privaxy_response(blocker_result));
     }
@@ -284,8 +389,19 @@ pub(crate) async fn serve(
             }
         }
     }
+    // In redirect mode the query is forwarded to the configured upstream
+    // resolver instead of the endpoint the client chose; otherwise the original
+    // URL is used unchanged.
+    let outbound_url = match &doh_action {
+        DohAction::Redirect(upstream) => {
+            log::debug!("Redirecting DoH request to {}: {}", upstream, uri);
+            doh::redirect_url(upstream, req.method(), &uri)
+        }
+        _ => req.uri().to_string(),
+    };
+
     let mut response = match client
-        .request(req.method().clone(), req.uri().to_string())
+        .request(req.method().clone(), outbound_url)
         .headers(request_headers)
         .body(req.into_body())
         .send()
@@ -336,23 +452,25 @@ pub(crate) async fn serve(
     if is_html {
         let (sender_rewriter, receiver_rewriter) = crossbeam_channel::unbounded::<Bytes>();
 
-        // Resolve the URL-scoped scriptlet payload up-front so the rewriter can
-        // prepend it inside <head> before any page scripts execute. The
-        // end-of-body cosmetic lookup still runs for hide/style selectors,
-        // which depend on collected IDs/classes.
-        let injected_script = adblock_requester
-            .get_cosmetic_response(uri.to_string(), Vec::new(), Vec::new())
-            .await
-            .injected_script;
+        // Resolve the URL-scoped payloads up-front so the rewriter can prepend
+        // them inside <head> before any page scripts execute: the uBO scriptlet
+        // and the procedural cosmetic filters (both URL-specific, not dependent
+        // on collected IDs/classes). The end-of-body cosmetic lookup still runs
+        // for hide/style selectors, which do depend on collected IDs/classes.
+        let head_cosmetics = adblock_requester
+            .get_cosmetic_response(match_url.clone(), Vec::new(), Vec::new())
+            .await;
 
         let rewriter = Rewriter::new(
-            uri.to_string(),
+            match_url.clone(),
             adblock_requester,
             receiver_rewriter,
             sender,
             statistics,
             csp_nonce.expect("csp_nonce is Some whenever is_html"),
-            injected_script,
+            head_cosmetics.injected_script,
+            head_cosmetics.procedural_filters,
+            scriptlet_debug_logging,
         );
 
         tokio::task::spawn_blocking(|| rewriter.rewrite());
@@ -436,10 +554,14 @@ async fn perform_two_ends_upgrade(
 ) -> Response<Body> {
     let (mut duplex_client, mut duplex_server) = tokio::io::duplex(32);
 
+    // Captured for log context; `uri` is moved into `new_request` below.
+    let request_uri = uri.to_string();
+
     let mut new_request = Request::new(Body::empty());
     *new_request.headers_mut() = request.headers().clone();
     *new_request.uri_mut() = uri;
 
+    let client_uri = request_uri.clone();
     tokio::spawn(async move {
         match hyper::upgrade::on(request).await {
             Ok(mut upgraded_client) => {
@@ -447,15 +569,40 @@ async fn perform_two_ends_upgrade(
                     tokio::io::copy_bidirectional(&mut upgraded_client, &mut duplex_client).await;
             }
             Err(e) => {
-                log::debug!("Unable to upgrade: {}", e)
+                log::warn!(
+                    "Unable to upgrade client connection for {}: {}",
+                    client_uri,
+                    e
+                )
             }
         }
     });
 
     let response = match hyper_client.request(new_request).await {
         Ok(response) => response,
-        Err(_err) => return get_empty_response(http::StatusCode::BAD_REQUEST),
+        Err(err) => {
+            log::warn!(
+                "Upstream upgrade request failed for {}: {}",
+                request_uri,
+                err
+            );
+            return get_empty_response(http::StatusCode::BAD_GATEWAY);
+        }
     };
+
+    // Only bridge a genuine protocol switch. If the upstream did not return
+    // `101 Switching Protocols`, forwarding a fabricated 101 leaves the client
+    // believing the upgrade succeeded while no bytes are ever bridged from the
+    // server half — the connection then hangs forever. Forward the upstream's
+    // actual response instead so the client can fail (or follow it) cleanly.
+    if response.status() != StatusCode::SWITCHING_PROTOCOLS {
+        log::warn!(
+            "Upstream did not upgrade {} (status {}); forwarding response as-is",
+            request_uri,
+            response.status()
+        );
+        return response;
+    }
 
     let mut new_response = get_empty_response(StatusCode::SWITCHING_PROTOCOLS);
     *new_response.headers_mut() = response.headers().clone();
@@ -468,7 +615,11 @@ async fn perform_two_ends_upgrade(
             });
         }
         Err(e) => {
-            log::debug!("Unable to upgrade: {}", e)
+            log::warn!(
+                "Unable to upgrade upstream connection for {}: {}",
+                request_uri,
+                e
+            )
         }
     }
 

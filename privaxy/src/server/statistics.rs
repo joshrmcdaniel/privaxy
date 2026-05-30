@@ -110,7 +110,6 @@ impl Statistics {
                 let mut top_clients_iter = top_clients.iter();
 
                 let mut top_clients = (0..=ENTRIES_PER_STATISTICS_TABLE)
-                    .into_iter()
                     .filter_map(|_| {
                         let (ipv4, count) = top_clients_iter.next()?;
 

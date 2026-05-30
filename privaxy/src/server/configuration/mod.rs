@@ -34,6 +34,8 @@ pub enum ConfigurationError {
     CaError(#[from] CaError),
     #[error("an error occured while trying to deserialize configuration file")]
     DeserializeError(#[from] toml::de::Error),
+    #[error("an error occured while trying to serialize configuration")]
+    SerializeError(#[from] toml::ser::Error),
     #[error("this directory was not found")]
     DirectoryNotFound,
     #[error("file system error")]
@@ -46,6 +48,8 @@ pub enum ConfigurationError {
     UnableToDecodePem(#[from] openssl::error::ErrorStack),
     #[error("filter error: {0}")]
     FilterError(String),
+    #[error("filter validation error: {0}")]
+    FilterValidationError(String),
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -57,6 +61,24 @@ pub struct Configuration {
     pub filters: Vec<Filter>,
     #[serde(default)]
     pub auth: Auth,
+    #[serde(default)]
+    pub debug: DebugConfig,
+}
+
+/// Opt-in diagnostics. Off by default — these add visible/observable behavior to
+/// proxied pages, so they should only be enabled while troubleshooting.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+pub struct DebugConfig {
+    /// Surface errors thrown by injected uBO scriptlets to the page console
+    /// (`console.error('[privaxy scriptlet]', e)`) instead of swallowing them.
+    /// Useful for spotting a silently-failing scriptlet; noisy and reveals
+    /// Privaxy is in the path, so default off.
+    #[serde(default)]
+    pub scriptlet_console_logging: bool,
+    /// Verbosity of Privaxy's own logs, applied live (no restart). Dependency
+    /// logs remain governed by `RUST_LOG`. Defaults to `info`.
+    #[serde(default)]
+    pub log_level: crate::logging::LogLevel,
 }
 
 #[derive(Error, Debug)]
@@ -128,9 +150,26 @@ impl Configuration {
     pub async fn save(&self) -> ConfigurationResult<()> {
         let configuration_file_path = get_config_file();
 
-        let configuration_serialized = toml::to_string_pretty(&self).unwrap();
+        let configuration_serialized = toml::to_string_pretty(&self)?;
 
-        fs::write(configuration_file_path, configuration_serialized).await?;
+        // Write to a temporary file in the same directory, then atomically
+        // rename it over the target. This guarantees the live config is never
+        // observed in a half-written state: readers see either the old file or
+        // the fully-written new one, even if the process crashes mid-write.
+        let temp_file_path = get_base_directory()?.join(format!(
+            "{CONFIGURATION_FILE_NAME}.{}.tmp",
+            generate_random_hex(8)
+        ));
+
+        if let Err(err) = fs::write(&temp_file_path, configuration_serialized).await {
+            let _ = fs::remove_file(&temp_file_path).await;
+            return Err(ConfigurationError::FileSystemError(err));
+        }
+
+        if let Err(err) = fs::rename(&temp_file_path, &configuration_file_path).await {
+            let _ = fs::remove_file(&temp_file_path).await;
+            return Err(ConfigurationError::FileSystemError(err));
+        }
 
         Ok(())
     }
@@ -228,6 +267,11 @@ impl Configuration {
                 self.filters.push(filter.clone());
                 Ok(())
             }
+            Err(err @ ConfigurationError::FilterValidationError(_)) => {
+                log::warn!("Rejected invalid filter: {err}");
+                filter.enabled = false;
+                Err(err)
+            }
             Err(err) => {
                 log::error!("Failed to add filter: {err}");
                 filter.enabled = false;
@@ -296,6 +340,7 @@ impl Configuration {
                 pac_direct_ips: Vec::new(),
                 pac_direct_cidrs: std::collections::BTreeMap::new(),
                 pac_direct_fqdns: Vec::new(),
+                doh: DohConfig::default(),
             },
             exclusions: BTreeSet::from_iter(
                 recommended_exclusions()
@@ -304,6 +349,7 @@ impl Configuration {
             ),
             custom_filters: Vec::new(),
             auth: Auth::new_initialized(),
+            debug: DebugConfig::default(),
         })
     }
 }

@@ -50,7 +50,7 @@ async fn validate_ca_certificates(body: Ca) -> Result<Box<dyn warp::Reply>, Infa
         )),
         Err(err) => {
             log::error!("Invalid CA certificates: {err}");
-            return Ok(Box::new(
+            Ok(Box::new(
                 Response::builder()
                     .status(http::StatusCode::BAD_REQUEST)
                     .body(
@@ -59,7 +59,7 @@ async fn validate_ca_certificates(body: Ca) -> Result<Box<dyn warp::Reply>, Infa
                         })
                         .unwrap(),
                     ),
-            ));
+            ))
         }
     }
 }

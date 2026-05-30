@@ -1,7 +1,7 @@
 [package]
 name = "privaxy"
 description = "Next generation tracker and advertisement blocker"
-version = "0.7.0"
+version = "0.7.1"
 edition = "2021"
 authors = [
   "Pierre Barre <pierre@barre.sh>",
@@ -19,6 +19,10 @@ assets = [
 ]
 
 [package.metadata.deb.variants.mipsel]
+name = "privaxy"
+depends = "libc6, libgcc-s1, libatomic1"
+
+[package.metadata.deb.variants.mips]
 name = "privaxy"
 depends = "libc6, libgcc-s1, libatomic1"
 

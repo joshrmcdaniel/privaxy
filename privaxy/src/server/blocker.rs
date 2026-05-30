@@ -37,6 +37,11 @@ pub struct CosmeticRequest {
 pub struct NetworkUrl {
     url: String,
     referer: String,
+    // adblock-rust request type string (e.g. "script", "xmlhttprequest",
+    // "image", "sub_frame", "document"). Required for the engine to honour
+    // type-scoped filter and exception rules ($script, $xhr, $image, …);
+    // passing a constant here silently defeats those rules.
+    request_type: String,
 }
 
 #[derive(Debug)]
@@ -57,6 +62,11 @@ pub struct CosmeticBlockerResult {
     pub hidden_selectors: Vec<String>,
     pub style_selectors: HashMap<String, Vec<String>>,
     pub injected_script: Option<String>,
+    /// JSON-encoded `ProceduralOrActionFilter` records that cannot be reduced to
+    /// plain CSS (`:has-text`, `:matches-css`, `:upward`, `:xpath`, `:remove()`,
+    /// …). These are handed to the in-page procedural shim, which evaluates them
+    /// against the live DOM. Empty for the vast majority of hosts.
+    pub procedural_filters: Vec<String>,
 }
 
 pub struct BlockerRequest {
@@ -130,6 +140,7 @@ impl Blocker {
                                 hidden_selectors: Vec::new(),
                                 style_selectors: HashMap::new(),
                                 injected_script: None,
+                                procedural_filters: Vec::new(),
                             },
                         ));
                         continue;
@@ -160,20 +171,25 @@ impl Blocker {
 
                     // adblock 0.12 replaced UrlSpecificResources::style_selectors
                     // with `procedural_actions`, a HashSet of JSON-encoded
-                    // ProceduralOrActionFilter records. Re-derive the
-                    // (selector -> style) map from the ones that reduce to
-                    // pure CSS via `as_css()`; non-CSS procedural filters
-                    // (those needing in-page JS to apply) are dropped — the
-                    // proxy can't run JS-driven procedural matching.
+                    // ProceduralOrActionFilter records. Records that reduce to
+                    // pure CSS via `as_css()` are applied server-side as a
+                    // (selector -> style) map. The rest need in-page JS to
+                    // evaluate (`:has-text`, `:matches-css`, `:upward`, `:xpath`,
+                    // `:remove()`, …); their raw JSON is forwarded to the
+                    // procedural shim injected into the page.
                     let mut style_selectors: HashMap<String, Vec<String>> = HashMap::new();
+                    let mut procedural_filters: Vec<String> = Vec::new();
                     for raw in url_specific_resources.procedural_actions.iter() {
                         let Ok(filter) = serde_json::from_str::<
                             adblock::cosmetic_filter_cache::ProceduralOrActionFilter,
                         >(raw) else {
                             continue;
                         };
-                        if let Some((selector, style)) = filter.as_css() {
-                            style_selectors.entry(selector).or_default().push(style);
+                        match filter.as_css() {
+                            Some((selector, style)) => {
+                                style_selectors.entry(selector).or_default().push(style);
+                            }
+                            None => procedural_filters.push(raw.clone()),
                         }
                     }
 
@@ -184,6 +200,7 @@ impl Blocker {
                                 hidden_selectors,
                                 style_selectors,
                                 injected_script,
+                                procedural_filters,
                             }));
                 }
                 RequestKind::Url(network_url) => {
@@ -204,7 +221,7 @@ impl Blocker {
                     let req = Request::new(
                         network_url.url.as_str(),
                         network_url.referer.as_str(),
-                        "other",
+                        network_url.request_type.as_str(),
                     )
                     .unwrap();
                     let blocker_result = self.engine.check_network_request(&req);
@@ -284,6 +301,7 @@ impl AdblockRequester {
         &self,
         network_url: String,
         referer: String,
+        request_type: String,
     ) -> (bool, adblock::blocker::BlockerResult) {
         let (sender, receiver) = oneshot::channel();
 
@@ -293,6 +311,7 @@ impl AdblockRequester {
                 kind: RequestKind::Url(NetworkUrl {
                     url: network_url,
                     referer,
+                    request_type,
                 }),
             })
             .unwrap();

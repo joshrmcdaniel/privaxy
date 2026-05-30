@@ -1,5 +1,6 @@
 use super::get_error_response;
 use crate::configuration::Configuration;
+use crate::logging::LogHandle;
 use std::sync::Arc;
 use tokio::sync::mpsc::Sender;
 use tokio::sync::Notify;
@@ -7,6 +8,7 @@ use warp::filters::BoxedFilter;
 use warp::Filter as RouteFilter;
 
 mod ca_certificate;
+mod debug;
 mod network;
 mod pac;
 
@@ -14,6 +16,7 @@ pub(crate) fn create_routes(
     configuration_updater_sender: Sender<Configuration>,
     configuration_save_lock: Arc<tokio::sync::Mutex<()>>,
     notify_reload: Arc<Notify>,
+    log_handle: LogHandle,
 ) -> BoxedFilter<(impl warp::Reply,)> {
     let network_settings_route = warp::path("network").and(network::create_routes(
         configuration_updater_sender.clone(),
@@ -33,8 +36,16 @@ pub(crate) fn create_routes(
         notify_reload.clone(),
     ));
 
+    let debug_settings_route = warp::path("debug").and(debug::create_routes(
+        configuration_updater_sender.clone(),
+        configuration_save_lock.clone(),
+        notify_reload.clone(),
+        log_handle,
+    ));
+
     network_settings_route
         .or(ca_cert_route)
         .or(pac_settings_route)
+        .or(debug_settings_route)
         .boxed()
 }

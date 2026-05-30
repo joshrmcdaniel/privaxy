@@ -39,12 +39,13 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     && cargo build --release; rm src/main.rs
 
 COPY . .
+ARG COMPILE_MODE="release"
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/app/target \
     --mount=type=cache,target=/root/.npm \
-    cd web_frontend && trunk build --release \
-    && cd .. && cargo build --release \
-    && cp target/release/privaxy /privaxy-out \
+    cd web_frontend && trunk build --${COMPILE_MODE} \
+    && cd .. && cargo build --${COMPILE_MODE} \
+    && cp target/${COMPILE_MODE}/privaxy /privaxy-out \
     && chmod +x /privaxy-out
 
 # Prebuilt path: expect $PREBUILT_BINARY to exist in the build context.

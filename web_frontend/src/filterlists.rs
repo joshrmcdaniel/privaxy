@@ -2,7 +2,7 @@ use crate::button;
 use crate::button::{ButtonColor, ButtonState, PrivaxyButton};
 use crate::filters::{AddFilterRequest, Filter, FilterConfiguration, FilterGroup};
 use crate::save_button::BASE_BUTTON_CSS;
-use crate::{save_button, submit_banner};
+use crate::{failure_banner, save_button, submit_banner, ApiError};
 use filterlists_api;
 use reqwasm::http::Request;
 use url::Url;
@@ -19,6 +19,8 @@ pub enum SearchFilterMessage {
     RemoveFilter(filterlists_api::Filter),
     LoadFilters,
     FiltersLoaded(Vec<filterlists_api::Filter>),
+    AddFilterFailed(String, String),
+    AcknowledgeError,
     Error(String),
     NextPage,
     PreviousPage,
@@ -39,6 +41,7 @@ pub struct SearchFilterList {
     current_page: usize,
     results_per_page: usize,
     active_filters: FilterConfiguration,
+    error_message: Option<String>,
 }
 
 const FILTER_TAG_GROUPS: [&'static str; 4] = ["ads", "privacy", "malware", "social"];
@@ -65,6 +68,7 @@ impl Component for SearchFilterList {
             current_page: 1,
             results_per_page: 10,
             active_filters: _ctx.props().filter_configuration.clone(),
+            error_message: None,
         }
     }
 
@@ -95,32 +99,49 @@ impl Component for SearchFilterList {
                     .next()
                     .unwrap_or(FilterGroup::Regional);
 
+                self.error_message = None;
                 self.active_filters.push(Filter::new(
                     filter.name.clone(),
                     FilterGroup::Malware,
                     "".to_string(),
                 ));
                 let filter_name = filter.name.clone();
+                let rollback_name = filter.name.clone();
                 let filter_id = filter.id;
+                let link = self.link.clone();
                 spawn_local(async move {
                     let parsed_url = match resolve_primary_view_url(filter_id).await {
                         Some(url) => url,
-                        None => return,
+                        None => {
+                            link.send_message(SearchFilterMessage::AddFilterFailed(
+                                rollback_name,
+                                "Could not resolve a download URL for this filter list".to_string(),
+                            ));
+                            return;
+                        }
                     };
                     let request_body = AddFilterRequest::new(filter_name, group, parsed_url);
                     let request = Request::post("/api/filters")
                         .header("Content-Type", "application/json")
                         .body(serde_json::to_string(&request_body).unwrap());
                     match request.send().await {
+                        Ok(response) if response.ok() => {
+                            log::info!("Filter added successfully");
+                        }
                         Ok(response) => {
-                            if response.ok() {
-                                log::info!("Filter added successfully");
-                            } else {
-                                log::error!("Failed to add filter: {:?}", response.status());
-                            }
+                            let err = response.json::<ApiError>().await.unwrap_or(ApiError {
+                                error: format!("HTTP {}", response.status()),
+                            });
+                            link.send_message(SearchFilterMessage::AddFilterFailed(
+                                rollback_name,
+                                err.error,
+                            ));
                         }
                         Err(err) => {
-                            log::error!("Request error: {:?}", err);
+                            link.send_message(SearchFilterMessage::AddFilterFailed(
+                                rollback_name,
+                                format!("{err:?}"),
+                            ));
                         }
                     }
                 })
@@ -267,6 +288,12 @@ impl Component for SearchFilterList {
                 log::info!("Tags loaded successfully");
                 self.tags = tags.clone();
             }
+            SearchFilterMessage::AddFilterFailed(name, error) => {
+                log::error!("Failed to add filter {name}: {error}");
+                self.active_filters.retain(|f| f.title != name);
+                self.error_message = Some(error);
+            }
+            SearchFilterMessage::AcknowledgeError => self.error_message = None,
             SearchFilterMessage::Error(error) => {
                 log::error!("Error loading filters: {}", error.to_string());
                 self.loading = false;
@@ -357,6 +384,16 @@ impl Component for SearchFilterList {
         let total_count = self.filters.len();
         let match_count = filtered_filters_len(&self.filters, &self.filter_query);
 
+        let failure_banner = match &self.error_message {
+            Some(message) => failure_banner!(
+                true,
+                self.link
+                    .callback(|_| SearchFilterMessage::AcknowledgeError),
+                message.clone()
+            ),
+            None => html! {},
+        };
+
         let modal_overlay = html! {
                         <div
                             class="fixed inset-0 bg-gray-600 bg-opacity-75 flex items-center justify-center z-50"
@@ -383,6 +420,7 @@ impl Component for SearchFilterList {
                                     </button>
                                 </div>
                                 <div class="flex flex-col flex-grow px-6 py-4 space-y-3 overflow-hidden">
+                                    { failure_banner }
                                     <input type="text" placeholder="Search by name" class="border border-gray-300 p-2 rounded focus:outline-none focus:ring-2 focus:ring-blue-300"
                                         value={self.filter_query.clone()}
                                         oninput={_ctx.link().callback(|e: InputEvent| {

@@ -25,6 +25,7 @@ mod blocker_utils;
 mod ca;
 mod cert;
 pub mod configuration;
+pub mod logging;
 mod proxy;
 pub mod statistics;
 mod web_gui;
@@ -78,6 +79,11 @@ async fn handle_signals() -> (Arc<Notify>, Arc<Notify>) {
 }
 
 pub async fn start_privaxy() -> PrivaxyServer {
+    // Install the global logger first so every subsequent record is both
+    // written to stderr and made available to the `/api/logs` stream. The
+    // configured level is applied once the configuration is read below.
+    let log_handle = logging::init(logging::LogLevel::default().to_level_filter());
+
     // We use reqwest instead of hyper's client to perform most of the proxying as it's more convenient
     // to handle compression as well as offers a more convenient interface.
     let client = reqwest::Client::builder()
@@ -87,6 +93,25 @@ pub async fn start_privaxy() -> PrivaxyServer {
         .gzip(true)
         .brotli(true)
         .deflate(true)
+        // Without these, a proxied request can hang indefinitely on a pooled
+        // keep-alive connection the remote has silently dropped: reqwest reuses
+        // the dead connection and waits on a peer that will never answer.
+        // Retiring idle connections quickly (well under typical server keep-alive
+        // windows) plus OS-level keepalive probes bounds that. `connect_timeout`
+        // additionally fails fast on unreachable hosts.
+        .connect_timeout(Duration::from_secs(10))
+        .pool_idle_timeout(Duration::from_secs(30))
+        .tcp_keepalive(Duration::from_secs(60))
+        // h2-heavy origins multiplex every subresource over a
+        // single connection whose flow-control window defaults to a small,
+        // shared 64 KB. When we drain one stream's body slowly (the browser
+        // reads slowly, or the HTML rewriter backpressures), that window fills
+        // and stalls *every other stream* on the connection — head-of-line
+        // stutter across the whole site. Adaptive flow control grows the
+        // stream/connection windows based on the bandwidth-delay product,
+        // relieving the stall while keeping multiplexing. (This overrides any
+        // manual http2_initial_*_window_size, which is why none are set.)
+        .http2_adaptive_window(true)
         .build()
         .unwrap();
 
@@ -100,6 +125,10 @@ pub async fn start_privaxy() -> PrivaxyServer {
             std::process::exit(1)
         }
     };
+
+    // Apply the persisted application log level now that configuration is
+    // available; the web UI can change it on the fly afterwards.
+    log_handle.set_level(configuration.debug.log_level.to_level_filter());
 
     let local_exclusion_store =
         LocalExclusionStore::new(Vec::from_iter(configuration.exclusions.clone().into_iter()));
@@ -163,6 +192,7 @@ pub async fn start_privaxy() -> PrivaxyServer {
     let configuration_updater_tx_ref = configuration_updater_tx.clone();
     let configuration_save_lock_ref = configuration_save_lock.clone();
     let broadcast_tx_ref = broadcast_tx.clone();
+    let log_handle_ref = log_handle.clone();
     let notify_reload_clone = notify_reload.clone();
 
     tokio::spawn(async move {
@@ -178,6 +208,7 @@ pub async fn start_privaxy() -> PrivaxyServer {
                 configuration_updater_tx_ref.clone(),
                 cfg_lock_frontend.clone(),
                 notify_reload_frontend.clone(),
+                log_handle_ref.clone(),
             )
             .await;
             notify_reload_frontend.notified().await;
@@ -243,6 +274,7 @@ async fn privaxy_frontend(
     configuration_updater_tx: tokio::sync::mpsc::Sender<configuration::Configuration>,
     configuration_save_lock: Arc<tokio::sync::Mutex<()>>,
     notify_reload: Arc<tokio::sync::Notify>,
+    log_handle: logging::LogHandle,
 ) {
     let frontend = web_gui::get_frontend(
         broadcast_tx.clone(),
@@ -252,6 +284,7 @@ async fn privaxy_frontend(
         &configuration_save_lock,
         &local_exclusion_store,
         notify_reload.clone(),
+        log_handle.clone(),
     );
     let frontend_server = warp::serve(frontend);
     let config = read_configuration(&configuration_save_lock).await;
@@ -331,19 +364,37 @@ async fn privaxy_backend(
     configuration_save_lock: Arc<tokio::sync::Mutex<()>>,
     notify_reload: Arc<tokio::sync::Notify>,
 ) {
+    // Mirror the reqwest client's connection hardening (see above): without a
+    // connect timeout and OS-level keepalive, an upgrade can hang on a pooled
+    // keep-alive connection the remote has silently dropped, surfacing as
+    // "upgrade expected but not completed".
+    let mut http_connector = hyper::client::HttpConnector::new();
+    http_connector.enforce_http(false);
+    http_connector.set_connect_timeout(Some(Duration::from_secs(10)));
+    http_connector.set_keepalive(Some(Duration::from_secs(60)));
+
     let https_connector = hyper_rustls::HttpsConnectorBuilder::new()
         .with_native_roots()
         .https_or_http()
         .enable_http1()
-        .build();
+        .wrap_connector(http_connector);
     let config = read_configuration(&configuration_save_lock).await;
     let network_config = &config.network;
+    let doh_config = network_config.doh.clone();
+    // Read once per (re)start; the backend loop re-runs this on reload, so
+    // toggling the setting in the UI takes effect after its notify_reload.
+    let scriptlet_debug_logging = config.debug.scriptlet_console_logging;
 
     // The hyper client is only used to perform upgrades. We don't need to
     // handle compression.
     // Hyper's client don't follow redirects, which is what we want, nothing to
     // disable here.
-    let hyper_client = Client::builder().build(https_connector);
+    // An upgraded connection is consumed by the tunnel anyway, so idle pooling
+    // buys nothing and only risks reusing a stale connection under a long-lived
+    // WebSocket — disable it.
+    let hyper_client = Client::builder()
+        .pool_max_idle_per_host(0)
+        .build(https_connector);
 
     let make_service = make_service_fn(move |conn: &AddrStream| {
         let client_ip_address = conn.remote_addr().ip();
@@ -355,6 +406,7 @@ async fn privaxy_backend(
         let broadcast_tx = broadcast_tx.clone();
         let statistics = statistics.clone();
         let local_exclusion_store = local_exclusion_store.clone();
+        let doh_config = doh_config.clone();
 
         async move {
             Ok::<_, Infallible>(service_fn(move |req| {
@@ -368,12 +420,14 @@ async fn privaxy_backend(
                     statistics.clone(),
                     client_ip_address,
                     local_exclusion_store.clone(),
+                    doh_config.clone(),
+                    scriptlet_debug_logging,
                 )
             }))
         }
     });
 
-    let ip = env_or_config_ip(&network_config).await;
+    let ip = env_or_config_ip(network_config).await;
     let proxy_server_addr = SocketAddr::from((ip, network_config.proxy_port));
 
     let server = Server::bind(&proxy_server_addr)
