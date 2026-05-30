@@ -20,7 +20,7 @@ pub async fn get_filters() -> Result<Vec<Filter>, FilterListError> {
 pub async fn get_filter_information(filter: FilterArgs) -> Result<FilterDetails, FilterListError> {
     let id = match filter {
         FilterArgs::U32(id) => id,
-        FilterArgs::Filter(filter) => filter.id.clone(),
+        FilterArgs::Filter(filter) => filter.id,
     };
     _get::<FilterDetails>(&format!("{FILTERLISTS_API_URL}/lists/{id}")).await
 }
