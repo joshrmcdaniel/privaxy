@@ -554,10 +554,14 @@ async fn perform_two_ends_upgrade(
 ) -> Response<Body> {
     let (mut duplex_client, mut duplex_server) = tokio::io::duplex(32);
 
+    // Captured for log context; `uri` is moved into `new_request` below.
+    let request_uri = uri.to_string();
+
     let mut new_request = Request::new(Body::empty());
     *new_request.headers_mut() = request.headers().clone();
     *new_request.uri_mut() = uri;
 
+    let client_uri = request_uri.clone();
     tokio::spawn(async move {
         match hyper::upgrade::on(request).await {
             Ok(mut upgraded_client) => {
@@ -565,15 +569,40 @@ async fn perform_two_ends_upgrade(
                     tokio::io::copy_bidirectional(&mut upgraded_client, &mut duplex_client).await;
             }
             Err(e) => {
-                log::debug!("Unable to upgrade: {}", e)
+                log::warn!(
+                    "Unable to upgrade client connection for {}: {}",
+                    client_uri,
+                    e
+                )
             }
         }
     });
 
     let response = match hyper_client.request(new_request).await {
         Ok(response) => response,
-        Err(_err) => return get_empty_response(http::StatusCode::BAD_REQUEST),
+        Err(err) => {
+            log::warn!(
+                "Upstream upgrade request failed for {}: {}",
+                request_uri,
+                err
+            );
+            return get_empty_response(http::StatusCode::BAD_GATEWAY);
+        }
     };
+
+    // Only bridge a genuine protocol switch. If the upstream did not return
+    // `101 Switching Protocols`, forwarding a fabricated 101 leaves the client
+    // believing the upgrade succeeded while no bytes are ever bridged from the
+    // server half — the connection then hangs forever. Forward the upstream's
+    // actual response instead so the client can fail (or follow it) cleanly.
+    if response.status() != StatusCode::SWITCHING_PROTOCOLS {
+        log::warn!(
+            "Upstream did not upgrade {} (status {}); forwarding response as-is",
+            request_uri,
+            response.status()
+        );
+        return response;
+    }
 
     let mut new_response = get_empty_response(StatusCode::SWITCHING_PROTOCOLS);
     *new_response.headers_mut() = response.headers().clone();
@@ -586,7 +615,11 @@ async fn perform_two_ends_upgrade(
             });
         }
         Err(e) => {
-            log::debug!("Unable to upgrade: {}", e)
+            log::warn!(
+                "Unable to upgrade upstream connection for {}: {}",
+                request_uri,
+                e
+            )
         }
     }
 

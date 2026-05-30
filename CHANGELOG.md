@@ -2,6 +2,10 @@
 
 ## v0.7.1
 
+- Fix WebSocket / protocol-upgrade connections hanging
+  - Upgrade requests (`wss://`, and proprietary HTTP-upgrade transports like MMTLS long-link) could spin forever with `upgrade expected but not completed`. The proxy fabricated a `101 Switching Protocols` to the client regardless of what the upstream actually returned, so a failed upgrade left the client waiting on a tunnel that was never bridged. It now forwards the upstream's real response when it isn't a genuine `101`, and the dedicated upgrade HTTP client gained the same connection hardening (`connect_timeout`, `tcp_keepalive`, no idle pooling) as the main client.
+  - Excluded hosts performing a plain-HTTP protocol upgrade are now blind-tunneled at the TCP level instead of being run through the (HTTP-only) upgrade bridge, so MITM-excluded apps using non-HTTP upgrade protocols work. Previously the exclusion list was only consulted on the `CONNECT` path, so excluding such a host had no effect on its plain-HTTP upgrade traffic.
+  - When an opaque (non-WebSocket) upgrade is seen for a host that is *not* excluded, a warning is logged naming the host and suggesting it be added to the exclusions, instead of failing cryptically.
 - Validate filter lists when added
   - Adding a filter now rejects URLs that do not serve a `text/plain` filter list (e.g. an HTML error/landing page returned with a `200`) with a `422`, instead of silently saving a broken filter. The error is surfaced in the web UI, and filters whose URL stops serving a list are dropped from the engine with a warning on the next refresh.
 - Fix proxied requests randomly hanging/timing out

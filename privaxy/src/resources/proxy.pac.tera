@@ -10,22 +10,27 @@ function FindProxyForURL(url, host) {
     if (myIp === "{{ ip }}") return "DIRECT";
     {%- endfor %}
 {%- endif %}
+{%- if cidrs | length > 0 or fqdns | length > 0 %}
+    var hostIsIp = /^\d+\.\d+\.\d+\.\d+$/.test(host) || host.indexOf(":") !== -1;
+{%- endif %}
 {%- if cidrs | length > 0 %}
-    if (/^\d+\.\d+\.\d+\.\d+$/.test(host)) {
+    if (hostIsIp) {
     {%- for ip, netmask in cidrs %}
         if (isInNet(host, "{{ ip }}", "{{ netmask }}")) return "DIRECT";
     {%- endfor %}
     }
 {%- endif %}
 {%- if fqdns | length > 0 %}
-    var directDomains = [
-    {%- for fqdn in fqdns %}
-        "{{ fqdn }}",
-    {%- endfor %}
-    ];
-    for (var i = 0; i < directDomains.length; i++) {
-        var d = directDomains[i];
-        if (host === d || dnsDomainIs(host, "." + d)) return "DIRECT";
+    if (!hostIsIp) {
+        var directDomains = [
+        {%- for fqdn in fqdns %}
+            "{{ fqdn }}",
+        {%- endfor %}
+        ];
+        for (var i = 0; i < directDomains.length; i++) {
+            var d = directDomains[i];
+            if (host === d || dnsDomainIs(host, "." + d)) return "DIRECT";
+        }
     }
 {%- endif %}
     return "PROXY {{ proxy_host }}";
