@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.7.1
+## 0.7.0-0.7.1
 
 - Validate filter lists when added
   - Adding a filter now rejects URLs that do not serve a `text/plain` filter list (e.g. an HTML error/landing page returned with a `200`) with a `422`, instead of silently saving a broken filter. The error is surfaced in the web UI, and filters whose URL stops serving a list are dropped from the engine with a warning on the next refresh.
