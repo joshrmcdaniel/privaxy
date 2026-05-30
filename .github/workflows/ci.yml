@@ -348,14 +348,10 @@ jobs:
           path: privaxy/prebuilt
 
       - name: Build server
-        uses: actions-rs/cargo@v1
         env:
           CC_x86_64_unknown_linux_musl: musl-gcc
           CC_aarch64_unknown_linux_musl: musl-gcc
-        with:
-          command: build
-          working-directory: .
-          args: --release --target ${{ matrix.target }} --bin privaxy --target-dir target
+        run: cargo build --release --target ${{ matrix.target }} --bin privaxy --target-dir target
       - name: Build packages
         if: ${{ !endsWith(matrix.target, '-musl') }}
         run: |
@@ -483,7 +479,7 @@ jobs:
             cp "$dir/privaxy" "./release-assets/privaxy-${PKG_VERSION}-${target}"
           done
           find ./artifacts -name '*.deb' -exec cp {} ./release-assets/ \;
-          find ./artifacts -name '*.rpm' -exec cp {} ./release-assets/ \;e '*.rpm' -exec cp {} ./release-assets/ \;
+          find ./artifacts -name '*.rpm' -exec cp {} ./release-assets/ \;
 
       - name: Create release
         uses: softprops/action-gh-release@v2
