@@ -1,6 +1,6 @@
 use crate::button::ButtonState;
 use crate::filterlists::SearchFilterList;
-use crate::{save_button, submit_banner};
+use crate::{failure_banner, save_button, submit_banner, ApiError};
 use reqwasm::http::Request;
 use serde::{Deserialize, Serialize};
 use serde_json::de::IoRead;
@@ -58,6 +58,9 @@ pub enum AddFilterMessage {
     Open,
     Close,
     Save(String, String, FilterGroup),
+    Saved,
+    Failed(ApiError),
+    AcknowledgeError,
     CategoryChanged(FilterGroup),
     UrlChanged(String),
     TitleChanged(String),
@@ -91,6 +94,8 @@ pub struct AddFilterComponent {
     title: String,
     url: String,
     changes_saved: bool,
+    show_error: bool,
+    err_msg: String,
 }
 
 impl Component for AddFilterComponent {
@@ -105,6 +110,8 @@ impl Component for AddFilterComponent {
             url: String::new(),
             title: String::new(),
             changes_saved: false,
+            show_error: false,
+            err_msg: String::new(),
         }
     }
 
@@ -113,42 +120,64 @@ impl Component for AddFilterComponent {
             AddFilterMessage::Open => self.is_open = true,
             AddFilterMessage::Close => self.is_open = false,
             AddFilterMessage::Save(url, title, category) => {
-                if let Ok(parsed_url) = Url::parse(&url) {
-                    let request_body = AddFilterRequest {
-                        enabled: true,
-                        title: if title.is_empty() {
-                            self.url.clone()
-                        } else {
-                            title
-                        },
-                        group: category,
-                        url: parsed_url,
-                    };
+                let parsed_url = match Url::parse(&url) {
+                    Ok(parsed_url) => parsed_url,
+                    Err(err) => {
+                        self.link.send_message(AddFilterMessage::Failed(ApiError {
+                            error: format!("Invalid URL: {err}"),
+                        }));
+                        return true;
+                    }
+                };
 
-                    let request = Request::post("/api/filters")
-                        .header("Content-Type", "application/json")
-                        .body(serde_json::to_string(&request_body).unwrap());
+                let request_body = AddFilterRequest {
+                    enabled: true,
+                    title: if title.is_empty() {
+                        self.url.clone()
+                    } else {
+                        title
+                    },
+                    group: category,
+                    url: parsed_url,
+                };
 
-                    spawn_local(async move {
-                        match request.send().await {
-                            Ok(response) => {
-                                if response.ok() {
-                                    log::info!("Filter added successfully");
-                                } else {
-                                    log::error!("Failed to add filter: {:?}", response.status());
-                                }
-                            }
-                            Err(err) => {
-                                log::error!("Request error: {:?}", err);
-                            }
+                let request = Request::post("/api/filters")
+                    .header("Content-Type", "application/json")
+                    .body(serde_json::to_string(&request_body).unwrap());
+
+                let link = self.link.clone();
+                spawn_local(async move {
+                    match request.send().await {
+                        Ok(response) if response.ok() => {
+                            link.send_message(AddFilterMessage::Saved);
                         }
-                    });
-                } else {
-                    log::error!("Invalid URL: {}", url);
-                }
+                        Ok(response) => {
+                            let err = response.json::<ApiError>().await.unwrap_or(ApiError {
+                                error: format!("HTTP {}", response.status()),
+                            });
+                            link.send_message(AddFilterMessage::Failed(err));
+                        }
+                        Err(err) => {
+                            link.send_message(AddFilterMessage::Failed(ApiError {
+                                error: format!("{err:?}"),
+                            }));
+                        }
+                    }
+                });
+            }
+            AddFilterMessage::Saved => {
+                log::info!("Filter added successfully");
                 self.is_open = false;
+                self.show_error = false;
+                self.err_msg = String::new();
                 self.changes_saved = true;
             }
+            AddFilterMessage::Failed(err) => {
+                log::error!("Failed to add filter: {}", err.error);
+                self.show_error = true;
+                self.err_msg = err.error;
+            }
+            AddFilterMessage::AcknowledgeError => self.show_error = false,
             AddFilterMessage::CategoryChanged(category) => self.category = category,
             AddFilterMessage::UrlChanged(url) => self.url = url,
             AddFilterMessage::TitleChanged(title) => {
@@ -212,6 +241,16 @@ impl Component for AddFilterComponent {
         let category = self.category.clone();
         let title = self.title.clone();
 
+        let failure_banner = if self.show_error {
+            failure_banner!(
+                true,
+                _ctx.link().callback(|_| AddFilterMessage::AcknowledgeError),
+                self.err_msg.clone()
+            )
+        } else {
+            html! {}
+        };
+
         // <button onclick={self.link.callback(|_| AddFilterMessage::Open)} type="button" class="mt-5 button-base button-green">
         html! {
             <>
@@ -226,6 +265,7 @@ impl Component for AddFilterComponent {
                         <div class="fixed inset-0 bg-gray-600 bg-opacity-75 flex items-center justify-center z-50 ">
                             <div class="bg-white p-6 rounded-lg shadow-lg z-60">
                                 <div class="flex flex-col space-y-4">
+                                    { failure_banner }
                                     <div class="flex items-center">
                                         <div class="w-32">
                                             <label class="font-bold">{"Category"}</label>

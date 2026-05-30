@@ -187,7 +187,7 @@ impl DefaultFilters {
             ("https://secure.fanboy.co.nz/fanboy-annoyance.txt", "Fanboy's Annoyance", FilterGroup::Social, false),
             ("https://secure.fanboy.co.nz/fanboy-cookiemonster.txt", "EasyList Cookie", FilterGroup::Social, false),
             ("https://easylist.to/easylist/fanboy-social.txt", "Fanboy's Social", FilterGroup::Social, false),
-            ("https://raw.githubusercontent.com/uBlockOrigin/uAssets/master/filters/annoyances.txt", "uBlock filters - Annoyances", FilterGroup::Social, false),
+            ("https://raw.githubusercontent.com/uBlockOrigin/uAssets/refs/heads/master/filters/annoyances-others.txt", "uBlock filters - Annoyances", FilterGroup::Social, false),
         ]
         .into_iter()
         .filter_map(|(url, title, group, enabled_by_default)| Self::parse_filter(url, title, group, enabled_by_default))
@@ -256,6 +256,8 @@ impl Filter {
         let filters_directory = get_filter_directory();
         fs::create_dir_all(&filters_directory).await?;
 
+        // `get_filter` rejects responses that are not served as a filter list (see its
+        // Content-Type check), so an invalid URL never reaches disk.
         let filter = get_filter(self, http_client).await?;
 
         let filter_path = filters_directory.join(&self.file_name);
@@ -302,13 +304,65 @@ impl From<DefaultFilter> for Filter {
     }
 }
 
+/// Returns `Ok(())` only when the response is served as a `text/plain` filter list.
+///
+/// A URL returning a `200` is not sufficient on its own: it may serve an HTML error page, a
+/// redirect landing page or any other content. Filter lists are served as `text/plain`, so a
+/// different Content-Type (most commonly `text/html`) means the URL does not point to a list.
+fn validate_filter_content_type(
+    filter: &Filter,
+    response: &reqwest::Response,
+) -> super::ConfigurationResult<()> {
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+
+    // `starts_with` so that a charset suffix (e.g. `text/plain; charset=utf-8`) still matches.
+    if content_type.starts_with("text/plain") {
+        return Ok(());
+    }
+
+    Err(super::ConfigurationError::FilterValidationError(format!(
+        "The URL for '{}' does not point to a filter list (expected a \"text/plain\" response, got \"{}\")",
+        filter.title,
+        if content_type.is_empty() {
+            "no Content-Type"
+        } else {
+            &content_type
+        }
+    )))
+}
+
+/// Verifies at least one rule is present.
+fn validate_filter_rules(filter: &Filter, contents: &str) -> super::ConfigurationResult<()> {
+    let (network_filters, cosmetic_filters) = adblock::lists::parse_filters(
+        contents.lines(),
+        false,
+        adblock::lists::ParseOptions::default(),
+    );
+
+    if network_filters.is_empty() && cosmetic_filters.is_empty() {
+        return Err(super::ConfigurationError::FilterValidationError(format!(
+            "The URL for '{}' returned no parseable filter rules",
+            filter.title
+        )));
+    }
+
+    Ok(())
+}
+
 pub(crate) async fn get_filter(
     filter: &mut Filter,
     http_client: &reqwest::Client,
 ) -> super::ConfigurationResult<String> {
     let response = http_client.get(filter.url.as_str()).send().await?;
     if response.status().is_success() {
+        validate_filter_content_type(filter, &response)?;
         let content = response.text().await?;
+        validate_filter_rules(filter, &content)?;
         Ok(content)
     } else {
         log::error!(
@@ -349,8 +403,11 @@ pub(crate) async fn get_filters_content(
     for result in results {
         match result {
             Ok(filter_content) => filters.push(filter_content),
+            // A fetch failure here includes a filter whose URL has stopped serving a
+            // `text/plain` list (see `validate_filter_content_type`); we warn and drop it from
+            // the engine rather than aborting the whole rebuild.
             Err(err) => {
-                log::error!("Unable to retrieve filter: {:?}, skipping.", err)
+                log::warn!("Dropping filter that could not be loaded: {err:?}")
             }
         }
     }

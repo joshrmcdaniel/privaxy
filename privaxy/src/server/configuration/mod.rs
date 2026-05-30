@@ -46,6 +46,8 @@ pub enum ConfigurationError {
     UnableToDecodePem(#[from] openssl::error::ErrorStack),
     #[error("filter error: {0}")]
     FilterError(String),
+    #[error("filter validation error: {0}")]
+    FilterValidationError(String),
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -227,6 +229,11 @@ impl Configuration {
             Ok(_) => {
                 self.filters.push(filter.clone());
                 Ok(())
+            }
+            Err(err @ ConfigurationError::FilterValidationError(_)) => {
+                log::warn!("Rejected invalid filter: {err}");
+                filter.enabled = false;
+                Err(err)
             }
             Err(err) => {
                 log::error!("Failed to add filter: {err}");
