@@ -1,20 +1,41 @@
+use crate::logs::LogStream;
 use reqwasm::http::Request;
 use serde::{Deserialize, Serialize};
 use wasm_bindgen_futures::spawn_local;
-use web_sys::HtmlInputElement;
+use web_sys::{HtmlInputElement, HtmlSelectElement};
 use yew::prelude::*;
 use yew::{html, Component, Context, Html};
 
+/// Selectable log verbosities, matching the backend `logging::LogLevel`
+/// (serialized lowercase).
+const LOG_LEVELS: [&str; 6] = ["off", "error", "warn", "info", "debug", "trace"];
+
+fn default_log_level() -> String {
+    "info".to_string()
+}
+
 /// Mirrors the backend `configuration::DebugConfig`.
-#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 pub struct DebugConfig {
     #[serde(default)]
     pub scriptlet_console_logging: bool,
+    #[serde(default = "default_log_level")]
+    pub log_level: String,
+}
+
+impl Default for DebugConfig {
+    fn default() -> Self {
+        Self {
+            scriptlet_console_logging: false,
+            log_level: default_log_level(),
+        }
+    }
 }
 
 pub enum Message {
     Loaded(DebugConfig),
     ToggleScriptletLogging(bool),
+    SetLogLevel(String),
     SaveSucceeded(DebugConfig),
     SaveFailed(String),
 }
@@ -65,31 +86,14 @@ impl Component for DebugSettingsPage {
                 // triggers a backend reload, so it takes effect on newly served
                 // pages.
                 self.config.scriptlet_console_logging = value;
-                self.saving = true;
-                self.saved = false;
-                self.error = None;
-                let config = self.config.clone();
-                let link = ctx.link().clone();
-                spawn_local(async move {
-                    let body = serde_json::to_string(&config).unwrap();
-                    match Request::put("/api/settings/debug")
-                        .header("Content-Type", "application/json")
-                        .body(body)
-                        .send()
-                        .await
-                    {
-                        Ok(response) if response.ok() => {
-                            link.send_message(Message::SaveSucceeded(config));
-                        }
-                        Ok(response) => {
-                            link.send_message(Message::SaveFailed(format!(
-                                "Failed to save (HTTP {})",
-                                response.status()
-                            )));
-                        }
-                        Err(err) => link.send_message(Message::SaveFailed(format!("{err}"))),
-                    }
-                });
+                self.persist(ctx);
+                true
+            }
+            Message::SetLogLevel(level) => {
+                // The backend applies the level live (no reload needed) on the
+                // PUT; we persist it so it survives restarts.
+                self.config.log_level = level;
+                self.persist(ctx);
                 true
             }
             Message::SaveSucceeded(config) => {
@@ -126,6 +130,12 @@ impl Component for DebugSettingsPage {
             html! {}
         };
 
+        let on_level_change = ctx.link().callback(|e: Event| {
+            let select: HtmlSelectElement = e.target_unchecked_into();
+            Message::SetLogLevel(select.value())
+        });
+        let current_level = self.config.log_level.clone();
+
         html! {
             <>
                 <div class="pt-1.5 mb-4">
@@ -148,7 +158,7 @@ impl Component for DebugSettingsPage {
                                         type="checkbox"
                                         class="focus:ring-blue-500 h-4 w-4 text-blue-600 border-gray-300 rounded"
                                     />
-                                    { status }
+                                    { status.clone() }
                                 </div>
                             </div>
                             <div style="margin-left: 260px;">
@@ -164,7 +174,75 @@ impl Component for DebugSettingsPage {
                         </div>
                     </div>
                 </fieldset>
+
+                <fieldset class="mb-8" style="width: 100%;">
+                    <legend class="text-lg font-medium text-gray-900">{ "Logging" }</legend>
+                    <div class="mt-4 border-t border-b border-gray-200 divide-y divide-gray-200">
+                        <div class="mb-4" style="display: flex; flex-direction: column; width: 100%; padding: 2px 0;">
+                            <div style="display: flex; align-items: center; width: 100%;">
+                                <div class="text-gray-500" style="width: 260px; text-align: left; padding-right: 4px;">
+                                    { "Log level" }
+                                </div>
+                                <div style="flex-grow: 1;">
+                                    <select
+                                        onchange={on_level_change}
+                                        disabled={self.saving}
+                                        class="block pl-3 pr-8 py-1.5 text-sm border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500">
+                                        { for LOG_LEVELS.iter().map(|level| html! {
+                                            <option value={*level} selected={current_level == *level}>
+                                                { level.to_uppercase() }
+                                            </option>
+                                        }) }
+                                    </select>
+                                    { status }
+                                </div>
+                            </div>
+                            <div style="margin-left: 260px;">
+                                <p class="text-gray-400 text-sm">
+                                    { "Verbosity of Privaxy's own logs, applied immediately and persisted. Dependency logs stay governed by the " }
+                                    <span class="font-mono bg-gray-100 px-1">{ "RUST_LOG" }</span>
+                                    { " environment variable." }
+                                </p>
+                            </div>
+                        </div>
+                    </div>
+                </fieldset>
+
+                <LogStream />
             </>
         }
+    }
+}
+
+impl DebugSettingsPage {
+    /// Persists the current config to the backend, reflecting save state via
+    /// `SaveSucceeded`/`SaveFailed` messages.
+    fn persist(&mut self, ctx: &Context<Self>) {
+        self.saving = true;
+        self.saved = false;
+        self.error = None;
+
+        let config = self.config.clone();
+        let link = ctx.link().clone();
+        spawn_local(async move {
+            let body = serde_json::to_string(&config).unwrap();
+            match Request::put("/api/settings/debug")
+                .header("Content-Type", "application/json")
+                .body(body)
+                .send()
+                .await
+            {
+                Ok(response) if response.ok() => {
+                    link.send_message(Message::SaveSucceeded(config));
+                }
+                Ok(response) => {
+                    link.send_message(Message::SaveFailed(format!(
+                        "Failed to save (HTTP {})",
+                        response.status()
+                    )));
+                }
+                Err(err) => link.send_message(Message::SaveFailed(format!("{err}"))),
+            }
+        });
     }
 }

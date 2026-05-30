@@ -9,8 +9,6 @@ async fn main() {
         std::env::set_var(RUST_LOG_ENV_KEY, "privaxy=info");
     }
 
-    env_logger::init();
-
     start_privaxy().await;
 
     loop {

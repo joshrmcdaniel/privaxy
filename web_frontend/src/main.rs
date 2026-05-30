@@ -14,6 +14,7 @@ mod debug;
 mod filterlists;
 mod filters;
 mod general;
+mod logs;
 mod pac;
 mod requests;
 mod save_button;
