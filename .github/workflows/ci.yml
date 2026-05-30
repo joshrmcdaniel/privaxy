@@ -84,7 +84,7 @@ jobs:
         id: vars
         run: |
           rel="${GITHUB_REF#refs/*/}"
-          if grep -qE '^v?\d+\.\d+\.\d+' <<< "$rel" ; then
+          if [[ "$rel" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+ ]] ; then
             tag="${rel#v}"
           elif [ "$rel" = "develop" ]; then
             tag="dev"
@@ -475,6 +475,7 @@ jobs:
         run: |
           mkdir ./release-assets
           for dir in ./artifacts/privaxy-*/; do
+            [ -f "$dir/privaxy" ] || continue
             target=$(basename "$dir" | sed 's/^privaxy-//')
             cp "$dir/privaxy" "./release-assets/privaxy-${PKG_VERSION}-${target}"
           done
