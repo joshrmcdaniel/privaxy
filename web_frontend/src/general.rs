@@ -36,6 +36,9 @@ pub enum Message {
     ValidationSucceeded,
     CaSaveSuccess,
     UpdateTls(bool),
+    UpdateDohMode(String),
+    UpdateDohUpstream(String),
+    UpdateDohHosts(String),
     SaveSuccess,
     SaveFailed(ApiError),
     AcknowledgeError,
@@ -57,6 +60,50 @@ pub struct NetworkConfig {
     pub web_port: u16,
     /// Enable TLS for the web server.
     pub tls: bool,
+    /// DNS-over-HTTPS interception policy.
+    #[serde(default)]
+    pub doh: DohConfig,
+}
+
+/// How DNS-over-HTTPS requests passing through the proxy are handled. Mirrors
+/// the backend `configuration::DohMode`.
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum DohMode {
+    Off,
+    #[default]
+    Block,
+    Redirect,
+}
+
+impl DohMode {
+    fn as_value(&self) -> &'static str {
+        match self {
+            DohMode::Off => "off",
+            DohMode::Block => "block",
+            DohMode::Redirect => "redirect",
+        }
+    }
+
+    fn from_value(value: &str) -> Self {
+        match value {
+            "off" => DohMode::Off,
+            "redirect" => DohMode::Redirect,
+            _ => DohMode::Block,
+        }
+    }
+}
+
+/// DNS-over-HTTPS interception configuration. Mirrors the backend
+/// `configuration::DohConfig`.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+pub struct DohConfig {
+    #[serde(default)]
+    pub mode: DohMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upstream: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extra_hosts: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -116,16 +163,30 @@ struct NetworkSettings {
     raw_proxy_port: String,
     raw_bind_addr: String,
     raw_web_port: String,
+    raw_doh_upstream: String,
+    raw_doh_hosts: String,
     proxy_port_error: Option<String>,
     bind_addr_error: Option<String>,
     web_port_error: Option<String>,
 }
 
 impl NetworkSettings {
+    /// Redirect mode is meaningless without an upstream resolver to forward to.
+    fn doh_upstream_error(&self) -> Option<String> {
+        let doh = &self.current_config.doh;
+        if doh.mode == DohMode::Redirect && doh.upstream.as_deref().unwrap_or("").trim().is_empty()
+        {
+            Some("An upstream resolver URL is required in redirect mode".to_string())
+        } else {
+            None
+        }
+    }
+
     fn validate(&self) -> bool {
         self.proxy_port_error.is_none()
             && self.bind_addr_error.is_none()
             && self.web_port_error.is_none()
+            && self.doh_upstream_error().is_none()
     }
     fn config_has_changed(&self) -> bool {
         self.current_config.clone() != self.remote_config
@@ -323,6 +384,8 @@ impl Component for GeneralSettings {
                         raw_proxy_port: network_config.proxy_port.to_string(),
                         raw_bind_addr: network_config.bind_addr.clone(),
                         raw_web_port: network_config.web_port.to_string(),
+                        raw_doh_upstream: network_config.doh.upstream.clone().unwrap_or_default(),
+                        raw_doh_hosts: network_config.doh.extra_hosts.join(", "),
                         proxy_port_error: None,
                         bind_addr_error: None,
                         web_port_error: None,
@@ -369,6 +432,32 @@ impl Component for GeneralSettings {
             Message::UpdateTls(value) => {
                 if let Some(ref mut network_settings) = self.network_settings {
                     network_settings.current_config.tls = value;
+                }
+            }
+            Message::UpdateDohMode(value) => {
+                if let Some(ref mut network_settings) = self.network_settings {
+                    network_settings.current_config.doh.mode = DohMode::from_value(&value);
+                }
+            }
+            Message::UpdateDohUpstream(value) => {
+                if let Some(ref mut network_settings) = self.network_settings {
+                    network_settings.raw_doh_upstream = value.clone();
+                    let trimmed = value.trim();
+                    network_settings.current_config.doh.upstream = if trimmed.is_empty() {
+                        None
+                    } else {
+                        Some(trimmed.to_string())
+                    };
+                }
+            }
+            Message::UpdateDohHosts(value) => {
+                if let Some(ref mut network_settings) = self.network_settings {
+                    network_settings.raw_doh_hosts = value.clone();
+                    network_settings.current_config.doh.extra_hosts = value
+                        .split(',')
+                        .map(|host| host.trim().to_string())
+                        .filter(|host| !host.is_empty())
+                        .collect();
                 }
             }
             Message::UpdateCaCert(value) => {
@@ -543,6 +632,44 @@ impl Component for GeneralSettings {
                                             Message::UpdateTls(input.checked())
                                         }),
                                         "If the web server uses HTTPS") }
+                                    { render_select_setting(
+                                        "DoH handling",
+                                        network_settings.current_config.doh.mode.as_value(),
+                                        &[
+                                            ("off", "Off — leave DoH untouched"),
+                                            ("block", "Block — refuse DoH (clients fall back to system DNS)"),
+                                            ("redirect", "Redirect — forward to an upstream resolver"),
+                                        ],
+                                        ctx.link().callback(|e: Event| {
+                                            let input: web_sys::HtmlSelectElement = e.target_unchecked_into();
+                                            Message::UpdateDohMode(input.value())
+                                        }),
+                                        "How DNS-over-HTTPS requests passing through the proxy are handled."
+                                    ) }
+                                    if network_settings.current_config.doh.mode == DohMode::Redirect {
+                                        { render_setting(
+                                            "Upstream resolver",
+                                            network_settings.raw_doh_upstream.clone(),
+                                            ctx.link().callback(|e: InputEvent| {
+                                                let input: web_sys::HtmlInputElement = e.target_unchecked_into();
+                                                Message::UpdateDohUpstream(input.value())
+                                            }),
+                                            network_settings.doh_upstream_error().as_ref(),
+                                            "DoH endpoint queries are forwarded to, e.g. https://dns.quad9.net/dns-query"
+                                        ) }
+                                    }
+                                    if network_settings.current_config.doh.mode != DohMode::Off {
+                                        { render_setting(
+                                            "Extra DoH hosts",
+                                            network_settings.raw_doh_hosts.clone(),
+                                            ctx.link().callback(|e: InputEvent| {
+                                                let input: web_sys::HtmlInputElement = e.target_unchecked_into();
+                                                Message::UpdateDohHosts(input.value())
+                                            }),
+                                            None,
+                                            "Comma-separated resolver hostnames to also treat as DoH, on top of the built-in list."
+                                        ) }
+                                    }
                                     </>
                                 }
                             }
@@ -664,6 +791,32 @@ fn render_certificate_setting(
                 if let Some(error_msg) = error {
                     <p class="text-red-500 text-xs italic">{error_msg}</p>
                 }
+            </div>
+        </div>
+    }
+}
+
+fn render_select_setting(
+    setting_name: &str,
+    selected: &str,
+    options: &[(&str, &str)],
+    onchange: Callback<Event>,
+    description: &str,
+) -> Html {
+    html! {
+        <div class="mb-4" style="display: flex; flex-direction: column; width: 100%; padding: 2px 0;">
+            <div style="display: flex; align-items: center; width: 100%;">
+                <div class="text-gray-500" style="width: 200px; text-align: left; padding-right: 4px;">{ setting_name }</div>
+                <div style="flex-grow: 1;">
+                    <select onchange={onchange} class="shadow appearance-none border rounded w-80 py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline">
+                        { for options.iter().map(|(value, label)| html! {
+                            <option value={value.to_string()} selected={*value == selected}>{ *label }</option>
+                        }) }
+                    </select>
+                </div>
+            </div>
+            <div style="margin-left: 200px;">
+                <p class="text-gray-400 text-sm">{description}</p>
             </div>
         </div>
     }

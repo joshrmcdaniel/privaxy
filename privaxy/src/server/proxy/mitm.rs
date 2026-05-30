@@ -1,5 +1,8 @@
 use super::{exclusions::LocalExclusionStore, serve::serve};
-use crate::{blocker::AdblockRequester, cert::CertCache, statistics::Statistics, Event};
+use crate::{
+    blocker::AdblockRequester, cert::CertCache, configuration::DohConfig, statistics::Statistics,
+    Event,
+};
 use http::uri::{Authority, Scheme};
 use hyper::{
     client::HttpConnector, http, server::conn::Http, service::service_fn, upgrade::Upgraded, Body,
@@ -21,6 +24,7 @@ pub(crate) async fn serve_mitm_session(
     statistics: Statistics,
     client_ip_address: IpAddr,
     local_exclusion_store: LocalExclusionStore,
+    doh_config: DohConfig,
 ) -> Result<Response<Body>, hyper::Error> {
     let authority = match req.uri().authority().cloned() {
         Some(authority) => authority,
@@ -79,6 +83,7 @@ pub(crate) async fn serve_mitm_session(
                                             broadcast_tx.clone(),
                                             statistics.clone(),
                                             client_ip_address,
+                                            doh_config.clone(),
                                         )
                                     }),
                                 )
@@ -114,6 +119,7 @@ pub(crate) async fn serve_mitm_session(
             broadcast_tx,
             statistics,
             client_ip_address,
+            doh_config,
         )
         .await
     }

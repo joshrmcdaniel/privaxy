@@ -1,6 +1,6 @@
 use super::get_error_response;
 use crate::configuration;
-use crate::configuration::NetworkConfig;
+use crate::configuration::{DohConfig, NetworkConfig};
 use crate::web_gui::with_configuration_save_lock;
 use crate::web_gui::with_configuration_updater_sender;
 use crate::web_gui::with_notify_reload;
@@ -27,6 +27,10 @@ pub struct NetworkConfigRequest {
     pub web_port: u16,
     /// Enable TLS for the web server.
     pub tls: bool,
+    /// DNS-over-HTTPS interception policy. Omitted by older clients, in which
+    /// case the current configuration is preserved.
+    #[serde(default)]
+    pub doh: Option<DohConfig>,
 }
 
 impl Into<NetworkConfig> for NetworkConfigRequest {
@@ -44,6 +48,7 @@ impl Into<NetworkConfig> for NetworkConfigRequest {
             pac_direct_ips: Vec::new(),
             pac_direct_cidrs: std::collections::BTreeMap::new(),
             pac_direct_fqdns: Vec::new(),
+            doh: DohConfig::default(),
         }
     }
 }
@@ -76,6 +81,7 @@ async fn put_network_settings(
     };
 
     drop(lock);
+    let requested_doh = network_settings.doh.clone();
     let mut net_cfg: NetworkConfig = network_settings.into();
     let current_cfg = configuration.network.clone();
     net_cfg.tls_cert_path = current_cfg.tls_cert_path;
@@ -86,6 +92,7 @@ async fn put_network_settings(
     net_cfg.pac_direct_ips = current_cfg.pac_direct_ips;
     net_cfg.pac_direct_cidrs = current_cfg.pac_direct_cidrs;
     net_cfg.pac_direct_fqdns = current_cfg.pac_direct_fqdns;
+    net_cfg.doh = requested_doh.unwrap_or(current_cfg.doh);
     if let Err(err) = &net_cfg.validate().await {
         log::error!("Invalid network settings: {}", err);
         return Ok(Box::new(get_error_response(err)));

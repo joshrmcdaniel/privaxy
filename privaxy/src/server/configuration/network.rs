@@ -66,6 +66,50 @@ pub struct NetworkConfig {
     /// FQDNs (and their subdomains) that bypass the proxy.
     #[serde(default)]
     pub pac_direct_fqdns: Vec<String>,
+    /// DNS-over-HTTPS interception policy. See [`DohConfig`].
+    #[serde(default)]
+    pub doh: DohConfig,
+}
+
+/// What the proxy does with DNS-over-HTTPS (DoH) requests it intercepts.
+///
+/// Privaxy filters at the HTTP layer rather than at DNS resolution time, so DoH
+/// does not bypass blocking the way it bypasses a DNS-level filter — the actual
+/// request to a blocked host is still matched downstream regardless of how it
+/// was resolved. These modes instead let the operator steer how clients resolve
+/// names in the first place.
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum DohMode {
+    /// Leave DoH requests untouched.
+    Off,
+    /// Refuse DoH requests so the client's DoH attempt fails. Clients in
+    /// fallback mode (e.g. default Firefox) then revert to the system resolver,
+    /// whose lookups flow through Privaxy normally. This is the default: it is
+    /// the HTTP-layer equivalent of the Firefox `use-application-dns.net` canary
+    /// (which a non-DNS proxy cannot serve directly).
+    #[default]
+    Block,
+    /// Transparently forward the opaque DoH query to [`DohConfig::upstream`]
+    /// instead of the resolver the client chose.
+    Redirect,
+}
+
+/// DNS-over-HTTPS interception configuration.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+pub struct DohConfig {
+    /// How intercepted DoH requests are handled.
+    #[serde(default)]
+    pub mode: DohMode,
+    /// Upstream DoH resolver URL used when `mode = "redirect"`
+    /// (e.g. `https://dns.quad9.net/dns-query`). A redirect with no usable
+    /// upstream fails safe by blocking instead of forwarding.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upstream: Option<String>,
+    /// Additional DoH endpoint hostnames to recognise, on top of the built-in
+    /// list of well-known resolvers.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extra_hosts: Vec<String>,
 }
 
 #[derive(Error, Debug)]

@@ -1,5 +1,7 @@
+use super::doh::{self, DohAction};
 use super::html_rewriter::Rewriter;
 use crate::blocker::AdblockRequester;
+use crate::configuration::DohConfig;
 use crate::statistics::Statistics;
 use crate::web_gui::events::Event;
 use adblock::blocker::BlockerResult;
@@ -254,6 +256,7 @@ pub(crate) async fn serve(
     broadcast_sender: broadcast::Sender<Event>,
     statistics: Statistics,
     client_ip_address: IpAddr,
+    doh_config: DohConfig,
 ) -> Result<Response<Body>, hyper::Error> {
     let scheme_string = scheme.to_string();
 
@@ -293,6 +296,21 @@ pub(crate) async fn serve(
     // see `url_for_matching`. The raw `uri` (which may carry `:443`) is still
     // used for the actual outbound request below.
     let match_url = url_for_matching(&uri);
+
+    // DNS-over-HTTPS policy is applied before adblock matching: a DoH endpoint
+    // rarely matches a network rule, but we still want to refuse or redirect it.
+    let doh_action = doh::classify(&doh_config, req.headers(), &uri);
+    if let DohAction::Block = &doh_action {
+        log::debug!("Refusing DoH request: {}", uri);
+        let _result = broadcast_sender.send(Event {
+            now: chrono::Utc::now(),
+            method: req.method().to_string(),
+            url: req.uri().to_string(),
+            is_request_blocked: true,
+        });
+        statistics.increment_blocked_requests();
+        return Ok(get_empty_response(StatusCode::BAD_GATEWAY));
+    }
 
     let (is_request_blocked, blocker_result) = adblock_requester
         .is_network_url_blocked(
@@ -370,8 +388,19 @@ pub(crate) async fn serve(
             }
         }
     }
+    // In redirect mode the query is forwarded to the configured upstream
+    // resolver instead of the endpoint the client chose; otherwise the original
+    // URL is used unchanged.
+    let outbound_url = match &doh_action {
+        DohAction::Redirect(upstream) => {
+            log::debug!("Redirecting DoH request to {}: {}", upstream, uri);
+            doh::redirect_url(upstream, req.method(), &uri)
+        }
+        _ => req.uri().to_string(),
+    };
+
     let mut response = match client
-        .request(req.method().clone(), req.uri().to_string())
+        .request(req.method().clone(), outbound_url)
         .headers(request_headers)
         .body(req.into_body())
         .send()
