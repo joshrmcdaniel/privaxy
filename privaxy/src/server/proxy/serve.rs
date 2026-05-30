@@ -257,6 +257,7 @@ pub(crate) async fn serve(
     statistics: Statistics,
     client_ip_address: IpAddr,
     doh_config: DohConfig,
+    scriptlet_debug_logging: bool,
 ) -> Result<Response<Body>, hyper::Error> {
     let scheme_string = scheme.to_string();
 
@@ -451,14 +452,14 @@ pub(crate) async fn serve(
     if is_html {
         let (sender_rewriter, receiver_rewriter) = crossbeam_channel::unbounded::<Bytes>();
 
-        // Resolve the URL-scoped scriptlet payload up-front so the rewriter can
-        // prepend it inside <head> before any page scripts execute. The
-        // end-of-body cosmetic lookup still runs for hide/style selectors,
-        // which depend on collected IDs/classes.
-        let injected_script = adblock_requester
+        // Resolve the URL-scoped payloads up-front so the rewriter can prepend
+        // them inside <head> before any page scripts execute: the uBO scriptlet
+        // and the procedural cosmetic filters (both URL-specific, not dependent
+        // on collected IDs/classes). The end-of-body cosmetic lookup still runs
+        // for hide/style selectors, which do depend on collected IDs/classes.
+        let head_cosmetics = adblock_requester
             .get_cosmetic_response(match_url.clone(), Vec::new(), Vec::new())
-            .await
-            .injected_script;
+            .await;
 
         let rewriter = Rewriter::new(
             match_url.clone(),
@@ -467,7 +468,9 @@ pub(crate) async fn serve(
             sender,
             statistics,
             csp_nonce.expect("csp_nonce is Some whenever is_html"),
-            injected_script,
+            head_cosmetics.injected_script,
+            head_cosmetics.procedural_filters,
+            scriptlet_debug_logging,
         );
 
         tokio::task::spawn_blocking(|| rewriter.rewrite());

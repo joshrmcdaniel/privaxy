@@ -10,6 +10,7 @@ mod auth;
 mod blocking_enabled;
 mod button;
 mod dashboard;
+mod debug;
 mod filterlists;
 mod filters;
 mod general;
