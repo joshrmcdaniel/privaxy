@@ -8,27 +8,37 @@
   </p>
 </div>
 
-**Forked from the [app version](https://github.com/Barre/privaxy/tree/v0.5.2)**
+**A fork of [privaxy](https://github.com/Barre/privaxy)**
 
-This reverts it back to [v0.3.1](https://github.com/Barre/privaxy/tree/v0.3.1), but with
-newer updates, an improved UI, and server-friendly configuration. To skip to the differences,
-[see here](#differences)
-
-See features [here](#features)
+This reverts it back to [v0.3.1](https://github.com/Barre/privaxy/tree/v0.3.1), adding more
+features, dependency updates, an improved UI, and server-friendly configuration options.
 
 
-<div align="center">
-<img width="912" alt="dashboard" src="./images/dashboard.png">
-<img width="912" alt="requests" src="./images/requests.png">
-<img width="912" alt="filters" src="./images/filters.png">
-<img width="912" alt="filterlists" src="./images/filterlist.png">
-<img width="912" alt="general" src="./images/general.png">
-<img alt="addfilter" src="./images/addfilter.png">
-</div>
+## Table of Contents
+
+- [About](#about)
+  - [Compared to DNS-based blockers (Pi-hole, AdGuard Home)](#compared-to-dns-based-blockers-pi-hole-adguard-home)
+- [Features](#features)
+- [Installation](#installation)
+  - [Debian/Ubuntu](#debianubuntu)
+  - [RHEL/Fedora/Rocky](#rhelfedorarocky)
+  - [MIPS](#mips)
+  - [Docker](#docker)
+  - [From source](#from-source)
+  - [Docker Compose](#docker-compose)
+- [Setup](#setup)
+  - [First-run web UI](#1-first-run-web-ui)
+  - [Install the root CA on your client devices](#2-install-the-root-ca-on-your-client-devices)
+  - [Point clients at the proxy](#3-point-clients-at-the-proxy)
+  - [Cert-pinned hosts (exclusions)](#4-cert-pinned-hosts-exclusions)
+- [Screenshots](#screenshots)
+- [Acknowledgements](#acknowledgements)
 
 ## About
 
 Privaxy is a MITM HTTP(s) proxy that sits in between HTTP(s) talking applications, such as a web browser and HTTP servers, such as those serving websites.
+
+**This app sees all your plaintext, run it on hardware you trust. DO NOT FACE THIS PUBLICLY**
 
 By establishing a two-way tunnel between both ends, Privaxy is able to block network requests based on URL patterns and to inject scripts as well as styles into HTML documents.
 
@@ -36,7 +46,26 @@ Operating at a lower level, Privaxy is both more efficient as well as more strea
 
 Privaxy is not limited by the browser’s APIs and can operate with any HTTP traffic, not only the traffic flowing from web browsers.
 
-Privaxy is also way more capable than DNS-based blockers as it is able to operate directly on URLs and to inject resources into web pages.
+### Compared to DNS-based blockers (Pi-hole, AdGuard Home)
+
+DNS sinkholes can only answer "is this whole domain allowed or not?". Because
+Privaxy works at the HTTP layer instead of the DNS layer, it can do things a
+DNS blocker fundamentally cannot:
+
+- **Block by full URL, not just domain** — individual paths and query strings
+  can be blocked, so first-party and same-domain ads/trackers (served off a
+  domain you otherwise need) are reachable targets.
+- **Cosmetic filtering** — hide page elements and inject uBlock Origin-style
+  scriptlets, instead of leaving broken gaps where a blocked domain used to be.
+- **Intercept DNS-over-HTTPS (DoH)** — DoH is the mechanism that routinely
+  bypasses DNS-level blockers; Privaxy sees it as HTTPS and can block or
+  redirect it.
+
+The trade-off is that Privaxy is a MITM proxy: clients must trust its root CA
+and route traffic through it, and it sees plaintext. It **complements** a DNS
+blocker more than it strictly replaces one.
+
+**Upon initial setup, a lot of your websites/apps will break due to cert pinning. This is a one time occurrence, add websites/endpoints to exlcusions as broken websites are encountered**
 
 ## Features
 
@@ -48,6 +77,7 @@ Privaxy is also way more capable than DNS-based blockers as it is able to operat
 - Browser and HTTP client agnostic.
 - Support for custom filters.
 - Support for excluding hosts from the MITM pipeline.
+- DNS-over-HTTPS (DoH) interception — `block` (default) clients' DoH so they fall back to the system resolver, or `redirect` queries to a resolver you configure. Closes the DoH bypass that defeats DNS-level blockers.
 - Support for protocol upgrades, such as with websockets.
 - Automatic filter lists updates.
 - Very low resource usage.
@@ -75,7 +105,17 @@ Download and install the deb/rpm/binary with mips in the name
 
 ### Docker
 
-`docker run -d --name privaxy --restart unless-stopped -p 8100:8100 -p 8200:8200 -v /path/to/conf:/conf privaxy:ghcr.io/joshrmcdaniel/privaxy:dev`
+```sh
+docker run -d --name privaxy --restart unless-stopped \
+  -p 8100:8100 -p 8200:8200 \
+  -v /path/to/conf:/conf \
+  ghcr.io/joshrmcdaniel/privaxy:<tag>
+```
+
+- `dev` is mapped to the develop branch
+- `latest` is mapped to the main branch
+- `<version>` maps to official releases
+- `<sha>` maps to a specific commit
 
 ### From source
 
@@ -104,7 +144,7 @@ Build requirements:
 ```yaml
 services:
   privaxy:
-    image: ghcr.io/joshrmcdaniel/privaxy:dev
+    image: ghcr.io/joshrmcdaniel/privaxy
     ports:
       - "8100:8100"
       - "8200:8200"
@@ -112,6 +152,13 @@ services:
       - path/to/conf:/conf
     restart: unless-stopped
 ```
+
+Tags:
+
+- `dev` is mapped to the develop branch
+- `latest` is mapped to the main branch
+- `<version>` maps to official releases
+- `<sha>` maps to a specific commit
 
 ## Setup
 
@@ -192,5 +239,26 @@ to the recommended list.
 > `password_hash` value from the config file and restart. The web UI will
 > force the setup flow again.
 
-### Future
-- Add DNS resolutions; incoporate DNS level blocking?
+## Screenshots
+
+<div align="center">
+<img width="912" alt="dashboard" src="./images/dashboard.png">
+<img width="912" alt="requests" src="./images/requests.png">
+<img width="912" alt="filters" src="./images/filters.png">
+<img width="912" alt="filterlists" src="./images/filterlist.png">
+<img width="912" alt="general" src="./images/general.png">
+<img alt="addfilter" src="./images/addfilter.png">
+</div>
+
+## Acknowledgements
+
+Privaxy was originally created by [Pierre Barre](https://github.com/Barre)
+([Barre/privaxy](https://github.com/Barre/privaxy)). This fork stands on top of
+that work, full credit for the original design and implementation goes to him.
+
+Thanks also to:
+
+- [uBlock Origin](https://github.com/gorhill/uBlock) and [Raymond Hill](https://github.com/gorhill).
+  Privaxy bundles uBlock Origin's scriptlets and web-accessible resources for filter compatibility.
+- [filterlists.com](https://filterlists.com) — for the filter-list directory
+  that powers in-app filter discovery.

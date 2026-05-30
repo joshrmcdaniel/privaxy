@@ -1,7 +1,20 @@
 # Changelog
 
-## Unreleased
+## 0.7.1
 
+- Validate filter lists when added
+  - Adding a filter now rejects URLs that do not serve a `text/plain` filter list (e.g. an HTML error/landing page returned with a `200`) with a `422`, instead of silently saving a broken filter. The error is surfaced in the web UI, and filters whose URL stops serving a list are dropped from the engine with a warning on the next refresh.
+- Fix proxied requests randomly hanging/timing out
+  - The outbound HTTP client had no connection timeouts, so a pooled keep-alive connection silently dropped by the remote would be reused and block until the OS TCP timeout (minutes). Added `connect_timeout`, `pool_idle_timeout`, and `tcp_keepalive`.
+- DNS-over-HTTPS (DoH) interception
+  - Detects DoH requests passing through the MITM proxy (RFC 8484 `application/dns-message`, JSON DoH, and known resolver endpoints)
+  - `block` mode (default) refuses DoH so fallback-mode clients (e.g. default Firefox) revert to the system resolver, which Privaxy already sees — the HTTP-layer equivalent of the `use-application-dns.net` canary a non-DNS proxy cannot serve
+  - `redirect` mode transparently forwards queries to a configured `upstream` resolver
+  - Configured under `[network.doh]` (`mode`, `upstream`, `extra_hosts`) or from the web UI under Settings → General; MITM-excluded hosts are left untouched
+- Fix cookie not invalidating upon logout/cred change
+- All four engine-matching call sites now use match_url (canonical, default port stripped); the outbound request and stats still use the raw uri with its port, so nothing about proxying changes. This was silently breaking every hostname-anchored (||host/path) network rule on every HTTPS site
+- Update ublock annoyances url
+- Add support for MIPS, MIPSLE
 - Built-in authentication for the web UI and API
   - First-run setup page for choosing an admin username + password
   - 30-day HMAC-signed session cookie
