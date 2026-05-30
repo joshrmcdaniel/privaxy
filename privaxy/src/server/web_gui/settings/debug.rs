@@ -1,5 +1,6 @@
 use super::get_error_response;
 use crate::configuration::{Configuration, DebugConfig};
+use crate::logging::LogHandle;
 use crate::web_gui::with_configuration_save_lock;
 use crate::web_gui::with_configuration_updater_sender;
 use crate::web_gui::with_notify_reload;
@@ -10,6 +11,12 @@ use tokio::sync::Notify;
 use warp::filters::BoxedFilter;
 use warp::http::Response;
 use warp::Filter as RouteFilter;
+
+fn with_log_handle(
+    log_handle: LogHandle,
+) -> impl RouteFilter<Extract = (LogHandle,), Error = Infallible> + Clone {
+    warp::any().map(move || log_handle.clone())
+}
 
 async fn get_debug_settings() -> Result<Box<dyn warp::Reply>, Infallible> {
     log::debug!("Getting debug settings");
@@ -28,6 +35,7 @@ async fn put_debug_settings(
     configuration_updater_sender: Sender<Configuration>,
     configuration_save_lock: Arc<tokio::sync::Mutex<()>>,
     notify_reload: Arc<Notify>,
+    log_handle: LogHandle,
 ) -> Result<Box<dyn warp::Reply>, Infallible> {
     let guard = configuration_save_lock.lock().await;
     let mut configuration = match Configuration::read_from_home().await {
@@ -37,6 +45,12 @@ async fn put_debug_settings(
             return Ok(Box::new(get_error_response(err)));
         }
     };
+
+    // The log level is applied live below, but the proxy only reads
+    // `scriptlet_console_logging` when it (re)starts, so only that toggle
+    // warrants the disruptive reload.
+    let scriptlet_logging_changed =
+        configuration.debug.scriptlet_console_logging != debug_settings.scriptlet_console_logging;
 
     configuration.debug = debug_settings;
 
@@ -51,9 +65,15 @@ async fn put_debug_settings(
         .unwrap();
     drop(guard);
 
-    // The proxy reads `debug.scriptlet_console_logging` when it (re)starts, so a
-    // reload is what makes the toggle take effect on newly served pages.
-    notify_reload.notify_waiters();
+    // Apply the log level immediately rather than waiting for the next
+    // process restart; verbosity is governed by the live atomic in LogHandle.
+    log_handle.set_level(configuration.debug.log_level.to_level_filter());
+
+    // Avoid bouncing the proxy/frontend (and dropping live connections) for a
+    // log-level-only change, which already took effect above.
+    if scriptlet_logging_changed {
+        notify_reload.notify_waiters();
+    }
 
     Ok(Box::new(
         Response::builder()
@@ -66,6 +86,7 @@ pub(super) fn create_routes(
     configuration_updater_sender: Sender<Configuration>,
     configuration_save_lock: Arc<tokio::sync::Mutex<()>>,
     notify_reload: Arc<Notify>,
+    log_handle: LogHandle,
 ) -> BoxedFilter<(impl warp::Reply,)> {
     let get_route = warp::get()
         .and(warp::path::end())
@@ -81,6 +102,7 @@ pub(super) fn create_routes(
             configuration_save_lock.clone(),
         ))
         .and(with_notify_reload(notify_reload.clone()))
+        .and(with_log_handle(log_handle))
         .and_then(put_debug_settings);
 
     get_route.or(put_route).boxed()

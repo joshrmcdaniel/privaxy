@@ -75,6 +75,10 @@ pub struct DebugConfig {
     /// Privaxy is in the path, so default off.
     #[serde(default)]
     pub scriptlet_console_logging: bool,
+    /// Verbosity of Privaxy's own logs, applied live (no restart). Dependency
+    /// logs remain governed by `RUST_LOG`. Defaults to `info`.
+    #[serde(default)]
+    pub log_level: crate::logging::LogLevel,
 }
 
 #[derive(Error, Debug)]

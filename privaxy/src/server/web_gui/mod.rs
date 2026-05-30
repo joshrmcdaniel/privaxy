@@ -1,3 +1,4 @@
+use crate::logging::LogHandle;
 use crate::proxy::exclusions::LocalExclusionStore;
 use crate::statistics::Statistics;
 use crate::WEBAPP_FRONTEND_DIR;
@@ -18,6 +19,7 @@ pub(crate) mod events;
 pub(crate) mod exclusions;
 mod filterlists;
 pub(crate) mod filters;
+pub(crate) mod logs;
 mod pac;
 pub(crate) mod settings;
 pub(crate) mod statistics;
@@ -34,6 +36,7 @@ pub(crate) fn get_frontend(
     configuration_save_lock: &Arc<tokio::sync::Mutex<()>>,
     local_exclusions_store: &LocalExclusionStore,
     notify_reload: Arc<Notify>,
+    log_handle: LogHandle,
 ) -> BoxedFilter<(impl warp::Reply,)> {
     let static_files_routes = create_static_routes();
 
@@ -57,6 +60,7 @@ pub(crate) fn get_frontend(
         local_exclusions_store,
         http_client,
         notify_reload,
+        log_handle,
     );
 
     let pac_route = pac::create_routes(configuration_save_lock.clone());
@@ -106,6 +110,7 @@ fn create_api_routes(
     local_exclusions_store: &LocalExclusionStore,
     http_client: reqwest::Client,
     notify_reload: Arc<Notify>,
+    log_handle: LogHandle,
 ) -> BoxedFilter<(impl Reply,)> {
     let def_headers =
         warp::filters::reply::default_header(http::header::CONTENT_TYPE, "application/json");
@@ -132,6 +137,15 @@ fn create_api_routes(
         .map(move |ws: warp::ws::Ws| {
             let statistics = statistics.clone();
             ws.on_upgrade(move |websocket| statistics::statistics(websocket, statistics))
+        });
+
+    let logs_handle = log_handle.clone();
+    let logs_route = warp::path("logs")
+        .and(require_auth.clone())
+        .and(warp::ws())
+        .map(move |ws: warp::ws::Ws| {
+            let log_handle = logs_handle.clone();
+            ws.on_upgrade(move |websocket| logs::logs(websocket, log_handle))
         });
 
     let filters_route =
@@ -167,6 +181,7 @@ fn create_api_routes(
                 configuration_updater_sender.clone(),
                 configuration_save_lock.clone(),
                 notify_reload.clone(),
+                log_handle.clone(),
             ));
 
     let blocking_enabled_route = warp::path("blocking-enabled")
@@ -189,6 +204,7 @@ fn create_api_routes(
     let api_inner = auth_routes
         .or(events_route)
         .or(statistics_route)
+        .or(logs_route)
         .or(filters_route)
         .or(custom_filters_route)
         .or(exclusions_route)

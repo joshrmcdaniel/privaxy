@@ -25,6 +25,7 @@ mod blocker_utils;
 mod ca;
 mod cert;
 pub mod configuration;
+pub mod logging;
 mod proxy;
 pub mod statistics;
 mod web_gui;
@@ -78,6 +79,11 @@ async fn handle_signals() -> (Arc<Notify>, Arc<Notify>) {
 }
 
 pub async fn start_privaxy() -> PrivaxyServer {
+    // Install the global logger first so every subsequent record is both
+    // written to stderr and made available to the `/api/logs` stream. The
+    // configured level is applied once the configuration is read below.
+    let log_handle = logging::init(logging::LogLevel::default().to_level_filter());
+
     // We use reqwest instead of hyper's client to perform most of the proxying as it's more convenient
     // to handle compression as well as offers a more convenient interface.
     let client = reqwest::Client::builder()
@@ -119,6 +125,10 @@ pub async fn start_privaxy() -> PrivaxyServer {
             std::process::exit(1)
         }
     };
+
+    // Apply the persisted application log level now that configuration is
+    // available; the web UI can change it on the fly afterwards.
+    log_handle.set_level(configuration.debug.log_level.to_level_filter());
 
     let local_exclusion_store =
         LocalExclusionStore::new(Vec::from_iter(configuration.exclusions.clone().into_iter()));
@@ -182,6 +192,7 @@ pub async fn start_privaxy() -> PrivaxyServer {
     let configuration_updater_tx_ref = configuration_updater_tx.clone();
     let configuration_save_lock_ref = configuration_save_lock.clone();
     let broadcast_tx_ref = broadcast_tx.clone();
+    let log_handle_ref = log_handle.clone();
     let notify_reload_clone = notify_reload.clone();
 
     tokio::spawn(async move {
@@ -197,6 +208,7 @@ pub async fn start_privaxy() -> PrivaxyServer {
                 configuration_updater_tx_ref.clone(),
                 cfg_lock_frontend.clone(),
                 notify_reload_frontend.clone(),
+                log_handle_ref.clone(),
             )
             .await;
             notify_reload_frontend.notified().await;
@@ -262,6 +274,7 @@ async fn privaxy_frontend(
     configuration_updater_tx: tokio::sync::mpsc::Sender<configuration::Configuration>,
     configuration_save_lock: Arc<tokio::sync::Mutex<()>>,
     notify_reload: Arc<tokio::sync::Notify>,
+    log_handle: logging::LogHandle,
 ) {
     let frontend = web_gui::get_frontend(
         broadcast_tx.clone(),
@@ -271,6 +284,7 @@ async fn privaxy_frontend(
         &configuration_save_lock,
         &local_exclusion_store,
         notify_reload.clone(),
+        log_handle.clone(),
     );
     let frontend_server = warp::serve(frontend);
     let config = read_configuration(&configuration_save_lock).await;
