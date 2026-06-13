@@ -1,7 +1,7 @@
-use reqwasm::http::Request;
+use gloo_net::http::Request;
 use serde::{Deserialize, Serialize};
 use wasm_bindgen_futures::spawn_local;
-use web_sys::{FocusEvent, HtmlInputElement};
+use web_sys::{HtmlInputElement, SubmitEvent};
 use yew::prelude::*;
 use yew::{html, Callback, Children, Component, Context, Html, Properties};
 
@@ -207,6 +207,7 @@ impl Component for LoginPage {
                     match Request::post("/api/auth/login")
                         .header("Content-Type", "application/json")
                         .body(serde_json::to_string(&payload).unwrap())
+                        .unwrap()
                         .send()
                         .await
                     {
@@ -242,7 +243,7 @@ impl Component for LoginPage {
             let input: HtmlInputElement = e.target_unchecked_into();
             LoginMessage::UpdatePassword(input.value())
         });
-        let on_submit = link.callback(|e: FocusEvent| {
+        let on_submit = link.callback(|e: SubmitEvent| {
             e.prevent_default();
             LoginMessage::Submit
         });
@@ -338,6 +339,7 @@ impl Component for SetupPage {
                     match Request::post("/api/auth/setup")
                         .header("Content-Type", "application/json")
                         .body(serde_json::to_string(&payload).unwrap())
+                        .unwrap()
                         .send()
                         .await
                     {
@@ -377,7 +379,7 @@ impl Component for SetupPage {
             let input: HtmlInputElement = e.target_unchecked_into();
             SetupMessage::UpdateConfirm(input.value())
         });
-        let on_submit = link.callback(|e: FocusEvent| {
+        let on_submit = link.callback(|e: SubmitEvent| {
             e.prevent_default();
             SetupMessage::Submit
         });
@@ -404,7 +406,7 @@ impl Component for SetupPage {
     }
 }
 
-async fn parse_error_message(response: reqwasm::http::Response) -> String {
+async fn parse_error_message(response: gloo_net::http::Response) -> String {
     #[derive(Deserialize)]
     struct ApiError {
         error: String,

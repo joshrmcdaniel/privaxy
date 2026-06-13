@@ -74,7 +74,7 @@ impl Component for SubmitBanner {
         }
     }
 
-    fn changed(&mut self, ctx: &Context<Self>) -> bool {
+    fn changed(&mut self, ctx: &Context<Self>, _old_props: &Self::Properties) -> bool {
         if ctx.props().visible && self.transition == TransitionState::Hidden {
             ctx.link().send_message(Msg::Show);
         }

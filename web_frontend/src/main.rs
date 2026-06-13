@@ -1,4 +1,4 @@
-use reqwasm::http::Request;
+use gloo_net::http::Request;
 use serde::Deserialize;
 use wasm_bindgen_futures::spawn_local;
 use yew::functional::*;
@@ -61,7 +61,7 @@ fn not_found() -> Html {
      }
 }
 
-fn switch(route: &Route) -> Html {
+fn switch(route: Route) -> Html {
     fn get_classes(current_route: Route, for_route_link: Route) -> Classes {
         if current_route == for_route_link {
             classes!(
@@ -96,9 +96,9 @@ fn switch(route: &Route) -> Html {
               <img class="h-8 w-auto text-white" src="/logo.svg" alt="Logo" />
             </div>
               <div class="flex ml-6 space-x-4">
-              <Link<Route> classes={ get_classes(*route, Route::Dashboard) } to={Route::Dashboard}>{ "Dashboard" }</Link<Route>>
-               <Link<Route> classes={ get_classes(*route, Route::Requests) } to={Route::Requests}>{ "Requests" }</Link<Route>>
-               <Link<settings::SettingsRoute> classes={ get_classes(*route, Route::Settings) } to={settings::SettingsRoute::Filters}>{ "Settings" }</Link<settings::SettingsRoute>>
+              <Link<Route> classes={ get_classes(route, Route::Dashboard) } to={Route::Dashboard}>{ "Dashboard" }</Link<Route>>
+               <Link<Route> classes={ get_classes(route, Route::Requests) } to={Route::Requests}>{ "Requests" }</Link<Route>>
+               <Link<settings::SettingsRoute> classes={ get_classes(route, Route::Settings) } to={settings::SettingsRoute::Filters}>{ "Settings" }</Link<settings::SettingsRoute>>
                </div>
           </div>
           <LogoutButton />
@@ -117,7 +117,7 @@ fn switch(route: &Route) -> Html {
             html! { <>{navigation} <div class={"container mt-4 mb-10 mx-auto px-4 sm:px-6 lg:px-8"}> <requests::Requests /> </div></> }
         }
         Route::Settings => {
-            html! {<>{navigation} <div class={"container mt-4 mb-10 mx-auto px-4 sm:px-6 lg:px-8"}> <Switch<settings::SettingsRoute> render={Switch::render(settings::switch_settings)} /> </div> </>}
+            html! {<>{navigation} <div class={"container mt-4 mb-10 mx-auto px-4 sm:px-6 lg:px-8"}> <Switch<settings::SettingsRoute> render={settings::switch_settings} /> </div> </>}
         }
         Route::NotFound => {
             set_title("Not Found");
@@ -131,7 +131,7 @@ fn app() -> Html {
     html! {
         <auth::AuthGate>
             <BrowserRouter>
-                <Switch<Route> render={Switch::render(switch)} />
+                <Switch<Route> render={switch} />
             </BrowserRouter>
         </auth::AuthGate>
     }
@@ -166,5 +166,5 @@ fn set_title(title: &str) {
 fn main() {
     wasm_logger::init(wasm_logger::Config::default());
 
-    yew::start_app::<App>();
+    yew::Renderer::<App>::new().render();
 }

@@ -1,7 +1,7 @@
 use crate::save_button;
 use crate::submit_banner;
 use crate::success_banner;
-use reqwasm::http::Request;
+use gloo_net::http::Request;
 use wasm_bindgen_futures::spawn_local;
 use web_sys::HtmlInputElement;
 use yew::virtual_dom::VNode;
@@ -67,7 +67,8 @@ impl Component for SettingsTextarea {
 
                 let request = Request::put(&ctx.props().resource_url)
                     .header("Content-Type", "application/json")
-                    .body(&serde_json::to_string(&self.input_data).unwrap());
+                    .body(&serde_json::to_string(&self.input_data).unwrap())
+                    .unwrap();
 
                 spawn_local(async move {
                     if let Ok(response) = request.send().await {
@@ -129,7 +130,7 @@ impl Component for SettingsTextarea {
         true
     }
 
-    fn changed(&mut self, ctx: &Context<Self>) -> bool {
+    fn changed(&mut self, ctx: &Context<Self>, _old_props: &Self::Properties) -> bool {
         ctx.link().send_message(Message::UpdateInput(String::new()));
         ctx.link().send_message(Message::LoadCurrentState);
 
@@ -207,7 +208,7 @@ impl Component for SettingsTextarea {
             <div class="mt-4">
                 <label for={props.input_name.clone()} class="block text-sm font-medium text-gray-700">{&props.textarea_description}</label>
                 <div class="mt-1">
-                    <textarea {oninput} value={self.input_data.clone()} rows="8" name={props.input_name.clone()} id={props.input_name.clone()} class="shadow-sm focus:ring-blue-500 focus:border-blue-500 block w-full sm:text-sm border-gray-300 rounded-md"></textarea>
+                    <textarea {oninput} value={self.input_data.clone()} rows="8" name={props.input_name.clone()} id={props.input_name.clone()} class="shadow-sm focus:ring-blue-500 focus:border-blue-500 block w-full sm:text-sm border-gray-300 rounded-md" />
                 </div>
             </div>
             <div class="flex items-center">

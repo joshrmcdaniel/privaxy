@@ -1,7 +1,7 @@
 use crate::button::ButtonState;
 use crate::filterlists::SearchFilterList;
 use crate::{failure_banner, save_button, submit_banner, ApiError};
-use reqwasm::http::Request;
+use gloo_net::http::Request;
 use serde::{Deserialize, Serialize};
 use serde_json::de::IoRead;
 use serde_json::StreamDeserializer;
@@ -143,7 +143,8 @@ impl Component for AddFilterComponent {
 
                 let request = Request::post("/api/filters")
                     .header("Content-Type", "application/json")
-                    .body(serde_json::to_string(&request_body).unwrap());
+                    .body(serde_json::to_string(&request_body).unwrap())
+                    .unwrap();
 
                 let link = self.link.clone();
                 spawn_local(async move {
@@ -459,7 +460,8 @@ impl Component for Filters {
 
                 let request = Request::put("/api/filters")
                     .header("Content-Type", "application/json")
-                    .body(serde_json::to_string(&request_body).unwrap());
+                    .body(serde_json::to_string(&request_body).unwrap())
+                    .unwrap();
 
                 let callback = ctx.link().callback(|message: Message| message);
 

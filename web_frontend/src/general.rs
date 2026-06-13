@@ -3,9 +3,9 @@ use crate::button::{get_css, ButtonColor};
 use crate::failure_banner;
 use crate::success_banner;
 use crate::{save_button, ApiError};
+use gloo_net::http::Request;
 use gloo_utils::format::JsValueSerdeExt;
 use regex::Regex;
-use reqwasm::http::Request;
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
@@ -127,9 +127,10 @@ async fn save_ca_certificate(cert_pem: &str, key_pem: &str) -> Result<(), ApiErr
         ca_private_key: key_pem,
     })
     .unwrap();
-    let req = reqwasm::http::Request::put("/api/settings/ca-certificate")
+    let req = gloo_net::http::Request::put("/api/settings/ca-certificate")
+        .header("Content-Type", "application/json")
         .body(body)
-        .header("Content-Type", "application/json");
+        .unwrap();
     match req.send().await {
         Ok(resp) => {
             if resp.ok() {
@@ -193,9 +194,10 @@ impl NetworkSettings {
     }
     async fn save(&mut self) -> Result<(), ApiError> {
         let body = serde_json::to_string(&self.current_config).unwrap();
-        let req = reqwasm::http::Request::put("/api/settings/network")
+        let req = gloo_net::http::Request::put("/api/settings/network")
+            .header("Content-Type", "application/json")
             .body(body)
-            .header("Content-Type", "application/json");
+            .unwrap();
         match req.send().await {
             Ok(resp) => {
                 if resp.ok() {

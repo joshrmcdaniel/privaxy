@@ -1,14 +1,16 @@
-use super::{exclusions::LocalExclusionStore, serve::serve};
+use super::serve::UpgradeClient;
+use super::{empty_body, exclusions::LocalExclusionStore, serve::serve, ProxyBody};
 use crate::{
     blocker::AdblockRequester, cert::CertCache, configuration::DohConfig, statistics::Statistics,
     Event,
 };
 use http::uri::{Authority, Scheme};
-use hyper::{
-    client::HttpConnector, http, server::conn::Http, service::service_fn, upgrade::Upgraded, Body,
-    Method, Request, Response,
-};
-use hyper_rustls::HttpsConnector;
+use http::{Method, Request, Response};
+use hyper::body::Incoming;
+use hyper::service::service_fn;
+use hyper::upgrade::Upgraded;
+use hyper_util::rt::{TokioExecutor, TokioIo};
+use hyper_util::server::conn::auto;
 use std::{net::IpAddr, sync::Arc};
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
@@ -20,9 +22,9 @@ use tokio_rustls::TlsAcceptor;
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn serve_mitm_session(
     adblock_requester: AdblockRequester,
-    hyper_client: hyper::Client<HttpsConnector<HttpConnector>>,
+    hyper_client: UpgradeClient,
     client: reqwest::Client,
-    req: Request<Body>,
+    req: Request<Incoming>,
     cert_cache: CertCache,
     broadcast_tx: broadcast::Sender<Event>,
     statistics: Statistics,
@@ -30,11 +32,11 @@ pub(crate) async fn serve_mitm_session(
     local_exclusion_store: LocalExclusionStore,
     doh_config: DohConfig,
     scriptlet_debug_logging: bool,
-) -> Result<Response<Body>, hyper::Error> {
+) -> Result<Response<ProxyBody>, hyper::Error> {
     let authority = match req.uri().authority().cloned() {
         Some(authority) => authority,
         None => {
-            let mut response = Response::new(Body::empty());
+            let mut response = Response::new(empty_body());
             *response.status_mut() = http::StatusCode::BAD_REQUEST;
 
             log::warn!("Received a request without proper authority, sending bad request");
@@ -58,7 +60,11 @@ pub(crate) async fn serve_mitm_session(
 
         tokio::task::spawn(async move {
             match hyper::upgrade::on(req).await {
-                Ok(mut upgraded) => {
+                Ok(upgraded) => {
+                    // hyper 1.0's `Upgraded` exposes hyper's own IO traits;
+                    // `TokioIo` bridges it to tokio's `AsyncRead`/`AsyncWrite`
+                    // (needed both for blind tunneling and the TLS acceptor).
+                    let mut upgraded = TokioIo::new(upgraded);
                     let is_host_blacklisted = local_exclusion_store.contains(authority.host());
 
                     if is_host_blacklisted {
@@ -67,16 +73,17 @@ pub(crate) async fn serve_mitm_session(
                         return;
                     }
 
-                    let http = Http::new();
-
                     match TlsAcceptor::from(server_configuration)
                         .accept(upgraded)
                         .await
                     {
                         Ok(tls_stream) => {
-                            let _result = http
-                                .serve_connection(
-                                    tls_stream,
+                            // hyper 1.0 dropped the all-in-one `Http` server
+                            // type; `hyper-util`'s auto builder negotiates
+                            // HTTP/1 vs HTTP/2 and carries upgrade support.
+                            let _result = auto::Builder::new(TokioExecutor::new())
+                                .serve_connection_with_upgrades(
+                                    TokioIo::new(tls_stream),
                                     service_fn(move |req| {
                                         serve(
                                             adblock_requester.clone(),
@@ -93,7 +100,6 @@ pub(crate) async fn serve_mitm_session(
                                         )
                                     }),
                                 )
-                                .with_upgrades()
                                 .await;
                         }
                         // Couldn't perform the tls handshake, they may only support TLS features that we don't or
@@ -111,7 +117,7 @@ pub(crate) async fn serve_mitm_session(
             }
         });
 
-        Ok(Response::new(Body::empty()))
+        Ok(Response::new(empty_body()))
     } else if local_exclusion_store.contains(authority.host())
         && req.headers().contains_key(http::header::UPGRADE)
     {
@@ -187,9 +193,9 @@ fn is_opaque_upgrade(headers: &http::HeaderMap) -> bool {
 ///
 /// thank you, wechat, for making this necessary
 async fn tunnel_http_upgrade(
-    req: Request<Body>,
+    req: Request<Incoming>,
     authority: Authority,
-) -> Result<Response<Body>, hyper::Error> {
+) -> Result<Response<ProxyBody>, hyper::Error> {
     // Build the origin-form request head before `req` is moved into the task.
     let path = req
         .uri()
@@ -218,7 +224,7 @@ async fn tunnel_http_upgrade(
         }
     });
 
-    let mut response = Response::new(Body::empty());
+    let mut response = Response::new(empty_body());
     *response.status_mut() = http::StatusCode::SWITCHING_PROTOCOLS;
     response.headers_mut().insert(
         http::header::CONNECTION,
@@ -235,7 +241,7 @@ async fn tunnel_http_upgrade(
 /// Upstream half of `tunnel_http_upgrade`: wait for the client upgrade, connect
 /// to the origin, replay the request head, strip the origin's `101`, then pipe.
 async fn bridge_http_upgrade(
-    req: Request<Body>,
+    req: Request<Incoming>,
     head: String,
     authority: &Authority,
 ) -> std::io::Result<()> {
@@ -243,9 +249,11 @@ async fn bridge_http_upgrade(
     // Proxied `http://` authorities carry no port; default to 80.
     let port = authority.port_u16().unwrap_or(80);
 
-    let mut client = hyper::upgrade::on(req)
+    let upgraded = hyper::upgrade::on(req)
         .await
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        .map_err(std::io::Error::other)?;
+    // `TokioIo` bridges hyper 1.0's `Upgraded` to tokio's IO traits.
+    let mut client = TokioIo::new(upgraded);
     let mut upstream = TcpStream::connect((host, port)).await?;
     upstream.write_all(head.as_bytes()).await?;
 
@@ -284,7 +292,7 @@ async fn read_past_response_headers(stream: &mut TcpStream) -> std::io::Result<V
     }
 }
 
-async fn tunnel(upgraded: &mut Upgraded, authority: &Authority) -> std::io::Result<()> {
+async fn tunnel(upgraded: &mut TokioIo<Upgraded>, authority: &Authority) -> std::io::Result<()> {
     let mut server = TcpStream::connect(authority.to_string()).await?;
 
     log::debug!("Started tunneling host: {}", authority);
@@ -300,4 +308,39 @@ where
 {
     tokio::io::copy_bidirectional(a, b).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn upgrade_headers(value: &str) -> http::HeaderMap {
+        let mut map = http::HeaderMap::new();
+        map.insert(
+            http::header::UPGRADE,
+            http::HeaderValue::from_str(value).unwrap(),
+        );
+        map
+    }
+
+    #[test]
+    fn websocket_and_h2c_are_not_opaque() {
+        assert!(!is_opaque_upgrade(&upgrade_headers("websocket")));
+        assert!(!is_opaque_upgrade(&upgrade_headers("WebSocket")));
+        assert!(!is_opaque_upgrade(&upgrade_headers("h2c")));
+        // A bridgeable token among others still counts as non-opaque.
+        assert!(!is_opaque_upgrade(&upgrade_headers("foo, websocket")));
+    }
+
+    #[test]
+    fn unknown_protocols_are_opaque() {
+        // e.g. WeChat's MMTLS long-link.
+        assert!(is_opaque_upgrade(&upgrade_headers("mmtls")));
+        assert!(is_opaque_upgrade(&upgrade_headers("tls/1.2, foo")));
+    }
+
+    #[test]
+    fn absent_upgrade_header_is_not_opaque() {
+        assert!(!is_opaque_upgrade(&http::HeaderMap::new()));
+    }
 }

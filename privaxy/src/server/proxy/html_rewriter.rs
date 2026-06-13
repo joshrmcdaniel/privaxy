@@ -1,6 +1,8 @@
+use super::BodySender;
 use crate::{blocker::AdblockRequester, statistics::Statistics};
+use bytes::Bytes;
 use crossbeam_channel::Receiver;
-use hyper::body::Bytes;
+use hyper::body::Frame;
 use lol_html::html_content::ContentType;
 use lol_html::{element, HtmlRewriter, Settings};
 use regex::Regex;
@@ -23,7 +25,7 @@ pub struct Rewriter {
     url: String,
     adblock_requester: AdblockRequester,
     receiver: Receiver<Bytes>,
-    body_sender: hyper::body::Sender,
+    body_sender: BodySender,
     statistics: Statistics,
     internal_body_channel: InternalBodyChannel,
     csp_nonce: String,
@@ -52,7 +54,7 @@ impl Rewriter {
         url: String,
         adblock_requester: AdblockRequester,
         receiver: Receiver<Bytes>,
-        body_sender: hyper::body::Sender,
+        body_sender: BodySender,
         statistics: Statistics,
         csp_nonce: String,
         injected_script: Option<String>,
@@ -251,13 +253,13 @@ impl Rewriter {
 
     async fn write_body(
         mut receiver: mpsc::UnboundedReceiver<(Bytes, Option<AdblockProperties>)>,
-        mut body_sender: hyper::body::Sender,
+        body_sender: BodySender,
         adblock_requester: AdblockRequester,
         statistics: Statistics,
         csp_nonce: String,
     ) {
         while let Some((bytes, adblock_properties)) = receiver.recv().await {
-            if let Err(_err) = body_sender.send_data(bytes).await {
+            if let Err(_err) = body_sender.send(Ok(Frame::data(bytes))).await {
                 break;
             }
             if let Some(adblock_properties) = adblock_properties {
@@ -312,7 +314,7 @@ impl Rewriter {
 
                 let bytes = Bytes::copy_from_slice(to_append_to_response.as_bytes());
 
-                if let Err(_err) = body_sender.send_data(bytes).await {
+                if let Err(_err) = body_sender.send(Ok(Frame::data(bytes))).await {
                     break;
                 }
             }

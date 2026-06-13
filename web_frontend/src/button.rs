@@ -62,6 +62,7 @@ pub struct Props {
     pub color: ButtonColor,
     pub button_text: String,
     pub onclick: Callback<MouseEvent>,
+    #[prop_or_default]
     pub children: Option<Html>,
 }
 

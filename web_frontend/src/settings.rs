@@ -27,7 +27,7 @@ pub enum SettingsRoute {
     Debug,
 }
 
-pub fn switch_settings(route: &SettingsRoute) -> Html {
+pub fn switch_settings(route: SettingsRoute) -> Html {
     fn get_classes(current_route: SettingsRoute, for_route_link: SettingsRoute) -> Classes {
         if current_route == for_route_link {
             classes!(
@@ -123,13 +123,13 @@ pub fn switch_settings(route: &SettingsRoute) -> Html {
 
     html! {<div class="md:grid md:grid-cols-8">
     <nav class="space-y-1 mt-4 lg:col-span-1 sm:col-span-2" aria-label="Sidebar">
-        <Link<SettingsRoute> classes={get_classes(*route, SettingsRoute::General)} to={SettingsRoute::General}> <span class="truncate">{ "General" }</span></Link<SettingsRoute>>
-        <Link<SettingsRoute> classes={get_classes(*route, SettingsRoute::Filters)} to={SettingsRoute::Filters}> <span class="truncate">{ "Filters" }</span></Link<SettingsRoute>>
-        <Link<SettingsRoute> classes={get_classes(*route, SettingsRoute::Exclusions)} to={SettingsRoute::Exclusions}> <span class="truncate">{ "Exclusions" }</span></Link<SettingsRoute>>
-        <Link<SettingsRoute> classes={get_classes(*route, SettingsRoute::CustomFilters)} to={SettingsRoute::CustomFilters}> <span class="truncate">{ "Custom filters" }</span></Link<SettingsRoute>>
-        <Link<SettingsRoute> classes={get_classes(*route, SettingsRoute::Pac)} to={SettingsRoute::Pac}> <span class="truncate">{ "PAC" }</span></Link<SettingsRoute>>
-        <Link<SettingsRoute> classes={get_classes(*route, SettingsRoute::Account)} to={SettingsRoute::Account}> <span class="truncate">{ "Account" }</span></Link<SettingsRoute>>
-        <Link<SettingsRoute> classes={get_classes(*route, SettingsRoute::Debug)} to={SettingsRoute::Debug}> <span class="truncate">{ "Debug" }</span></Link<SettingsRoute>>
+        <Link<SettingsRoute> classes={get_classes(route, SettingsRoute::General)} to={SettingsRoute::General}> <span class="truncate">{ "General" }</span></Link<SettingsRoute>>
+        <Link<SettingsRoute> classes={get_classes(route, SettingsRoute::Filters)} to={SettingsRoute::Filters}> <span class="truncate">{ "Filters" }</span></Link<SettingsRoute>>
+        <Link<SettingsRoute> classes={get_classes(route, SettingsRoute::Exclusions)} to={SettingsRoute::Exclusions}> <span class="truncate">{ "Exclusions" }</span></Link<SettingsRoute>>
+        <Link<SettingsRoute> classes={get_classes(route, SettingsRoute::CustomFilters)} to={SettingsRoute::CustomFilters}> <span class="truncate">{ "Custom filters" }</span></Link<SettingsRoute>>
+        <Link<SettingsRoute> classes={get_classes(route, SettingsRoute::Pac)} to={SettingsRoute::Pac}> <span class="truncate">{ "PAC" }</span></Link<SettingsRoute>>
+        <Link<SettingsRoute> classes={get_classes(route, SettingsRoute::Account)} to={SettingsRoute::Account}> <span class="truncate">{ "Account" }</span></Link<SettingsRoute>>
+        <Link<SettingsRoute> classes={get_classes(route, SettingsRoute::Debug)} to={SettingsRoute::Debug}> <span class="truncate">{ "Debug" }</span></Link<SettingsRoute>>
     </nav>
         <div class="container mx-auto px-4 sm:px-6 lg:px-8 mt-4 sm:col-span-6">{ content }</div>
     </div>

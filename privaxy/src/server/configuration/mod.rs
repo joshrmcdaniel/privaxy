@@ -369,3 +369,34 @@ fn get_base_directory() -> ConfigurationResult<PathBuf> {
         false => Err(ConfigurationError::DirectoryNotFound),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A freshly generated default configuration must survive a
+    /// `to_string_pretty` -> `from_str` round-trip unchanged. This guards the
+    /// TOML (de)serialization behavior across the toml crate upgrade.
+    #[tokio::test]
+    async fn configuration_toml_round_trips() {
+        let configuration = Configuration::new_default()
+            .await
+            .expect("default configuration");
+
+        let serialized = toml::to_string_pretty(&configuration).expect("serialize");
+        let deserialized: Configuration = toml::from_str(&serialized).expect("deserialize");
+
+        assert_eq!(configuration, deserialized);
+    }
+
+    /// Blank lines and surrounding whitespace are stripped when turning the
+    /// textarea contents into the stored list.
+    #[test]
+    fn deserialize_lines_trims_and_drops_blanks() {
+        let parsed: Vec<String> = Configuration::deserialize_lines("  a \n\n b\n   \nc\n");
+        assert_eq!(
+            parsed,
+            vec!["a".to_string(), "b".to_string(), "c".to_string()]
+        );
+    }
+}

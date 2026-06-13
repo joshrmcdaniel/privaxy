@@ -13,7 +13,8 @@ use openssl::{
         X509NameBuilder, X509Ref, X509Req, X509ReqBuilder, X509,
     },
 };
-use rustls::{Certificate, PrivateKey, ServerConfig};
+use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+use rustls::ServerConfig;
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::{str::FromStr, sync::Arc};
 use tokio::sync::Mutex;
@@ -38,17 +39,19 @@ impl SignedWithCaCert {
             Self::build_ca_signed_cert(&ca_certificate, &ca_private_key, &authority, &private_key);
 
         let certs = vec![
-            Certificate(x509.to_der().unwrap()),
-            Certificate(ca_certificate.to_der().unwrap()),
+            CertificateDer::from(x509.to_der().unwrap()),
+            CertificateDer::from(ca_certificate.to_der().unwrap()),
         ];
 
+        // rustls 0.23 folded the cipher-suite / kx-group / protocol-version
+        // selection into safe defaults on `ServerConfig::builder()`, so the
+        // explicit `with_safe_default_*` chain is gone. The crypto provider
+        // (ring) is installed once as the process default at startup.
+        let private_key =
+            PrivateKeyDer::try_from(private_key.private_key_to_der().unwrap()).unwrap();
         let server_configuration = ServerConfig::builder()
-            .with_safe_default_cipher_suites()
-            .with_safe_default_kx_groups()
-            .with_safe_default_protocol_versions()
-            .unwrap()
             .with_no_client_auth()
-            .with_single_cert(certs, PrivateKey(private_key.private_key_to_der().unwrap()))
+            .with_single_cert(certs, private_key)
             .unwrap();
 
         Self {
@@ -236,5 +239,31 @@ impl CertCache {
                 certificate
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use openssl::rsa::Rsa;
+
+    /// Building a leaf certificate signed by the CA and assembling its rustls
+    /// `ServerConfig` must succeed without panicking. Post-upgrade to rustls
+    /// 0.23 this also exercises that a `CryptoProvider` is installed before the
+    /// `ServerConfig` builder runs.
+    #[test]
+    fn builds_ca_signed_server_config() {
+        // rustls 0.23 requires a process-default CryptoProvider before any
+        // `ServerConfig::builder()`; production installs this once at startup.
+        let _ = rustls::crypto::ring::default_provider().install_default();
+
+        let (ca_certificate, ca_private_key) = crate::ca::make_ca_certificate();
+        let leaf_key = PKey::from_rsa(Rsa::generate(2048).unwrap()).unwrap();
+        let authority = Authority::from_static("example.com");
+
+        let signed =
+            SignedWithCaCert::new(authority.clone(), leaf_key, ca_certificate, ca_private_key);
+
+        assert_eq!(signed.authority, authority);
     }
 }

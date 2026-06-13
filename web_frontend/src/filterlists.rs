@@ -4,7 +4,7 @@ use crate::filters::{AddFilterRequest, Filter, FilterConfiguration, FilterGroup}
 use crate::save_button::BASE_BUTTON_CSS;
 use crate::{failure_banner, save_button, submit_banner, ApiError};
 use filterlists_api;
-use reqwasm::http::Request;
+use gloo_net::http::Request;
 use url::Url;
 use wasm_bindgen_futures::spawn_local;
 use web_sys::HtmlInputElement;
@@ -123,7 +123,8 @@ impl Component for SearchFilterList {
                     let request_body = AddFilterRequest::new(filter_name, group, parsed_url);
                     let request = Request::post("/api/filters")
                         .header("Content-Type", "application/json")
-                        .body(serde_json::to_string(&request_body).unwrap());
+                        .body(serde_json::to_string(&request_body).unwrap())
+                        .unwrap();
                     match request.send().await {
                         Ok(response) if response.ok() => {
                             log::info!("Filter added successfully");
@@ -159,7 +160,8 @@ impl Component for SearchFilterList {
                         AddFilterRequest::new(filter_name, FilterGroup::Malware, parsed_url);
                     let request = Request::delete("/api/filters")
                         .header("Content-Type", "application/json")
-                        .body(serde_json::to_string(&request_body).unwrap());
+                        .body(serde_json::to_string(&request_body).unwrap())
+                        .unwrap();
                     match request.send().await {
                         Ok(response) => {
                             if response.ok() {
