@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased
+
+- Dependency upgrade to latest versions (semver-aware; pre-releases such as
+  `argon2 0.6.0-rc` and `tera 2.0.0-alpha` were intentionally not adopted).
+  - Server HTTP/TLS stack: `hyper 0.14 → 1`, `http 0.2 → 1` (now via
+    `hyper-util` + `http-body-util`), `rustls 0.21 → 0.23`,
+    `tokio-rustls 0.24 → 0.26`, `hyper-rustls 0.24 → 0.27`,
+    `reqwest 0.11 → 0.13`, `warp 0.3 → 0.4`. The whole TLS stack is pinned to
+    the `ring` crypto provider so the MIPS/musl cross builds keep working
+    (`aws-lc-rs` needs a C toolchain). A `ring` `CryptoProvider` is installed
+    once at startup, as rustls 0.23 requires.
+  - warp 0.4 dropped its built-in TLS and graceful-shutdown server, so the web
+    GUI is now served through `hyper-util` with optional `tokio-rustls`
+    termination; WebSocket live feeds continue to work via connection upgrades.
+  - Frontend: `yew 0.19 → 0.23`, `yew-router 0.16 → 0.20`, `gloo-*` bumped,
+    `web-sys`/`wasm-bindgen` refreshed, and the deprecated `reqwasm` replaced
+    with `gloo-net`.
+  - Other majors: `thiserror 1 → 2`, `toml 0.8 → 1`, `dirs 5 → 6`.
+  - Behavior is unchanged; a set of characterization tests was added first to
+    lock the proxy's CSP/request-type/upgrade logic, the TOML config
+    round-trip, and CA-signed cert/server-config assembly.
+
 ## v0.7.1
 
 - Fix WebSocket / protocol-upgrade connections hanging
