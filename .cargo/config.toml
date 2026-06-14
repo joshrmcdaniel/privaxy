@@ -1,8 +1,17 @@
 [target.aarch64-unknown-linux-gnu]
 linker = "aarch64-linux-gnu-gcc"
 
+# mips{,el}-unknown-linux-gnu: the old glibc in the cross-toolchain lacks the
+# `getrandom()` wrapper symbol that getrandom 0.3's default backend calls, so we
+# select getrandom's `custom` backend (implemented via the raw SYS_getrandom
+# syscall in privaxy's lib.rs). musl MIPS uses getrandom's weak-fallback backend
+# and needs no override.
+[target.mips-unknown-linux-gnu]
+rustflags = ["--cfg", "getrandom_backend=\"custom\""]
+
 [target.mipsel-unknown-linux-gnu]
 linker = "mipsel-linux-gnu-gcc"
+rustflags = ["--cfg", "getrandom_backend=\"custom\""]
 
 [target.mipsel-unknown-linux-musl]
 linker = "mipsel-linux-musl-gcc"
