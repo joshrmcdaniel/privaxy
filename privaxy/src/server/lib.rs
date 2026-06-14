@@ -76,9 +76,9 @@ unsafe fn urandom_fallback(dest: *mut u8, len: usize) -> Result<(), getrandom::E
     use std::io::Read;
 
     let buf = std::slice::from_raw_parts_mut(dest, len);
-    let mut file =
-        std::fs::File::open("/dev/urandom").map_err(|_| getrandom::Error::UNEXPECTED)?;
-    file.read_exact(buf).map_err(|_| getrandom::Error::UNEXPECTED)?;
+    let mut file = std::fs::File::open("/dev/urandom").map_err(|_| getrandom::Error::UNEXPECTED)?;
+    file.read_exact(buf)
+        .map_err(|_| getrandom::Error::UNEXPECTED)?;
     Ok(())
 }
 
