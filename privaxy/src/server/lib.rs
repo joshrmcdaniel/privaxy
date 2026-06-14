@@ -35,6 +35,53 @@ mod web_gui;
 
 pub const WEBAPP_FRONTEND_DIR: Dir<'_> = include_dir!("web_frontend/dist");
 
+/// Custom `getrandom` backend for the `mips{,el}-unknown-linux-gnu` cross
+/// targets.
+///
+/// getrandom 0.3's default Linux backend for these targets calls the libc
+/// `getrandom()` wrapper, which the cross-toolchain's pre-2.25 glibc does not
+/// export — so the binary fails to link (`undefined reference to getrandom`).
+/// We point getrandom at its `custom` backend for these triples (see
+/// `.cargo/config.toml`) and service it here with the raw `SYS_getrandom`
+/// syscall. The syscall is independent of the libc version, so the resulting
+/// binary still runs on the old-glibc routers we target; pre-3.17 kernels that
+/// lack the syscall fall back to `/dev/urandom`, matching getrandom 0.2's old
+/// behavior. musl MIPS and every non-MIPS target keep getrandom's stock
+/// backend and never reach this code.
+#[cfg(all(target_os = "linux", target_arch = "mips", target_env = "gnu"))]
+#[no_mangle]
+unsafe extern "Rust" fn __getrandom_v03_custom(
+    dest: *mut u8,
+    len: usize,
+) -> Result<(), getrandom::Error> {
+    let mut filled = 0usize;
+    while filled < len {
+        let ret = libc::syscall(libc::SYS_getrandom, dest.add(filled), len - filled, 0u32);
+        if ret < 0 {
+            match std::io::Error::last_os_error().raw_os_error() {
+                // Interrupted before any bytes were read; retry.
+                Some(libc::EINTR) => continue,
+                // Kernel predates getrandom(2) (pre-3.17): use /dev/urandom.
+                Some(libc::ENOSYS) => return urandom_fallback(dest, len),
+                _ => return Err(getrandom::Error::UNEXPECTED),
+            }
+        }
+        filled += ret as usize;
+    }
+    Ok(())
+}
+
+#[cfg(all(target_os = "linux", target_arch = "mips", target_env = "gnu"))]
+unsafe fn urandom_fallback(dest: *mut u8, len: usize) -> Result<(), getrandom::Error> {
+    use std::io::Read;
+
+    let buf = std::slice::from_raw_parts_mut(dest, len);
+    let mut file =
+        std::fs::File::open("/dev/urandom").map_err(|_| getrandom::Error::UNEXPECTED)?;
+    file.read_exact(buf).map_err(|_| getrandom::Error::UNEXPECTED)?;
+    Ok(())
+}
+
 #[derive(Debug)]
 pub struct PrivaxyServer {
     pub ca_certificate_pem: String,

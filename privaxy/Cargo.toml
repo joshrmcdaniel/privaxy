@@ -130,3 +130,14 @@ tera = { version = "1", default-features = false }
 argon2 = { version = "0.5", features = ["std"] }
 hmac = "0.12"
 filterlists-api = { path = "../filterlists-api", features = ["reqwest"] }
+
+# getrandom 0.3 (pulled in via warp -> tokio-tungstenite -> rand) selects a
+# backend that calls the libc `getrandom()` wrapper on mips{,el}-unknown-linux-gnu,
+# but the MIPS cross-toolchain's pre-2.25 glibc doesn't export it, so the binary
+# fails to link. For just these targets we switch getrandom to its `custom`
+# backend (`.cargo/config.toml`) and implement it via the raw SYS_getrandom
+# syscall in `lib.rs`. These deps exist only to name `getrandom::Error` and call
+# `libc::syscall` from that backend.
+[target.'cfg(all(target_os = "linux", target_arch = "mips", target_env = "gnu"))'.dependencies]
+getrandom = "0.3"
+libc = "0.2"
