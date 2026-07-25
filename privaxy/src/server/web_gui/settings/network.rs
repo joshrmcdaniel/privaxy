@@ -30,6 +30,11 @@ pub struct NetworkConfigRequest {
     /// case the current configuration is preserved.
     #[serde(default)]
     pub doh: Option<DohConfig>,
+    /// Full base URL of the web GUI as reachable by clients. Omitted by older
+    /// clients, in which case the current configuration is preserved; an
+    /// empty string clears the setting.
+    #[serde(default)]
+    pub gui_url: Option<String>,
 }
 
 impl From<NetworkConfigRequest> for NetworkConfig {
@@ -42,6 +47,7 @@ impl From<NetworkConfigRequest> for NetworkConfig {
             tls_cert_path: None,
             tls_key_path: None,
             listen_url: None,
+            gui_url: None,
             pac_enabled: false,
             pac_proxy_host: None,
             pac_direct_ips: Vec::new(),
@@ -81,11 +87,23 @@ async fn put_network_settings(
 
     drop(lock);
     let requested_doh = network_settings.doh.clone();
+    let requested_gui_url = network_settings.gui_url.clone();
     let mut net_cfg: NetworkConfig = network_settings.into();
     let current_cfg = configuration.network.clone();
     net_cfg.tls_cert_path = current_cfg.tls_cert_path;
     net_cfg.tls_key_path = current_cfg.tls_key_path;
     net_cfg.listen_url = current_cfg.listen_url;
+    net_cfg.gui_url = match requested_gui_url {
+        None => current_cfg.gui_url,
+        Some(url) => {
+            let trimmed = url.trim().trim_end_matches('/');
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        }
+    };
     net_cfg.pac_enabled = current_cfg.pac_enabled;
     net_cfg.pac_proxy_host = current_cfg.pac_proxy_host;
     net_cfg.pac_direct_ips = current_cfg.pac_direct_ips;

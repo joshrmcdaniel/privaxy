@@ -400,6 +400,7 @@ impl Configuration {
                 tls_cert_path: None,
                 tls_key_path: None,
                 listen_url: None,
+                gui_url: None,
                 pac_enabled: false,
                 pac_proxy_host: None,
                 pac_direct_ips: Vec::new(),

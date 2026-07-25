@@ -557,6 +557,10 @@ fn format_ip_host(ip: IpAddr) -> String {
 /// address the client dialed — hence `base_url` taking it as a parameter.
 #[derive(Debug, Clone)]
 pub(crate) struct WebGuiUrl {
+    /// Operator-declared full base URL, used verbatim when set. This is the
+    /// only variant that can express a reverse-proxied GUI (different port,
+    /// or a host the server never sees, e.g. behind Docker NAT).
+    override_url: Option<String>,
     scheme: &'static str,
     configured_host: Option<String>,
     web_port: u16,
@@ -564,6 +568,11 @@ pub(crate) struct WebGuiUrl {
 
 impl WebGuiUrl {
     async fn from_network_config(network: &NetworkConfig) -> Self {
+        let override_url = network
+            .gui_url
+            .as_ref()
+            .map(|url| url.trim().trim_end_matches('/').to_string())
+            .filter(|url| !url.is_empty());
         let scheme = if network.tls { "https" } else { "http" };
         let configured_host = match network.listen_url.clone() {
             // An operator-declared FQDN wins over any bound address.
@@ -579,6 +588,7 @@ impl WebGuiUrl {
         };
 
         Self {
+            override_url,
             scheme,
             configured_host,
             web_port: network.web_port,
@@ -586,6 +596,9 @@ impl WebGuiUrl {
     }
 
     fn base_url(&self, dialed_ip: Option<IpAddr>) -> Option<String> {
+        if let Some(url) = &self.override_url {
+            return Some(url.clone());
+        }
         let host = match &self.configured_host {
             Some(host) => host.clone(),
             None => format_ip_host(dialed_ip?),
@@ -744,10 +757,21 @@ mod tests {
 
     fn gui_url(configured_host: Option<&str>, tls: bool) -> WebGuiUrl {
         WebGuiUrl {
+            override_url: None,
             scheme: if tls { "https" } else { "http" },
             configured_host: configured_host.map(str::to_string),
             web_port: 8200,
         }
+    }
+
+    #[test]
+    fn base_url_prefers_override_url_over_everything() {
+        let mut url = gui_url(Some("privaxy.lan"), false);
+        url.override_url = Some("http://proxy.lan".to_string());
+        assert_eq!(
+            url.base_url(Some("172.17.0.2".parse().unwrap())),
+            Some("http://proxy.lan".to_string())
+        );
     }
 
     #[test]
