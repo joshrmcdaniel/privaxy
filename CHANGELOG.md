@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- The PAC route now also answers at `/wpad.dat`, so DNS-based WPAD
+  auto-discovery (`http://wpad.<search domain>/wpad.dat`) can point straight
+  at Privaxy without needing a rewrite in a fronting reverse proxy.
+- Fix PAC rendering of CIDR bypass rules entered as `subnet/22`: the GUI
+  stores the bare prefix length, which was emitted verbatim into
+  `isInNet(host, subnet, "22")` — an invalid mask for standard PAC engines,
+  so those DIRECT rules silently never matched. Prefix lengths are now
+  converted to dotted-decimal masks at render time (already-dotted masks are
+  passed through), fixing existing configs without rewriting them.
 - Failing filter lists are now surfaced in the web UI
   - Filter lists that fail to download or stop serving valid rules (moved
     URL, HTML error page, empty list) used to fail silently in the background
