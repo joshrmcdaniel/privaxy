@@ -1,7 +1,7 @@
 use web_sys::MouseEvent;
 use yew::{classes, html, Callback, Classes, Component, Context, Html, Properties};
 
-pub const BASE_BUTTON_CSS: [&'static str; 20] = [
+pub const BASE_BUTTON_CSS: [&str; 20] = [
     "inline-flex",
     "items-center",
     "justify-center",
@@ -115,10 +115,10 @@ macro_rules! save_button {
     ($callback:expr) => {
         html! {
             <div class="mt-5">
-            <crate::button::PrivaxyButton
-                state={crate::button::ButtonState::Enabled}
+            <$crate::button::PrivaxyButton
+                state={$crate::button::ButtonState::Enabled}
                 onclick={$callback}
-                color={crate::button::ButtonColor::Green}
+                color={$crate::button::ButtonColor::Green}
                 button_text={"Save changes".to_string()}
                 children={Some(html!{
                     <svg xmlns="http://www.w3.org/2000/svg" class="-ml-0.5 mr-2 h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -132,10 +132,10 @@ macro_rules! save_button {
     ($callback:expr, $enabled:expr) => {
         html! {
             <div class="mt-5">
-            <crate::button::PrivaxyButton
+            <$crate::button::PrivaxyButton
                 state={$enabled}
                 onclick={$callback}
-                color={crate::button::ButtonColor::Green}
+                color={$crate::button::ButtonColor::Green}
                 button_text={"Save changes".to_string()}
                 children={Some(html!{
                     <svg xmlns="http://www.w3.org/2000/svg" class="-ml-0.5 mr-2 h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -149,7 +149,7 @@ macro_rules! save_button {
     ($callback:expr, $text:expr) => {
         html! {
             <div class="mt-5">
-            <crate::button::PrivaxyButton
+            <$crate::button::PrivaxyButton
                 state={ButtonState::Enabled}
                 onclick={$callback}
                 color={ButtonColor::Green}

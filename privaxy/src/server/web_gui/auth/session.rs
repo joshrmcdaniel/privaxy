@@ -73,9 +73,8 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
 
 pub fn extract_session_cookie(cookie_header: &str) -> Option<String> {
     cookie_header.split(';').map(str::trim).find_map(|crumb| {
-        let mut parts = crumb.splitn(2, '=');
-        let name = parts.next()?;
-        let value = parts.next()?;
+        let (name, value) = crumb.split_once('=')?;
+
         if name == COOKIE_NAME {
             Some(value.to_string())
         } else {

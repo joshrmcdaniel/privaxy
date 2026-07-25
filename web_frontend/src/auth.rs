@@ -38,6 +38,7 @@ pub enum GateMessage {
     StatusLoadFailed,
     SetupCompleted(String),
     LoginCompleted(String),
+    #[allow(dead_code)]
     LogoutCompleted,
 }
 
@@ -133,6 +134,7 @@ async fn fetch_status() -> Option<AuthStatus> {
     response.json::<AuthStatus>().await.ok()
 }
 
+#[allow(dead_code)]
 pub async fn post_logout() -> bool {
     Request::post("/api/auth/logout")
         .send()
@@ -418,7 +420,7 @@ async fn parse_error_message(response: gloo_net::http::Response) -> String {
     }
 }
 
-fn render_card(title: &str, content: Html) -> Html {
+pub(crate) fn render_card(title: &str, content: Html) -> Html {
     html! {
         <div class="min-h-screen flex items-center justify-center bg-gray-100 px-4">
             <div class="max-w-md w-full bg-white rounded-lg shadow p-8">

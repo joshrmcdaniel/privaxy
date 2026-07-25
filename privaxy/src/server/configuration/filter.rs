@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::collections::BTreeSet;
 use std::env;
 use std::path::PathBuf;
 use tokio::fs;
@@ -18,17 +19,17 @@ pub enum FilterGroup {
     Social,
 }
 
-impl ToString for FilterGroup {
-    fn to_string(&self) -> String {
-        match self {
+impl std::fmt::Display for FilterGroup {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let name = match self {
             FilterGroup::Default => "default",
             FilterGroup::Regional => "regional",
             FilterGroup::Ads => "ads",
             FilterGroup::Privacy => "privacy",
             FilterGroup::Malware => "malware",
             FilterGroup::Social => "social",
-        }
-        .to_string()
+        };
+        write!(f, "{name}")
     }
 }
 
@@ -44,7 +45,7 @@ pub struct DefaultFilter {
 }
 
 #[serde_as]
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Deserialize, Serialize, PartialEq, Eq)]
 pub struct Filter {
     /// If the filter is enabled
     pub enabled: bool,
@@ -62,6 +63,12 @@ pub struct Filter {
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 pub struct DefaultFilters(Vec<DefaultFilter>);
 
+impl Default for DefaultFilters {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl DefaultFilters {
     pub fn new() -> Self {
         let mut filters = Vec::new();
@@ -76,6 +83,16 @@ impl DefaultFilters {
 
     pub fn list(&self) -> Vec<DefaultFilter> {
         self.0.clone()
+    }
+
+    /// File names (derived from the URLs) of the filter lists shipped with
+    /// the package. Configuration entries matching one of these are built-in:
+    /// they can be enabled or disabled, but not edited or removed.
+    pub fn file_names(&self) -> BTreeSet<String> {
+        self.0
+            .iter()
+            .map(|filter| filter.file_name.clone())
+            .collect()
     }
 
     fn parse_filter(
@@ -284,6 +301,34 @@ impl Filter {
     }
 }
 
+impl std::fmt::Display for Filter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Filter {{ enabled: {}, title: {}, group: {}, file_name: {}, url: {} }}",
+            self.enabled,
+            self.title,
+            self.group,
+            self.file_name,
+            self.url.as_str()
+        )
+    }
+}
+
+impl std::fmt::Debug for Filter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Filter {{ enabled: {}, title: {}, group: {}, file_name: {}, url: {} }}",
+            self.enabled,
+            self.title,
+            self.group,
+            self.file_name,
+            self.url.as_str()
+        )
+    }
+}
+
 impl From<DefaultFilter> for Filter {
     fn from(default_filter: DefaultFilter) -> Self {
         Self {
@@ -384,30 +429,36 @@ fn get_filter_directory() -> PathBuf {
         // Assume home directory
         Err(_) => PathBuf::from(FILTERS_DIRECTORY_NAME),
     };
-    return super::get_base_directory().unwrap().join(filter_dir);
+    super::get_base_directory().unwrap().join(filter_dir)
 }
 
 pub(crate) async fn get_filters_content(
     configuration: &mut super::Configuration,
     http_client: &reqwest::Client,
+    filter_failure_store: &super::FilterFailureStore,
 ) -> Vec<String> {
     let mut filters = Vec::new();
-    let mut futures = vec![];
 
-    for filter in configuration.get_enabled_filters() {
-        let future = filter.get_contents(http_client);
-        futures.push(future);
-    }
+    let futures = configuration.get_enabled_filters().map(|filter| {
+        let http_client = http_client.clone();
+        async move {
+            let result = filter.get_contents(&http_client).await;
+            (filter, result)
+        }
+    });
 
     let results = futures::future::join_all(futures).await;
-    for result in results {
+    for (filter, result) in results {
         match result {
             Ok(filter_content) => filters.push(filter_content),
             // A fetch failure here includes a filter whose URL has stopped serving a
-            // `text/plain` list (see `validate_filter_content_type`); we warn and drop it from
-            // the engine rather than aborting the whole rebuild.
+            // `text/plain` list (see `validate_filter_content_type`); we record it for the
+            // web UI and drop it from the engine rather than aborting the whole rebuild.
+            // No entry is cleared on success: a filter can load fine from its on-disk
+            // copy while its URL is still failing to update.
             Err(err) => {
-                log::warn!("Dropping filter that could not be loaded: {err:?}")
+                log::warn!("Dropping filter that could not be loaded: {err:?}");
+                filter_failure_store.record(filter, &err.to_string());
             }
         }
     }
@@ -417,4 +468,25 @@ pub(crate) async fn get_filters_content(
     // Filter out duplicate lines, if present
     filters.dedup();
     filters
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The `is_default` API check identifies built-in lists by file name, so
+    /// every default filter's file name must stay derived from its URL and
+    /// the set must not silently collapse through duplicates.
+    #[test]
+    fn default_filter_file_names_are_derived_from_urls() {
+        let defaults = DefaultFilters::new();
+        let list = defaults.list();
+        let file_names = defaults.file_names();
+
+        assert!(!list.is_empty());
+        assert_eq!(file_names.len(), list.len());
+        for filter in list {
+            assert_eq!(filter.file_name, calc_filter_filename(filter.url.as_str()));
+        }
+    }
 }

@@ -251,7 +251,7 @@ impl NetworkConfig {
             Ok(cert) => Ok(cert),
             Err(err) => {
                 log::error!("Failed to read TLS certificate: {err}");
-                return Err(err);
+                Err(err)
             }
         }
     }
@@ -298,7 +298,7 @@ impl NetworkConfig {
         };
 
         let renew_threshold = Asn1Time::days_from_now(30)?;
-        let needs_renewal = cert.not_after() <= &renew_threshold;
+        let needs_renewal = cert.not_after() <= renew_threshold;
         if !needs_renewal {
             return Ok(cert);
         }
@@ -382,6 +382,7 @@ fn build_ca_signed_cert(
         // patch NotValidBefore
         // try_into() coerces to the platform's time_t (i64 on 64-bit targets,
         // i32 on 32-bit MIPS glibc) instead of a hardcoded cast.
+        #[allow(clippy::useless_conversion)]
         Asn1Time::from_unix((since_epoch.as_secs() as i64 - 60).try_into().unwrap()).unwrap()
     };
     cert_builder.set_not_before(&not_before).unwrap();
@@ -405,7 +406,7 @@ fn build_ca_signed_cert(
         )
         .unwrap();
     let subject_alternative_name = SubjectAlternativeName::new()
-        .ip(bind_addr.as_str().into())
+        .ip(bind_addr.as_str())
         .build(&cert_builder.x509v3_context(Some(ca_cert), None))
         .unwrap();
 

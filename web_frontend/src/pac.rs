@@ -213,10 +213,7 @@ impl Component for PacSettingsPage {
             Message::UpdateDirectCidrs(value) => {
                 if let Some(form) = self.form.as_mut() {
                     form.direct_cidrs = value;
-                    form.cidrs_error = match PacFormState::parse_cidrs(&form.direct_cidrs) {
-                        Ok(_) => None,
-                        Err(err) => Some(err),
-                    };
+                    form.cidrs_error = PacFormState::parse_cidrs(&form.direct_cidrs).err();
                 }
             }
             Message::UpdateDirectFqdns(value) => {

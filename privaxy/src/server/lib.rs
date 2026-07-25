@@ -1,5 +1,5 @@
 use crate::blocker::AdblockRequester;
-use crate::configuration::NetworkConfig;
+use crate::configuration::{FilterFailureStore, NetworkConfig};
 use crate::proxy::exclusions::LocalExclusionStore;
 use crate::web_gui::events::Event;
 use hyper::service::service_fn;
@@ -10,6 +10,7 @@ use hyper_util::server::graceful::GracefulShutdown;
 use include_dir::{include_dir, Dir};
 use proxy::exclusions;
 use proxy::serve::UpgradeClient;
+use proxy::tls_failures::TlsFailureStore;
 use reqwest::redirect::Policy;
 use std::env;
 use std::net::IpAddr;
@@ -90,6 +91,8 @@ pub struct PrivaxyServer {
     pub blocking_disabled_store: blocker::BlockingDisabledStore,
     pub statistics: statistics::Statistics,
     pub local_exclusion_store: exclusions::LocalExclusionStore,
+    pub tls_failure_store: TlsFailureStore,
+    pub filter_failure_store: FilterFailureStore,
     // A Sender is required to subscribe to broadcasted messages
     pub requests_broadcast_sender: broadcast::Sender<Event>,
 }
@@ -187,7 +190,7 @@ pub async fn start_privaxy() -> PrivaxyServer {
     log_handle.set_level(configuration.debug.log_level.to_level_filter());
 
     let local_exclusion_store =
-        LocalExclusionStore::new(Vec::from_iter(configuration.exclusions.clone().into_iter()));
+        LocalExclusionStore::new(Vec::from_iter(configuration.exclusions.clone()));
     let local_exclusion_store_clone = local_exclusion_store.clone();
 
     let ca_certificate = match configuration.ca.get_ca_certificate().await {
@@ -213,6 +216,12 @@ pub async fn start_privaxy() -> PrivaxyServer {
     let statistics = statistics::Statistics::new();
     let statistics_clone = statistics.clone();
 
+    let tls_failure_store = TlsFailureStore::new(configuration.ignored_tls_failures.clone());
+    let tls_failure_store_clone = tls_failure_store.clone();
+
+    let filter_failure_store = FilterFailureStore::new();
+    let filter_failure_store_clone = filter_failure_store.clone();
+
     let (broadcast_tx, _broadcast_rx) = broadcast::channel(32);
     let broadcast_tx_clone = broadcast_tx.clone();
 
@@ -229,6 +238,7 @@ pub async fn start_privaxy() -> PrivaxyServer {
         configuration.clone(),
         client.clone(),
         blocker_requester.clone(),
+        filter_failure_store.clone(),
         None,
     )
     .await;
@@ -244,6 +254,8 @@ pub async fn start_privaxy() -> PrivaxyServer {
 
     let block_disable_ref = blocking_disabled_store.clone();
     let local_exclusion_store_ref = local_exclusion_store.clone();
+    let tls_failure_store_ref = tls_failure_store.clone();
+    let filter_failure_store_ref = filter_failure_store.clone();
     let stats_clone = statistics.clone();
     let configuration_updater_tx_ref = configuration_updater_tx.clone();
     let configuration_save_lock_ref = configuration_save_lock.clone();
@@ -259,6 +271,8 @@ pub async fn start_privaxy() -> PrivaxyServer {
             privaxy_frontend(
                 broadcast_tx_ref.clone(),
                 local_exclusion_store_ref.clone(),
+                tls_failure_store_ref.clone(),
+                filter_failure_store_ref.clone(),
                 stats_clone.clone(),
                 block_disable_ref.clone(),
                 configuration_updater_tx_ref.clone(),
@@ -286,6 +300,7 @@ pub async fn start_privaxy() -> PrivaxyServer {
     tokio::spawn(async move {
         let notify_reload_backend = notify_reload_clone.clone();
         let cfg_lock_backend = configuration_save_lock_ref.clone();
+        let mut local_exclusion_store = local_exclusion_store;
         let mut rt_cert_cache =
             cert::CertCache::new(ca_certificate.clone(), ca_private_key.clone());
         let mut rt_ca_certificate = ca_certificate;
@@ -298,11 +313,19 @@ pub async fn start_privaxy() -> PrivaxyServer {
                 broadcast_tx.clone(),
                 statistics.clone(),
                 local_exclusion_store.clone(),
+                tls_failure_store.clone(),
                 cfg_lock_backend.clone(),
                 notify_reload_backend.clone(),
             )
             .await;
             let cfg = read_configuration(&cfg_lock_backend).await;
+            // The exclusion store is only otherwise mutated by the web UI
+            // route; without this refresh, exclusions edited in the
+            // configuration file never take effect on SIGHUP reload.
+            local_exclusion_store.replace_exclusions(Vec::from_iter(cfg.exclusions.clone()));
+            // Same for the TLS-failure ignore set: pick up hand-edited
+            // `ignored_tls_failures` entries on SIGHUP reload.
+            tls_failure_store.set_ignored(cfg.ignored_tls_failures.clone());
             let ca_cert = cfg.ca.get_ca_certificate().await.unwrap();
             let ca_key = cfg.ca.get_ca_private_key().await.unwrap();
             if !ca_key.public_eq(&rt_ca_certificate.public_key().unwrap()) {
@@ -318,13 +341,18 @@ pub async fn start_privaxy() -> PrivaxyServer {
         blocking_disabled_store: blocking_disabled_store_clone,
         statistics: statistics_clone,
         local_exclusion_store: local_exclusion_store_clone,
+        tls_failure_store: tls_failure_store_clone,
+        filter_failure_store: filter_failure_store_clone,
         requests_broadcast_sender: broadcast_tx_clone,
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn privaxy_frontend(
     broadcast_tx: tokio::sync::broadcast::Sender<Event>,
     local_exclusion_store: LocalExclusionStore,
+    tls_failure_store: TlsFailureStore,
+    filter_failure_store: FilterFailureStore,
     statistics: statistics::Statistics,
     block_disable_ref: blocker::BlockingDisabledStore,
     configuration_updater_tx: tokio::sync::mpsc::Sender<configuration::Configuration>,
@@ -339,6 +367,8 @@ async fn privaxy_frontend(
         &configuration_updater_tx,
         &configuration_save_lock,
         &local_exclusion_store,
+        &tls_failure_store,
+        &filter_failure_store,
         notify_reload.clone(),
         log_handle.clone(),
     );
@@ -512,6 +542,62 @@ async fn env_or_config_ip(network_config: &NetworkConfig) -> IpAddr {
     }
 }
 
+/// Bracket IPv6 addresses so they are usable as the host part of a URL.
+fn format_ip_host(ip: IpAddr) -> String {
+    match ip {
+        IpAddr::V4(ip) => ip.to_string(),
+        IpAddr::V6(ip) => format!("[{ip}]"),
+    }
+}
+
+/// Where the web GUI can be reached from a proxied client's point of view.
+/// Used to build links back to the GUI (e.g. the "Exclude this host" button on
+/// proxy error pages). When the GUI listens on an unspecified address and no
+/// FQDN is configured, the host is only known per connection — from the local
+/// address the client dialed — hence `base_url` taking it as a parameter.
+#[derive(Debug, Clone)]
+pub(crate) struct WebGuiUrl {
+    scheme: &'static str,
+    configured_host: Option<String>,
+    web_port: u16,
+}
+
+impl WebGuiUrl {
+    async fn from_network_config(network: &NetworkConfig) -> Self {
+        let scheme = if network.tls { "https" } else { "http" };
+        let configured_host = match network.listen_url.clone() {
+            // An operator-declared FQDN wins over any bound address.
+            Some(listen_url) => Some(listen_url),
+            None => {
+                let ip = env_or_config_ip(network).await;
+                if ip.is_unspecified() {
+                    None
+                } else {
+                    Some(format_ip_host(ip))
+                }
+            }
+        };
+
+        Self {
+            scheme,
+            configured_host,
+            web_port: network.web_port,
+        }
+    }
+
+    fn base_url(&self, dialed_ip: Option<IpAddr>) -> Option<String> {
+        let host = match &self.configured_host {
+            Some(host) => host.clone(),
+            None => format_ip_host(dialed_ip?),
+        };
+        let scheme = self.scheme;
+        let web_port = self.web_port;
+
+        Some(format!("{scheme}://{host}:{web_port}"))
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn privaxy_backend(
     client: reqwest::Client,
     cert_cache: cert::CertCache,
@@ -519,6 +605,7 @@ async fn privaxy_backend(
     broadcast_tx: broadcast::Sender<Event>,
     statistics: statistics::Statistics,
     local_exclusion_store: LocalExclusionStore,
+    tls_failure_store: TlsFailureStore,
     configuration_save_lock: Arc<tokio::sync::Mutex<()>>,
     notify_reload: Arc<tokio::sync::Notify>,
 ) {
@@ -539,6 +626,7 @@ async fn privaxy_backend(
         .wrap_connector(http_connector);
     let config = read_configuration(&configuration_save_lock).await;
     let network_config = &config.network;
+    let web_gui_url = WebGuiUrl::from_network_config(network_config).await;
     let doh_config = network_config.doh.clone();
     // Read once per (re)start; the backend loop re-runs this on reload, so
     // toggling the setting in the UI takes effect after its notify_reload.
@@ -608,7 +696,13 @@ async fn privaxy_backend(
                 let broadcast_tx = broadcast_tx.clone();
                 let statistics = statistics.clone();
                 let local_exclusion_store = local_exclusion_store.clone();
+                let tls_failure_store = tls_failure_store.clone();
                 let doh_config = doh_config.clone();
+                // The address the client dialed to reach the proxy is the best
+                // guess for a GUI host when none is configured; it must be read
+                // before the stream is consumed by the connection below.
+                let gui_base_url =
+                    web_gui_url.base_url(stream.local_addr().ok().map(|addr| addr.ip()));
 
                 let service = service_fn(move |req| {
                     proxy::serve_mitm_session(
@@ -623,6 +717,8 @@ async fn privaxy_backend(
                         local_exclusion_store.clone(),
                         doh_config.clone(),
                         scriptlet_debug_logging,
+                        tls_failure_store.clone(),
+                        gui_base_url.clone(),
                     )
                 });
 
@@ -640,4 +736,53 @@ async fn privaxy_backend(
     }
 
     graceful.shutdown().await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn gui_url(configured_host: Option<&str>, tls: bool) -> WebGuiUrl {
+        WebGuiUrl {
+            scheme: if tls { "https" } else { "http" },
+            configured_host: configured_host.map(str::to_string),
+            web_port: 8200,
+        }
+    }
+
+    #[test]
+    fn base_url_prefers_configured_host_over_dialed_ip() {
+        let url = gui_url(Some("privaxy.lan"), false);
+        assert_eq!(
+            url.base_url(Some("192.168.1.2".parse().unwrap())),
+            Some("http://privaxy.lan:8200".to_string())
+        );
+    }
+
+    #[test]
+    fn base_url_falls_back_to_dialed_ip_and_brackets_ipv6() {
+        let url = gui_url(None, false);
+        assert_eq!(
+            url.base_url(Some("192.168.1.2".parse().unwrap())),
+            Some("http://192.168.1.2:8200".to_string())
+        );
+        assert_eq!(
+            url.base_url(Some("fd00::1".parse().unwrap())),
+            Some("http://[fd00::1]:8200".to_string())
+        );
+    }
+
+    #[test]
+    fn base_url_is_none_without_any_host() {
+        assert_eq!(gui_url(None, false).base_url(None), None);
+    }
+
+    #[test]
+    fn base_url_uses_https_scheme_when_tls_enabled() {
+        let url = gui_url(Some("privaxy.lan"), true);
+        assert_eq!(
+            url.base_url(None),
+            Some("https://privaxy.lan:8200".to_string())
+        );
+    }
 }

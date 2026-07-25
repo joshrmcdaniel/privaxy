@@ -44,6 +44,7 @@ pub enum Message {
     AcknowledgeError,
     AcknowledgeSuccess,
 }
+#[allow(dead_code)]
 enum SettingType {
     Text(String),
     Checkbox(bool),
@@ -201,7 +202,7 @@ impl NetworkSettings {
         match req.send().await {
             Ok(resp) => {
                 if resp.ok() {
-                    return Ok(());
+                    Ok(())
                 } else {
                     log::error!("Failed to save network config");
                     return Err(resp.json::<ApiError>().await.unwrap());
@@ -217,9 +218,11 @@ impl NetworkSettings {
     }
 }
 
+#[allow(clippy::large_enum_variant)]
 enum SettingCategories {
     Network(NetworkSettings),
     Certificate(CaConfig),
+    #[allow(dead_code)]
     Other,
 }
 
@@ -228,6 +231,7 @@ pub(crate) struct GeneralSettings {
     network_settings: Option<NetworkSettings>,
     ca_config: CaConfig,
     loading: bool,
+    #[allow(dead_code)]
     save_callback: Callback<()>,
     show_error: bool,
     show_success: bool,
@@ -235,6 +239,7 @@ pub(crate) struct GeneralSettings {
 }
 
 impl GeneralSettings {
+    #[allow(dead_code)]
     fn save(&self) {
         self.save_callback.emit(());
     }

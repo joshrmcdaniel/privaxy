@@ -141,7 +141,7 @@ fn augment_csp_value(value: &str, nonce: &str) -> String {
     // that case our injected tag is already allowed by `'unsafe-inline'`,
     // and the nonce attribute on it is a harmless no-op, so we skip.
     fn needs_nonce(directive: &str) -> bool {
-        !(has_unsafe_inline(directive) && !has_nonce_or_hash(directive))
+        !has_unsafe_inline(directive) || has_nonce_or_hash(directive)
     }
     fn append_to(directives: &mut [String], name: &str, nonce_source: &str) {
         for d in directives.iter_mut() {
@@ -276,6 +276,7 @@ pub(crate) async fn serve(
     client_ip_address: IpAddr,
     doh_config: DohConfig,
     scriptlet_debug_logging: bool,
+    gui_base_url: Option<String>,
 ) -> Result<Response<ProxyBody>, hyper::Error> {
     let scheme_string = scheme.to_string();
 
@@ -427,8 +428,16 @@ pub(crate) async fn serve(
     {
         Ok(response) => response,
         Err(err) => {
-            log::error!("Failed to send request: {}", err.to_string());
-            return Ok(get_informative_error_response(&err.to_string()));
+            log::error!("Failed to send request: {}", err);
+            // `authority` was moved into the uri builder above; the host of
+            // the rebuilt `uri` is the same portless hostname.
+            let failing_host = uri.host();
+            let exclude_url = build_exclude_url(failing_host, gui_base_url.as_deref());
+            return Ok(get_informative_error_response(
+                &err.to_string(),
+                failing_host,
+                exclude_url.as_deref(),
+            ));
         }
     };
 
@@ -513,10 +522,76 @@ pub(crate) async fn serve(
     Ok(new_response)
 }
 
-fn get_informative_error_response(reason: &str) -> Response<ProxyBody> {
+/// Minimal HTML escaping for text interpolated into the proxy's error page.
+/// The failure reason comes from reqwest and can embed attacker-influenced
+/// URLs; the failing host is client-controlled.
+fn escape_html(s: &str) -> String {
+    let mut escaped = String::with_capacity(s.len());
+    for character in s.chars() {
+        match character {
+            '&' => escaped.push_str("&amp;"),
+            '<' => escaped.push_str("&lt;"),
+            '>' => escaped.push_str("&gt;"),
+            '"' => escaped.push_str("&quot;"),
+            '\'' => escaped.push_str("&#39;"),
+            _ => escaped.push(character),
+        }
+    }
+    escaped
+}
+
+/// The web GUI link that pre-fills the exclusion flow for the failing host,
+/// when both the host and a reachable GUI base URL are known. The host is
+/// percent-encoded into the `host` query parameter.
+fn build_exclude_url(failing_host: Option<&str>, gui_base_url: Option<&str>) -> Option<String> {
+    match (failing_host, gui_base_url) {
+        (Some(host), Some(base)) => Some(format!(
+            "{base}/exclude?host={}",
+            url::form_urlencoded::byte_serialize(host.as_bytes()).collect::<String>()
+        )),
+        _ => None,
+    }
+}
+
+/// Markup substituted for `#{exclude_section}#` in the error page: the failing
+/// host, plus an "Exclude this host" link when the GUI is reachable. Empty
+/// when the failing host is unknown.
+fn build_exclude_section(failing_host: Option<&str>, exclude_url: Option<&str>) -> String {
+    let host = match failing_host {
+        Some(host) => host,
+        None => return String::new(),
+    };
+
+    let mut section = format!(
+        "<p class=\"mt-1 text-base text-gray-500\">Failing host: \
+         <span class=\"font-mono bg-gray-100 rounded-md\">{}</span></p>",
+        escape_html(host)
+    );
+    if let Some(exclude_url) = exclude_url {
+        // `exclude_url` is percent-encoded by construction; escaping it again
+        // hardens the attribute against any future construction change.
+        section.push_str(&format!(
+            "<a href=\"{}\" class=\"mt-4 inline-block rounded-md bg-blue-600 px-4 py-2 \
+             text-white font-medium\">Exclude this host</a>",
+            escape_html(exclude_url)
+        ));
+    }
+
+    section
+}
+
+fn get_informative_error_response(
+    reason: &str,
+    failing_host: Option<&str>,
+    exclude_url: Option<&str>,
+) -> Response<ProxyBody> {
     let mut response_body = String::from(include_str!("../../resources/head.html"));
-    response_body +=
-        &include_str!("../../resources/error.html").replace("#{request_error_reason}#", reason);
+    response_body += &include_str!("../../resources/error.html")
+        .replace("#{request_error_reason}#", &escape_html(reason))
+        .replace(
+            "#{exclude_section}#",
+            &build_exclude_section(failing_host, exclude_url),
+        );
 
     let mut response = Response::new(full_body(response_body));
     *response.status_mut() = http::StatusCode::BAD_GATEWAY;
@@ -779,5 +854,33 @@ mod tests {
         );
         assert!(!out.contains("trusted-types"));
         assert!(out.contains("'nonce-abc'"));
+    }
+
+    #[test]
+    fn exclude_section_escapes_hostile_host() {
+        let section = build_exclude_section(Some("<script>alert(1)</script>"), None);
+        assert!(section.contains("&lt;script&gt;alert(1)&lt;/script&gt;"));
+        assert!(!section.contains("<script>"));
+    }
+
+    #[test]
+    fn exclude_url_percent_encodes_host() {
+        let exclude_url = build_exclude_url(Some("foo/bar?baz&qux"), Some("http://gui.lan:8200"));
+        assert_eq!(
+            exclude_url.as_deref(),
+            Some("http://gui.lan:8200/exclude?host=foo%2Fbar%3Fbaz%26qux")
+        );
+    }
+
+    #[test]
+    fn exclude_section_has_no_link_without_gui_url() {
+        assert_eq!(build_exclude_url(Some("example.com"), None), None);
+
+        let section = build_exclude_section(Some("example.com"), None);
+        assert!(section.contains("Failing host"));
+        assert!(!section.contains("<a "));
+
+        // Without a failing host there is nothing to render at all.
+        assert_eq!(build_exclude_section(None, None), "");
     }
 }

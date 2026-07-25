@@ -5,18 +5,21 @@ use tokio::fs;
 mod auth;
 mod ca;
 mod filter;
+mod filter_failures;
 mod network;
 mod updater;
 pub use auth::*;
 pub use ca::*;
 pub use filter::*;
-use futures::future::try_join_all;
+pub use filter_failures::*;
+use futures::future::join_all;
 pub use network::*;
 use std::env;
 use std::path::{Path, PathBuf};
 pub use updater::*;
 
 use crate::proxy::exclusions::recommended_exclusions;
+use crate::proxy::tls_failures::TlsFailureStore;
 pub(crate) type ConfigurationResult<T> = Result<T, ConfigurationError>;
 pub(crate) const FILTERS_UPDATE_AFTER: Duration = Duration::from_secs(60 * 60 * 24); // 24h
 
@@ -55,6 +58,11 @@ pub enum ConfigurationError {
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 pub struct Configuration {
     pub exclusions: BTreeSet<String>,
+    /// Hosts the operator chose to hide from the TLS-failure report in the
+    /// web UI. Absent from configuration files written before this feature
+    /// existed, hence the serde default.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub ignored_tls_failures: BTreeSet<String>,
     pub custom_filters: Vec<String>,
     pub ca: Ca,
     pub network: NetworkConfig,
@@ -210,8 +218,26 @@ impl Configuration {
 
         self.save().await?;
 
-        local_exclusion_store
-            .replace_exclusions(Vec::from_iter(self.exclusions.clone().into_iter()));
+        local_exclusion_store.replace_exclusions(Vec::from_iter(self.exclusions.clone()));
+
+        Ok(())
+    }
+
+    /// Persist `host` into the ignored TLS-failure list and update the
+    /// in-memory store immediately, so the report reflects the change without
+    /// a reload.
+    pub async fn ignore_tls_failure(
+        &mut self,
+        host: &str,
+        tls_failure_store: TlsFailureStore,
+    ) -> ConfigurationResult<()> {
+        let host = host.trim();
+
+        self.ignored_tls_failures.insert(host.to_string());
+
+        self.save().await?;
+
+        tls_failure_store.ignore(host);
 
         Ok(())
     }
@@ -238,23 +264,38 @@ impl Configuration {
         self.filters.iter_mut().filter(|f| f.enabled)
     }
 
+    /// Refresh every enabled filter from its URL. Per-filter failures are
+    /// expected here (remote lists go stale or move); they are recorded in
+    /// `filter_failure_store` for the web UI and logged, while the remaining
+    /// filters keep updating.
     pub async fn update_filters(
         &mut self,
         http_client: reqwest::Client,
-    ) -> ConfigurationResult<()> {
+        filter_failure_store: &FilterFailureStore,
+    ) {
         log::debug!("Updating filters");
 
-        let futures = self.filters.iter_mut().filter_map(|filter| {
-            if filter.enabled {
-                Some(filter.update(&http_client))
-            } else {
-                None
+        let futures = self
+            .filters
+            .iter_mut()
+            .filter(|filter| filter.enabled)
+            .map(|filter| {
+                let http_client = http_client.clone();
+                async move {
+                    let result = filter.update(&http_client).await;
+                    (filter, result)
+                }
+            });
+
+        for (filter, result) in join_all(futures).await {
+            match result {
+                Ok(_) => filter_failure_store.clear(&filter.file_name),
+                Err(err) => {
+                    log::error!("Failed to update filter '{}': {err}", filter.title);
+                    filter_failure_store.record(filter, &err.to_string());
+                }
             }
-        });
-
-        try_join_all(futures).await?;
-
-        Ok(())
+        }
     }
 
     pub async fn add_filter(
@@ -280,6 +321,30 @@ impl Configuration {
                 ))
             }
         }
+    }
+
+    /// Replace the filter identified by `old_file_name` with `filter`,
+    /// keeping its enabled status. The replacement is validated the same way
+    /// an added filter is: its URL must serve a parseable filter list.
+    pub async fn replace_filter(
+        &mut self,
+        old_file_name: &str,
+        filter: &mut Filter,
+        http_client: &reqwest::Client,
+    ) -> ConfigurationResult<()> {
+        let index = self
+            .filters
+            .iter()
+            .position(|existing| existing.file_name == old_file_name)
+            .ok_or_else(|| {
+                ConfigurationError::FilterError(format!("no filter with file name {old_file_name}"))
+            })?;
+
+        filter.enabled = self.filters[index].enabled;
+        filter.update(http_client).await?;
+        self.filters[index] = filter.clone();
+
+        Ok(())
     }
 
     pub async fn set_network_settings(
@@ -347,6 +412,7 @@ impl Configuration {
                     .iter()
                     .map(|entry| entry.to_string()),
             ),
+            ignored_tls_failures: BTreeSet::new(),
             custom_filters: Vec::new(),
             auth: Auth::new_initialized(),
             debug: DebugConfig::default(),
@@ -382,6 +448,43 @@ mod tests {
         let configuration = Configuration::new_default()
             .await
             .expect("default configuration");
+
+        let serialized = toml::to_string_pretty(&configuration).expect("serialize");
+        let deserialized: Configuration = toml::from_str(&serialized).expect("deserialize");
+
+        assert_eq!(configuration, deserialized);
+    }
+
+    /// Configuration files written before the TLS-failure ignore list existed
+    /// carry no `ignored_tls_failures` key; they must keep parsing, yielding
+    /// an empty set (serde default). The empty set is also omitted on save so
+    /// untouched configurations stay byte-identical.
+    #[tokio::test]
+    async fn configuration_without_ignored_tls_failures_parses() {
+        let configuration = Configuration::new_default()
+            .await
+            .expect("default configuration");
+
+        let serialized = toml::to_string_pretty(&configuration).expect("serialize");
+        assert!(
+            !serialized.contains("ignored_tls_failures"),
+            "empty ignore set must be omitted from the serialized configuration"
+        );
+
+        let deserialized: Configuration = toml::from_str(&serialized).expect("deserialize");
+        assert!(deserialized.ignored_tls_failures.is_empty());
+    }
+
+    /// A populated ignore list survives a TOML round-trip unchanged.
+    #[tokio::test]
+    async fn configuration_round_trips_ignored_tls_failures() {
+        let mut configuration = Configuration::new_default()
+            .await
+            .expect("default configuration");
+        configuration.ignored_tls_failures = BTreeSet::from([
+            "pinned.example.com".to_string(),
+            "other.example.org".to_string(),
+        ]);
 
         let serialized = toml::to_string_pretty(&configuration).expect("serialize");
         let deserialized: Configuration = toml::from_str(&serialized).expect("deserialize");

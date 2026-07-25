@@ -143,7 +143,7 @@ macro_rules! info_icon {
 macro_rules! success_banner {
     ($visible:expr, $on_hide:expr) => {
         html! {
-            <crate::submit_banner::SubmitBanner message="Changes saved" icon={crate::info_icon!()} color={crate::submit_banner::Color::Green} visible={$visible} on_hide={$on_hide}/>
+            <$crate::submit_banner::SubmitBanner message="Changes saved" icon={$crate::info_icon!()} color={$crate::submit_banner::Color::Green} visible={$visible} on_hide={$on_hide}/>
         }
     };
 }
@@ -152,12 +152,12 @@ macro_rules! success_banner {
 macro_rules! failure_banner {
     ($visible:expr, $on_hide:expr) => {
         html! {
-            <crate::submit_banner::SubmitBanner message="Error saving changes" icon={crate::info_icon!()} color={crate::submit_banner::Color::Red} visible={$visible} on_hide={$on_hide}/>
+            <$crate::submit_banner::SubmitBanner message="Error saving changes" icon={$crate::info_icon!()} color={$crate::submit_banner::Color::Red} visible={$visible} on_hide={$on_hide}/>
         }
     };
     ($visible:expr, $on_hide:expr, $message:expr) => {
         html! {
-            <crate::submit_banner::SubmitBanner message={$message} icon={crate::info_icon!()} color={crate::submit_banner::Color::Red} visible={$visible} on_hide={$on_hide}/>
+            <$crate::submit_banner::SubmitBanner message={$message} icon={$crate::info_icon!()} color={$crate::submit_banner::Color::Red} visible={$visible} on_hide={$on_hide}/>
         }
     };
 }

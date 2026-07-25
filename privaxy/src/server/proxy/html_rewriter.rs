@@ -50,6 +50,7 @@ pub struct Rewriter {
 const PROCEDURAL_COSMETICS_SHIM: &str = include_str!("../../resources/procedural_cosmetics.js");
 
 impl Rewriter {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         url: String,
         adblock_requester: AdblockRequester,

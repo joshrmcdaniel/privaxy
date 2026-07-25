@@ -36,7 +36,7 @@ impl LogEntry {
 
 /// Minimum severity selected in the level dropdown.
 #[derive(Clone, Copy, PartialEq)]
-enum LevelFilter {
+pub enum LevelFilter {
     All,
     Error,
     Warn,

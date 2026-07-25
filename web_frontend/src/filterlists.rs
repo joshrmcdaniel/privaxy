@@ -1,9 +1,6 @@
-use crate::button;
 use crate::button::{ButtonColor, ButtonState, PrivaxyButton};
 use crate::filters::{AddFilterRequest, Filter, FilterConfiguration, FilterGroup};
-use crate::save_button::BASE_BUTTON_CSS;
-use crate::{failure_banner, save_button, submit_banner, ApiError};
-use filterlists_api;
+use crate::{failure_banner, ApiError};
 use gloo_net::http::Request;
 use url::Url;
 use wasm_bindgen_futures::spawn_local;
@@ -44,7 +41,7 @@ pub struct SearchFilterList {
     error_message: Option<String>,
 }
 
-const FILTER_TAG_GROUPS: [&'static str; 4] = ["ads", "privacy", "malware", "social"];
+const FILTER_TAG_GROUPS: [&str; 4] = ["ads", "privacy", "malware", "social"];
 
 #[derive(Properties, PartialEq)]
 pub struct Props {
@@ -297,7 +294,7 @@ impl Component for SearchFilterList {
             }
             SearchFilterMessage::AcknowledgeError => self.error_message = None,
             SearchFilterMessage::Error(error) => {
-                log::error!("Error loading filters: {}", error.to_string());
+                log::error!("Error loading filters: {}", error);
                 self.loading = false;
             }
             SearchFilterMessage::NextPage => {

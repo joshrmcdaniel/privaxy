@@ -11,6 +11,10 @@ mod blocking_enabled;
 mod button;
 mod dashboard;
 mod debug;
+mod exclude;
+mod exclusions_page;
+mod filter_edit;
+mod filter_failures;
 mod filterlists;
 mod filters;
 mod general;
@@ -21,6 +25,7 @@ mod save_button;
 mod settings;
 mod settings_textarea;
 mod submit_banner;
+mod tls_failures;
 
 #[derive(Debug, Deserialize, Clone)]
 pub(crate) struct ApiError {
@@ -35,6 +40,8 @@ enum Route {
     Requests,
     #[at("/settings/:s")]
     Settings,
+    #[at("/exclude")]
+    Exclude,
     #[not_found]
     #[at("/404")]
     NotFound,
@@ -118,6 +125,10 @@ fn switch(route: Route) -> Html {
         }
         Route::Settings => {
             html! {<>{navigation} <div class={"container mt-4 mb-10 mx-auto px-4 sm:px-6 lg:px-8"}> <Switch<settings::SettingsRoute> render={settings::switch_settings} /> </div> </>}
+        }
+        Route::Exclude => {
+            set_title("Exclude host");
+            html! { <>{navigation} <div class={"container mt-4 mb-10 mx-auto px-4 sm:px-6 lg:px-8"}> <exclude::ExcludePage /> </div></> }
         }
         Route::NotFound => {
             set_title("Not Found");

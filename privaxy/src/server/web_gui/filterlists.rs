@@ -1,4 +1,3 @@
-use filterlists_api;
 use warp::Filter as RouteFilter;
 
 use std::convert::Infallible;
