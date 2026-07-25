@@ -26,6 +26,8 @@ pub(crate) fn create_routes(configuration_save_lock: Arc<Mutex<()>>) -> BoxedFil
     let tera = Arc::new(tera);
 
     warp::path!("proxy.pac")
+        .or(warp::path!("wpad.dat"))
+        .unify()
         .and(warp::get())
         .and(super::with_arc(tera))
         .and(super::with_configuration_save_lock(configuration_save_lock))
@@ -55,10 +57,17 @@ async fn render_pac(
         .clone()
         .unwrap_or_else(|| format!("{}:{}", cfg.network.bind_addr, cfg.network.proxy_port));
 
+    let cidrs = cfg
+        .network
+        .pac_direct_cidrs
+        .iter()
+        .map(|(subnet, netmask)| (subnet.clone(), normalize_netmask(netmask)))
+        .collect();
+
     let ctx_data = PacContext {
         proxy_host: &proxy_host,
         ips: &cfg.network.pac_direct_ips,
-        cidrs: &cfg.network.pac_direct_cidrs,
+        cidrs: &cidrs,
         fqdns: &cfg.network.pac_direct_fqdns,
     };
 
@@ -78,10 +87,53 @@ async fn render_pac(
         .unwrap())
 }
 
+/// `isInNet` only understands dotted-decimal masks, but the GUI accepts
+/// `subnet/22`-style CIDR input and stores the bare prefix length, so a
+/// prefix length is converted here at render time. Anything that is not a
+/// prefix length (already-dotted masks in particular) passes through as-is.
+fn normalize_netmask(netmask: &str) -> String {
+    match netmask.parse::<u8>() {
+        Ok(prefix) if prefix <= 32 => {
+            let bits = if prefix == 0 {
+                0
+            } else {
+                u32::MAX << (32 - u32::from(prefix))
+            };
+            std::net::Ipv4Addr::from(bits).to_string()
+        }
+        _ => netmask.to_string(),
+    }
+}
+
 fn not_found_response() -> Response<String> {
     Response::builder()
         .status(http::StatusCode::NOT_FOUND)
         .header(http::header::CONTENT_TYPE, "text/plain")
         .body(String::new())
         .unwrap()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_netmask;
+
+    #[test]
+    fn prefix_lengths_become_dotted_masks() {
+        assert_eq!(normalize_netmask("0"), "0.0.0.0");
+        assert_eq!(normalize_netmask("8"), "255.0.0.0");
+        assert_eq!(normalize_netmask("12"), "255.240.0.0");
+        assert_eq!(normalize_netmask("20"), "255.255.240.0");
+        assert_eq!(normalize_netmask("22"), "255.255.252.0");
+        assert_eq!(normalize_netmask("26"), "255.255.255.192");
+        assert_eq!(normalize_netmask("28"), "255.255.255.240");
+        assert_eq!(normalize_netmask("32"), "255.255.255.255");
+    }
+
+    #[test]
+    fn dotted_masks_and_junk_pass_through() {
+        assert_eq!(normalize_netmask("255.255.252.0"), "255.255.252.0");
+        assert_eq!(normalize_netmask("33"), "33");
+        assert_eq!(normalize_netmask(""), "");
+        assert_eq!(normalize_netmask("garbage"), "garbage");
+    }
 }
