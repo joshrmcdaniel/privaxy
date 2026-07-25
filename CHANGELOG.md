@@ -1,5 +1,97 @@
 # Changelog
 
+## Unreleased
+
+- The PAC route now also answers at `/wpad.dat`, so DNS-based WPAD
+  auto-discovery (`http://wpad.<search domain>/wpad.dat`) can point straight
+  at Privaxy without needing a rewrite in a fronting reverse proxy.
+- New `network.gui_url` setting: full base URL of the web GUI as reachable by
+  clients, e.g. `gui_url = "http://proxy.example.lan"` when the GUI sits
+  behind a reverse proxy. Used verbatim for links back to the GUI on proxy
+  error pages (the "exclude this host" button), winning over `listen_url` and
+  the bound/dialed address. Fixes the exclude link pointing at an unreachable
+  container IP when Privaxy runs behind Docker NAT with the GUI fronted by a
+  reverse proxy on a different port. Editable from Settings → General
+  (network section) as "GUI URL"; must start with `http://` or `https://`
+  (validated in both the form and the API), and clearing the field unsets it.
+  Older API clients that omit the field keep the stored value.
+- Fix PAC rendering of CIDR bypass rules entered as `subnet/22`: the GUI
+  stores the bare prefix length, which was emitted verbatim into
+  `isInNet(host, subnet, "22")` — an invalid mask for standard PAC engines,
+  so those DIRECT rules silently never matched. Prefix lengths are now
+  converted to dotted-decimal masks at render time (already-dotted masks are
+  passed through), fixing existing configs without rewriting them.
+- Failing filter lists are now surfaced in the web UI
+  - Filter lists that fail to download or stop serving valid rules (moved
+    URL, HTML error page, empty list) used to fail silently in the background
+    updater. Settings → Filters now shows a warning panel listing each
+    failing list with its error, last attempt time and consecutive failure
+    count, and offers per-entry **Edit** (fix the URL, title or category in a
+    prefilled modal) and **Remove** actions. The panel is hidden while every
+    list is healthy. Failures are tracked in memory (keyed by the filter's
+    file name) and reconciled on configuration changes, so disabling or
+    removing a list clears its entry.
+  - Editing validates the new URL the same way adding a filter does (must
+    serve a `text/plain` list with parseable rules) and keeps the entry's
+    enabled state; a URL already used by another filter is rejected with a
+    `409`.
+  - A periodic refresh no longer aborts the remaining lists when one list
+    fails to download: each list is now updated independently and failures
+    are recorded per list.
+  - New authenticated API routes: `GET /api/filters/failures` and
+    `PATCH /api/filters`. `/api/filters` routes now match the exact path
+    only, so stray sub-paths 404 instead of hitting the collection handlers.
+- User-added filter lists can be edited and removed from the Filters page
+  - Each user-added list row now has an edit (pencil) button opening a modal
+    to rename the list, change its category or URL, or delete it. Built-in
+    lists shipped with the package show no edit button and the API refuses to
+    edit (`PATCH`) or remove (`DELETE`) them with a `403` — they can only be
+    enabled/disabled. The failures panel follows the same rule: a failing
+    built-in list offers a **Disable** action instead of Edit/Remove.
+  - `GET /api/filters` responses now include each filter's `url` and an
+    `is_default` flag, and `GET /api/filters/failures` entries carry
+    `is_default` too.
+- Dependency upgrade to latest versions (semver-aware; pre-releases such as
+  `argon2 0.6.0-rc` and `tera 2.0.0-alpha` were intentionally not adopted).
+  - Server HTTP/TLS stack: `hyper 0.14 → 1`, `http 0.2 → 1` (now via
+    `hyper-util` + `http-body-util`), `rustls 0.21 → 0.23`,
+    `tokio-rustls 0.24 → 0.26`, `hyper-rustls 0.24 → 0.27`,
+    `reqwest 0.11 → 0.13`, `warp 0.3 → 0.4`. The whole TLS stack is pinned to
+    the `ring` crypto provider so the MIPS/musl cross builds keep working
+    (`aws-lc-rs` needs a C toolchain). A `ring` `CryptoProvider` is installed
+    once at startup, as rustls 0.23 requires.
+  - warp 0.4 dropped its built-in TLS and graceful-shutdown server, so the web
+    GUI is now served through `hyper-util` with optional `tokio-rustls`
+    termination; WebSocket live feeds continue to work via connection upgrades.
+  - Frontend: `yew 0.19 → 0.23`, `yew-router 0.16 → 0.20`, `gloo-*` bumped,
+    `web-sys`/`wasm-bindgen` refreshed, and the deprecated `reqwasm` replaced
+    with `gloo-net`.
+  - Other majors: `thiserror 1 → 2`, `toml 0.8 → 1`, `dirs 5 → 6`.
+  - Behavior is unchanged; a set of characterization tests was added first to
+    lock the proxy's CSP/request-type/upgrade logic, the TOML config
+    round-trip, and CA-signed cert/server-config assembly.
+- One-click exclusion of hosts that break under TLS interception
+  - The proxy's 502 error page now names the failing host and offers an
+    "Exclude this host" button. The button is a plain link to the web UI's new
+    `/exclude?host=…` confirm page, so it rides the existing session auth:
+    logged-in admins get a one-click confirm, everyone else lands on the login
+    page first (the URL survives login). Values substituted into the error
+    page are now HTML-escaped and the link's host is percent-encoded
+    (previously the error reason was inserted unescaped).
+  - The web UI address on the error page is derived from `network.listen_url`
+    when set, otherwise from the bind address — falling back to the IP the
+    client actually dialed when binding `0.0.0.0`.
+  - New "Recent TLS interception failures" panel on Settings → Exclusions:
+    clients that abort the interception handshake (typically certificate
+    pinning — e.g. banking apps, RCS messaging) can never be shown an error
+    page, so the proxy now records those hosts (deduplicated,
+    most-recent-first, capped at 100, in memory) and the panel offers
+    per-host **Exclude** and **Ignore** actions. Ignored hosts persist in the
+    config (`ignored_tls_failures`) and survive restarts; existing config
+    files without the field keep working.
+  - New authenticated API routes: `GET /api/tls-failures` and
+    `POST /api/tls-failures/ignore`.
+
 ## v0.7.1
 
 - Fix WebSocket / protocol-upgrade connections hanging

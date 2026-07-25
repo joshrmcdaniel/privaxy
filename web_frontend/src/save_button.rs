@@ -1,7 +1,8 @@
 use web_sys::MouseEvent;
 use yew::{classes, html, Callback, Component, Context, Html, Properties};
 
-pub const BASE_BUTTON_CSS: [&'static str; 20] = [
+#[allow(dead_code)]
+pub const BASE_BUTTON_CSS: [&str; 20] = [
     "inline-flex",
     "items-center",
     "justify-center",

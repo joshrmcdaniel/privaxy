@@ -6,21 +6,24 @@ use once_cell::sync::Lazy;
 use regex::Regex;
 use serde::Deserialize;
 
+#[allow(dead_code)]
 static TOP_COMMENT_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r#"^/\*[\S\s]+?\n\*/\s*"#).unwrap());
+#[allow(dead_code)]
 static NON_EMPTY_LINE_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r#"\S"#).unwrap());
 
 /// Represents a single entry of the `Map` from uBlock Origin's `redirect-resources.js`.
 ///
 /// - `name` is the name of a resource, corresponding to its path in the `web_accessible_resources`
-/// directory
+///   directory
 ///
 /// - `alias` is a list of optional additional names that can be used to reference the resource
 ///
 /// - `data` is either `"text"` or `"blob"`, but is currently unused in `adblock-rust`. Within
-/// uBlock Origin, it's used to prevent text files from being encoded in base64 in a data URL.
+///   uBlock Origin, it's used to prevent text files from being encoded in base64 in a data URL.
 pub struct ResourceProperties {
     pub name: String,
     pub alias: Vec<String>,
+    #[allow(dead_code)]
     pub data: Option<String>,
 }
 use base64::{engine::general_purpose, Engine};
@@ -125,6 +128,7 @@ pub fn read_redirectable_resource_mapping(mapfile_data: &str) -> Vec<ResourcePro
 
 /// Reads data from a file in the form of uBlock Origin's `scriptlets.js` file and produces
 /// templatable scriptlets for use in cosmetic filtering.
+#[allow(dead_code)]
 pub fn read_template_resources(scriptlets_data: &str) -> Vec<Resource> {
     let mut resources = Vec::new();
 

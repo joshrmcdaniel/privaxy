@@ -93,7 +93,6 @@ impl Statistics {
                 let mut top_blocked_paths_iterator = top_blocked_paths.iter();
 
                 let mut top_blocked_paths = (0..=ENTRIES_PER_STATISTICS_TABLE)
-                    .into_iter()
                     .filter_map(|_| {
                         let (path, count) = top_blocked_paths_iterator.next()?;
 
@@ -101,7 +100,7 @@ impl Statistics {
                     })
                     .collect::<Vec<_>>();
 
-                top_blocked_paths.sort_by(|a, b| b.1.cmp(&a.1));
+                top_blocked_paths.sort_by_key(|entry| std::cmp::Reverse(entry.1));
 
                 top_blocked_paths
             },
@@ -117,7 +116,7 @@ impl Statistics {
                     })
                     .collect::<Vec<_>>();
 
-                top_clients.sort_by(|a, b| b.1.cmp(&a.1));
+                top_clients.sort_by_key(|entry| std::cmp::Reverse(entry.1));
 
                 top_clients
             },

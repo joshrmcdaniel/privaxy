@@ -210,7 +210,7 @@ pub struct FilterTag {
 }
 
 #[derive(Serialize, Deserialize, PartialEq, Clone, Debug, Error)]
-#[error("{r#type} error ({status}): {title} {trace_id}")]
+#[error("{type} error ({status}): {title} {trace_id}")]
 #[serde(rename_all = "camelCase")]
 #[readonly::make]
 pub struct FilterListAPIError {
