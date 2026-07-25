@@ -1,9 +1,9 @@
 use crate::blocking_enabled::BlockingEnabled;
 use futures::future::{AbortHandle, Abortable};
 use futures::StreamExt;
+use gloo_net::websocket::futures::WebSocket;
 use gloo_timers::future::TimeoutFuture;
 use num_format::{Locale, ToFormattedString};
-use reqwasm::websocket::futures::WebSocket;
 use serde::Deserialize;
 use std::io::Cursor;
 use wasm_bindgen_futures::spawn_local;
@@ -53,7 +53,7 @@ impl Component for Dashboard {
                         match result {
                             Ok(msg) => {
                                 let message = match msg {
-                                    reqwasm::websocket::Message::Text(s) => {
+                                    gloo_net::websocket::Message::Text(s) => {
                                         let cursor = Cursor::new(s.as_bytes());
                                         let mut deserializer =
                                             serde_json::Deserializer::from_reader(cursor)
@@ -74,7 +74,7 @@ impl Component for Dashboard {
                                             }
                                         }
                                     }
-                                    reqwasm::websocket::Message::Bytes(_) => unreachable!(),
+                                    gloo_net::websocket::Message::Bytes(_) => unreachable!(),
                                 };
                                 message_callback.emit(message);
                             }

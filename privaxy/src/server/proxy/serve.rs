@@ -1,19 +1,37 @@
 use super::doh::{self, DohAction};
 use super::html_rewriter::Rewriter;
+use super::{body_channel, boxed_incoming, empty_body, full_body, BodySender, ProxyBody};
 use crate::blocker::AdblockRequester;
 use crate::configuration::DohConfig;
 use crate::statistics::Statistics;
 use crate::web_gui::events::Event;
 use adblock::blocker::BlockerResult;
 use base64::Engine;
+use bytes::Bytes;
+use futures::TryStreamExt;
 use http::uri::{Authority, Scheme};
-use http::{HeaderMap, HeaderValue, StatusCode, Uri};
-use hyper::body::Bytes;
-use hyper::client::HttpConnector;
-use hyper::{http, Body, Request, Response};
+use http::{HeaderMap, HeaderValue, Request, Response, StatusCode, Uri};
+use http_body_util::BodyStream;
+use hyper::body::{Frame, Incoming};
 use hyper_rustls::HttpsConnector;
+use hyper_util::client::legacy::connect::HttpConnector;
+use hyper_util::client::legacy::Client as HyperClient;
+use hyper_util::rt::TokioIo;
 use std::net::IpAddr;
 use tokio::sync::broadcast;
+
+/// Type of the hyper client used for upgrade tunneling (websockets, etc.).
+pub(crate) type UpgradeClient = HyperClient<HttpsConnector<HttpConnector>, ProxyBody>;
+
+/// Adapt an incoming request body into a `reqwest::Body`, preserving streaming
+/// (hyper 1.0 + reqwest 0.13 no longer share a body type, so we bridge via a
+/// `Bytes` stream). Trailer frames are dropped — proxied request bodies don't
+/// carry meaningful trailers.
+fn incoming_to_reqwest_body(incoming: Incoming) -> reqwest::Body {
+    let stream =
+        BodyStream::new(incoming).try_filter_map(|frame| async move { Ok(frame.into_data().ok()) });
+    reqwest::Body::wrap_stream(stream)
+}
 
 // Only *enforcing* CSP headers are augmented. Report-only headers
 // (`content-security-policy-report-only`) are deliberately left untouched:
@@ -123,7 +141,7 @@ fn augment_csp_value(value: &str, nonce: &str) -> String {
     // that case our injected tag is already allowed by `'unsafe-inline'`,
     // and the nonce attribute on it is a harmless no-op, so we skip.
     fn needs_nonce(directive: &str) -> bool {
-        !(has_unsafe_inline(directive) && !has_nonce_or_hash(directive))
+        !has_unsafe_inline(directive) || has_nonce_or_hash(directive)
     }
     fn append_to(directives: &mut [String], name: &str, nonce_source: &str) {
         for d in directives.iter_mut() {
@@ -248,8 +266,8 @@ fn url_for_matching(uri: &Uri) -> String {
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn serve(
     adblock_requester: AdblockRequester,
-    request: Request<Body>,
-    hyper_client: hyper::Client<HttpsConnector<HttpConnector>>,
+    request: Request<Incoming>,
+    hyper_client: UpgradeClient,
     client: reqwest::Client,
     authority: Authority,
     scheme: Scheme,
@@ -258,7 +276,8 @@ pub(crate) async fn serve(
     client_ip_address: IpAddr,
     doh_config: DohConfig,
     scriptlet_debug_logging: bool,
-) -> Result<Response<Body>, hyper::Error> {
+    gui_base_url: Option<String>,
+) -> Result<Response<ProxyBody>, hyper::Error> {
     let scheme_string = scheme.to_string();
 
     let uri = match http::uri::Builder::new()
@@ -283,7 +302,7 @@ pub(crate) async fn serve(
     let (mut parts, body) = request.into_parts();
     parts.uri = uri.clone();
 
-    let (sender, new_body) = Body::channel();
+    let (sender, new_body) = body_channel();
 
     let req = Request::from_parts(parts, body);
 
@@ -403,14 +422,22 @@ pub(crate) async fn serve(
     let mut response = match client
         .request(req.method().clone(), outbound_url)
         .headers(request_headers)
-        .body(req.into_body())
+        .body(incoming_to_reqwest_body(req.into_body()))
         .send()
         .await
     {
         Ok(response) => response,
         Err(err) => {
-            log::error!("Failed to send request: {}", err.to_string());
-            return Ok(get_informative_error_response(&err.to_string()));
+            log::error!("Failed to send request: {}", err);
+            // `authority` was moved into the uri builder above; the host of
+            // the rebuilt `uri` is the same portless hostname.
+            let failing_host = uri.host();
+            let exclude_url = build_exclude_url(failing_host, gui_base_url.as_deref());
+            return Ok(get_informative_error_response(
+                &err.to_string(),
+                failing_host,
+                exclude_url.as_deref(),
+            ));
         }
     };
 
@@ -495,21 +522,87 @@ pub(crate) async fn serve(
     Ok(new_response)
 }
 
-fn get_informative_error_response(reason: &str) -> Response<Body> {
-    let mut response_body = String::from(include_str!("../../resources/head.html"));
-    response_body +=
-        &include_str!("../../resources/error.html").replace("#{request_error_reason}#", reason);
+/// Minimal HTML escaping for text interpolated into the proxy's error page.
+/// The failure reason comes from reqwest and can embed attacker-influenced
+/// URLs; the failing host is client-controlled.
+fn escape_html(s: &str) -> String {
+    let mut escaped = String::with_capacity(s.len());
+    for character in s.chars() {
+        match character {
+            '&' => escaped.push_str("&amp;"),
+            '<' => escaped.push_str("&lt;"),
+            '>' => escaped.push_str("&gt;"),
+            '"' => escaped.push_str("&quot;"),
+            '\'' => escaped.push_str("&#39;"),
+            _ => escaped.push(character),
+        }
+    }
+    escaped
+}
 
-    let mut response = Response::new(Body::from(response_body));
+/// The web GUI link that pre-fills the exclusion flow for the failing host,
+/// when both the host and a reachable GUI base URL are known. The host is
+/// percent-encoded into the `host` query parameter.
+fn build_exclude_url(failing_host: Option<&str>, gui_base_url: Option<&str>) -> Option<String> {
+    match (failing_host, gui_base_url) {
+        (Some(host), Some(base)) => Some(format!(
+            "{base}/exclude?host={}",
+            url::form_urlencoded::byte_serialize(host.as_bytes()).collect::<String>()
+        )),
+        _ => None,
+    }
+}
+
+/// Markup substituted for `#{exclude_section}#` in the error page: the failing
+/// host, plus an "Exclude this host" link when the GUI is reachable. Empty
+/// when the failing host is unknown.
+fn build_exclude_section(failing_host: Option<&str>, exclude_url: Option<&str>) -> String {
+    let host = match failing_host {
+        Some(host) => host,
+        None => return String::new(),
+    };
+
+    let mut section = format!(
+        "<p class=\"mt-1 text-base text-gray-500\">Failing host: \
+         <span class=\"font-mono bg-gray-100 rounded-md\">{}</span></p>",
+        escape_html(host)
+    );
+    if let Some(exclude_url) = exclude_url {
+        // `exclude_url` is percent-encoded by construction; escaping it again
+        // hardens the attribute against any future construction change.
+        section.push_str(&format!(
+            "<a href=\"{}\" class=\"mt-4 inline-block rounded-md bg-blue-600 px-4 py-2 \
+             text-white font-medium\">Exclude this host</a>",
+            escape_html(exclude_url)
+        ));
+    }
+
+    section
+}
+
+fn get_informative_error_response(
+    reason: &str,
+    failing_host: Option<&str>,
+    exclude_url: Option<&str>,
+) -> Response<ProxyBody> {
+    let mut response_body = String::from(include_str!("../../resources/head.html"));
+    response_body += &include_str!("../../resources/error.html")
+        .replace("#{request_error_reason}#", &escape_html(reason))
+        .replace(
+            "#{exclude_section}#",
+            &build_exclude_section(failing_host, exclude_url),
+        );
+
+    let mut response = Response::new(full_body(response_body));
     *response.status_mut() = http::StatusCode::BAD_GATEWAY;
 
     response
 }
 
-fn get_blocked_by_privaxy_response(blocker_result: BlockerResult) -> Response<Body> {
+fn get_blocked_by_privaxy_response(blocker_result: BlockerResult) -> Response<ProxyBody> {
     // We don't redirect to network urls due to security concerns.
     if let Some(resource) = blocker_result.redirect {
-        let response = Response::new(Body::from(resource));
+        let response = Response::new(full_body(resource));
 
         return response;
     }
@@ -523,23 +616,23 @@ fn get_blocked_by_privaxy_response(blocker_result: BlockerResult) -> Response<Bo
     response_body += &include_str!("../../resources/blocked_by_privaxy.html")
         .replace("#{matching_filter}#", &filter_information);
 
-    let mut response = Response::new(Body::from(response_body));
+    let mut response = Response::new(full_body(response_body));
     *response.status_mut() = http::StatusCode::FORBIDDEN;
 
     response
 }
 
-fn get_empty_response(status_code: http::StatusCode) -> Response<Body> {
-    let mut response = Response::new(Body::empty());
+fn get_empty_response(status_code: http::StatusCode) -> Response<ProxyBody> {
+    let mut response = Response::new(empty_body());
     *response.status_mut() = status_code;
 
     response
 }
 
-async fn write_proxied_body(mut response: reqwest::Response, mut sender: hyper::body::Sender) {
+async fn write_proxied_body(mut response: reqwest::Response, sender: BodySender) {
     while let Ok(Some(chunk)) = response.chunk().await {
         // The other end is broken, let's abort immediately.
-        if let Err(_err) = sender.send_data(chunk).await {
+        if let Err(_err) = sender.send(Ok(Frame::data(chunk))).await {
             break;
         }
     }
@@ -548,23 +641,26 @@ async fn write_proxied_body(mut response: reqwest::Response, mut sender: hyper::
 /// When we receive a request to perform an upgrade, we need to initiate a bidirectional tunnel.
 /// We upgrade the request towards the target server, towards the proxy end and we connect both through a duplex stream.
 async fn perform_two_ends_upgrade(
-    request: Request<Body>,
+    request: Request<Incoming>,
     uri: Uri,
-    hyper_client: hyper::Client<HttpsConnector<HttpConnector>>,
-) -> Response<Body> {
+    hyper_client: UpgradeClient,
+) -> Response<ProxyBody> {
     let (mut duplex_client, mut duplex_server) = tokio::io::duplex(32);
 
     // Captured for log context; `uri` is moved into `new_request` below.
     let request_uri = uri.to_string();
 
-    let mut new_request = Request::new(Body::empty());
+    let mut new_request = Request::new(empty_body());
     *new_request.headers_mut() = request.headers().clone();
     *new_request.uri_mut() = uri;
 
     let client_uri = request_uri.clone();
     tokio::spawn(async move {
         match hyper::upgrade::on(request).await {
-            Ok(mut upgraded_client) => {
+            Ok(upgraded_client) => {
+                // hyper 1.0's `Upgraded` speaks hyper's own IO traits, so wrap
+                // it in `TokioIo` to bridge to tokio's `AsyncRead`/`AsyncWrite`.
+                let mut upgraded_client = TokioIo::new(upgraded_client);
                 let _result =
                     tokio::io::copy_bidirectional(&mut upgraded_client, &mut duplex_client).await;
             }
@@ -601,14 +697,15 @@ async fn perform_two_ends_upgrade(
             request_uri,
             response.status()
         );
-        return response;
+        return response.map(boxed_incoming);
     }
 
     let mut new_response = get_empty_response(StatusCode::SWITCHING_PROTOCOLS);
     *new_response.headers_mut() = response.headers().clone();
 
     match hyper::upgrade::on(response).await {
-        Ok(mut upgraded_server) => {
+        Ok(upgraded_server) => {
+            let mut upgraded_server = TokioIo::new(upgraded_server);
             tokio::spawn(async move {
                 let _result =
                     tokio::io::copy_bidirectional(&mut upgraded_server, &mut duplex_server).await;
@@ -624,4 +721,166 @@ async fn perform_two_ends_upgrade(
     }
 
     new_response
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use http::{HeaderMap, HeaderValue, Uri};
+
+    fn headers(pairs: &[(&str, &str)]) -> HeaderMap {
+        let mut map = HeaderMap::new();
+        for (name, value) in pairs {
+            let header_name = http::header::HeaderName::from_bytes(name.as_bytes()).unwrap();
+            map.insert(header_name, HeaderValue::from_str(value).unwrap());
+        }
+        map
+    }
+
+    #[test]
+    fn request_type_from_sec_fetch_dest() {
+        let cases = [
+            ("document", "document"),
+            ("frame", "sub_frame"),
+            ("iframe", "sub_frame"),
+            ("script", "script"),
+            ("serviceworker", "script"),
+            ("worker", "script"),
+            ("style", "stylesheet"),
+            ("image", "image"),
+            ("font", "font"),
+            ("audio", "media"),
+            ("video", "media"),
+            ("object", "object"),
+            ("embed", "object"),
+            ("report", "ping"),
+            ("empty", "xmlhttprequest"),
+            ("something-unknown", "other"),
+        ];
+        for (dest, expected) in cases {
+            let h = headers(&[("sec-fetch-dest", dest)]);
+            assert_eq!(
+                request_type_from_headers(&h),
+                expected,
+                "sec-fetch-dest: {dest}"
+            );
+        }
+    }
+
+    #[test]
+    fn request_type_falls_back_to_accept() {
+        assert_eq!(
+            request_type_from_headers(&headers(&[("accept", "text/html,*/*")])),
+            "document"
+        );
+        assert_eq!(
+            request_type_from_headers(&headers(&[("accept", "text/css")])),
+            "stylesheet"
+        );
+        assert_eq!(
+            request_type_from_headers(&headers(&[("accept", "image/png")])),
+            "image"
+        );
+        assert_eq!(
+            request_type_from_headers(&headers(&[("accept", "application/javascript")])),
+            "script"
+        );
+        assert_eq!(
+            request_type_from_headers(&headers(&[("accept", "application/octet-stream")])),
+            "other"
+        );
+        // No usable headers at all.
+        assert_eq!(request_type_from_headers(&HeaderMap::new()), "other");
+    }
+
+    #[test]
+    fn url_for_matching_strips_default_ports() {
+        let strip = |s: &str| url_for_matching(&s.parse::<Uri>().unwrap());
+        assert_eq!(
+            strip("https://example.com:443/a/b"),
+            "https://example.com/a/b"
+        );
+        assert_eq!(strip("http://example.com:80/a"), "http://example.com/a");
+        // Non-default ports are preserved.
+        assert_eq!(
+            strip("https://example.com:8443/a"),
+            "https://example.com:8443/a"
+        );
+        // Missing path defaults to "/".
+        assert_eq!(strip("https://example.com:443"), "https://example.com/");
+    }
+
+    #[test]
+    fn csp_nonce_has_expected_shape() {
+        let nonce = generate_csp_nonce();
+        // 16 bytes -> 22 url-safe base64 chars, no padding.
+        assert_eq!(nonce.len(), 22);
+        assert!(!nonce.contains('='));
+        assert!(nonce
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'));
+    }
+
+    #[test]
+    fn csp_appends_nonce_to_script_src() {
+        // script-src gets the nonce directly; with no style-src present, the
+        // style path falls back to default-src and adds the nonce there too.
+        let out = augment_csp_value("default-src 'self'; script-src 'self'", "abc");
+        assert_eq!(
+            out,
+            "default-src 'self' 'nonce-abc'; script-src 'self' 'nonce-abc'"
+        );
+    }
+
+    #[test]
+    fn csp_falls_back_to_default_src() {
+        let out = augment_csp_value("default-src 'self'", "abc");
+        assert_eq!(out, "default-src 'self' 'nonce-abc'");
+    }
+
+    #[test]
+    fn csp_skips_when_unsafe_inline_without_nonce() {
+        // Appending a nonce would silently break the site's own inline scripts,
+        // so the value must be left untouched.
+        let out = augment_csp_value("script-src 'self' 'unsafe-inline'", "abc");
+        assert_eq!(out, "script-src 'self' 'unsafe-inline'");
+    }
+
+    #[test]
+    fn csp_drops_trusted_types_directives() {
+        let out = augment_csp_value(
+            "default-src 'self'; require-trusted-types-for 'script'; trusted-types foo",
+            "abc",
+        );
+        assert!(!out.contains("trusted-types"));
+        assert!(out.contains("'nonce-abc'"));
+    }
+
+    #[test]
+    fn exclude_section_escapes_hostile_host() {
+        let section = build_exclude_section(Some("<script>alert(1)</script>"), None);
+        assert!(section.contains("&lt;script&gt;alert(1)&lt;/script&gt;"));
+        assert!(!section.contains("<script>"));
+    }
+
+    #[test]
+    fn exclude_url_percent_encodes_host() {
+        let exclude_url = build_exclude_url(Some("foo/bar?baz&qux"), Some("http://gui.lan:8200"));
+        assert_eq!(
+            exclude_url.as_deref(),
+            Some("http://gui.lan:8200/exclude?host=foo%2Fbar%3Fbaz%26qux")
+        );
+    }
+
+    #[test]
+    fn exclude_section_has_no_link_without_gui_url() {
+        assert_eq!(build_exclude_url(Some("example.com"), None), None);
+
+        let section = build_exclude_section(Some("example.com"), None);
+        assert!(section.contains("Failing host"));
+        assert!(!section.contains("<a "));
+
+        // Without a failing host there is nothing to render at all.
+        assert_eq!(build_exclude_section(None, None), "");
+    }
 }

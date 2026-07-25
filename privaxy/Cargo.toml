@@ -51,38 +51,69 @@ name = "privaxy"
 path = "src/server/lib.rs"
 
 [dependencies]
-hyper = { version = "0.14.29", features = ["full"] }
+hyper = { version = "1", features = ["full"] }
+hyper-util = { version = "0.1", features = [
+  "client-legacy",
+  "server-auto",
+  "server-graceful",
+  "service",
+  "tokio",
+  "http1",
+  "http2",
+] }
+http-body-util = "0.1"
 tokio = { version = "1.22.0", features = ["full"] }
 serde_json = "1.0.89"
-toml = "0.8.13"
+toml = "1"
 serde = { version = "1.0.148", features = ["derive"] }
 tokio-util = { version = "0.7.4", features = ["full"] }
+tokio-stream = "0.1"
+bytes = "1"
+socket2 = "0.5"
 adblock = { version = "0.12.5" }
 openssl = { version = "0.10.43", features = ["vendored"] }
 include_dir = "0.7.3"
 chrono = { version = "0.4.23", features = ["serde"] }
-rustls = { version = "0.21.12" }
+rustls = { version = "0.23", default-features = false, features = [
+  "ring",
+  "logging",
+  "std",
+  "tls12",
+] }
 futures-util = "0.3.25"
 wildmatch = "2.1.1"
-http = "0.2.12"
+http = "1"
 mime_guess = "2.0.4"
-tokio-rustls = "0.24.1"
-hyper-rustls = { version = "0.24.2", features = ["http1", "http2"] }
+tokio-rustls = { version = "0.26", default-features = false, features = [
+  "ring",
+  "logging",
+  "tls12",
+] }
+hyper-rustls = { version = "0.27", default-features = false, features = [
+  "http1",
+  "http2",
+  "ring",
+  "native-tokio",
+  "tls12",
+  "logging",
+] }
 log = "0.4.17"
-env_logger = "0.11.3"
-uluru = "3.0.0"
+env_logger = "0.11.10"
+uluru = "3.1.0"
 regex = "1.7.0"
 lazy_static = "1.4.0"
 lol_html = "1.2.1"
 crossbeam-channel = "0.5.6"
-thiserror = "1.0.37"
+thiserror = "2"
 url = "2.3.1"
 futures = "0.3.25"
-dirs = "5.0.1"
-async-compression = { version = "0.4.11", features = ["futures-io", "gzip"] }
-reqwest = { version = "0.11.27", features = [
+dirs = "6"
+async-compression = { version = "0.4.42", features = ["futures-io", "gzip"] }
+reqwest = { version = "0.13", default-features = false, features = [
+  "charset",
+  "http2",
   "stream",
-  "rustls-tls",
+  "rustls-no-provider",
   "gzip",
   "deflate",
   "json",
@@ -91,11 +122,22 @@ reqwest = { version = "0.11.27", features = [
 once_cell = "1.16.0"
 serde-tuple-vec-map = "1.0.1"
 base64 = "0.22.1"
-warp = { version = "0.3.7", features = ["tls"] }
+warp = { version = "0.4", features = ["server", "websocket"] }
 sha2 = "0.10.8"
 hex = "0.4.3"
-serde_with = "3.8.1"
-tera = { version = "1.20", default-features = false }
-argon2 = "0.5"
+serde_with = "3.21"
+tera = { version = "1", default-features = false }
+argon2 = { version = "0.5", features = ["std"] }
 hmac = "0.12"
 filterlists-api = { path = "../filterlists-api", features = ["reqwest"] }
+
+# getrandom 0.3 (pulled in via warp -> tokio-tungstenite -> rand) selects a
+# backend that calls the libc `getrandom()` wrapper on mips{,el}-unknown-linux-gnu,
+# but the MIPS cross-toolchain's pre-2.25 glibc doesn't export it, so the binary
+# fails to link. For just these targets we switch getrandom to its `custom`
+# backend (`.cargo/config.toml`) and implement it via the raw SYS_getrandom
+# syscall in `lib.rs`. These deps exist only to name `getrandom::Error` and call
+# `libc::syscall` from that backend.
+[target.'cfg(all(target_os = "linux", target_arch = "mips", target_env = "gnu"))'.dependencies]
+getrandom = "0.3"
+libc = "0.2"

@@ -1,5 +1,6 @@
 use crate::account::AccountSettings;
 use crate::debug::DebugSettingsPage;
+use crate::exclusions_page::ExclusionsPage;
 use crate::filters::Filters;
 use crate::general::GeneralSettings;
 use crate::pac::PacSettingsPage;
@@ -27,7 +28,7 @@ pub enum SettingsRoute {
     Debug,
 }
 
-pub fn switch_settings(route: &SettingsRoute) -> Html {
+pub fn switch_settings(route: SettingsRoute) -> Html {
     fn get_classes(current_route: SettingsRoute, for_route_link: SettingsRoute) -> Classes {
         if current_route == for_route_link {
             classes!(
@@ -71,23 +72,7 @@ pub fn switch_settings(route: &SettingsRoute) -> Html {
         SettingsRoute::Exclusions => {
             set_title("Settings - Exclusions");
 
-            let resource_url = "/api/exclusions";
-
-            let description = html! {<div class="text-gray-600">
-                    <p>
-                        {"Exclusions are hosts or domains that are not passed through the MITM pipeline. "}
-                        {"Excluded entries will be transparently tunneled."}
-                    </p>
-                    <p class="mt-2">
-                        {"Use "}<span class="font-medium">{"Reset to defaults"}</span>
-                        {" to populate the textarea with a list of commonly cert-pinned hosts. You can then edit it and click Save."}
-                    </p>
-                </div>
-            };
-            let textarea_description = "Insert one entry per line";
-            let defaults_url = Some("/api/exclusions/defaults".to_string());
-
-            html! {<SettingsTextarea h1="Exclusions" {description} input_name="exclusions" {textarea_description} {resource_url} {defaults_url} />}
+            html! { <ExclusionsPage /> }
         }
         SettingsRoute::CustomFilters => {
             set_title("Settings - Custom Filters");
@@ -123,13 +108,13 @@ pub fn switch_settings(route: &SettingsRoute) -> Html {
 
     html! {<div class="md:grid md:grid-cols-8">
     <nav class="space-y-1 mt-4 lg:col-span-1 sm:col-span-2" aria-label="Sidebar">
-        <Link<SettingsRoute> classes={get_classes(*route, SettingsRoute::General)} to={SettingsRoute::General}> <span class="truncate">{ "General" }</span></Link<SettingsRoute>>
-        <Link<SettingsRoute> classes={get_classes(*route, SettingsRoute::Filters)} to={SettingsRoute::Filters}> <span class="truncate">{ "Filters" }</span></Link<SettingsRoute>>
-        <Link<SettingsRoute> classes={get_classes(*route, SettingsRoute::Exclusions)} to={SettingsRoute::Exclusions}> <span class="truncate">{ "Exclusions" }</span></Link<SettingsRoute>>
-        <Link<SettingsRoute> classes={get_classes(*route, SettingsRoute::CustomFilters)} to={SettingsRoute::CustomFilters}> <span class="truncate">{ "Custom filters" }</span></Link<SettingsRoute>>
-        <Link<SettingsRoute> classes={get_classes(*route, SettingsRoute::Pac)} to={SettingsRoute::Pac}> <span class="truncate">{ "PAC" }</span></Link<SettingsRoute>>
-        <Link<SettingsRoute> classes={get_classes(*route, SettingsRoute::Account)} to={SettingsRoute::Account}> <span class="truncate">{ "Account" }</span></Link<SettingsRoute>>
-        <Link<SettingsRoute> classes={get_classes(*route, SettingsRoute::Debug)} to={SettingsRoute::Debug}> <span class="truncate">{ "Debug" }</span></Link<SettingsRoute>>
+        <Link<SettingsRoute> classes={get_classes(route, SettingsRoute::General)} to={SettingsRoute::General}> <span class="truncate">{ "General" }</span></Link<SettingsRoute>>
+        <Link<SettingsRoute> classes={get_classes(route, SettingsRoute::Filters)} to={SettingsRoute::Filters}> <span class="truncate">{ "Filters" }</span></Link<SettingsRoute>>
+        <Link<SettingsRoute> classes={get_classes(route, SettingsRoute::Exclusions)} to={SettingsRoute::Exclusions}> <span class="truncate">{ "Exclusions" }</span></Link<SettingsRoute>>
+        <Link<SettingsRoute> classes={get_classes(route, SettingsRoute::CustomFilters)} to={SettingsRoute::CustomFilters}> <span class="truncate">{ "Custom filters" }</span></Link<SettingsRoute>>
+        <Link<SettingsRoute> classes={get_classes(route, SettingsRoute::Pac)} to={SettingsRoute::Pac}> <span class="truncate">{ "PAC" }</span></Link<SettingsRoute>>
+        <Link<SettingsRoute> classes={get_classes(route, SettingsRoute::Account)} to={SettingsRoute::Account}> <span class="truncate">{ "Account" }</span></Link<SettingsRoute>>
+        <Link<SettingsRoute> classes={get_classes(route, SettingsRoute::Debug)} to={SettingsRoute::Debug}> <span class="truncate">{ "Debug" }</span></Link<SettingsRoute>>
     </nav>
         <div class="container mx-auto px-4 sm:px-6 lg:px-8 mt-4 sm:col-span-6">{ content }</div>
     </div>

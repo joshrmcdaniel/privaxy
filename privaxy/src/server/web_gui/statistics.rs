@@ -1,5 +1,4 @@
 use futures::{SinkExt, StreamExt};
-use log;
 use std::time::Duration;
 use tokio::time::sleep;
 use warp::ws::{Message, WebSocket};

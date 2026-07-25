@@ -68,7 +68,7 @@ async fn put_ca_certificates(
     ca_cert_struct: Ca,
     configuration_updater_sender: Sender<Configuration>,
     configuration_save_lock: Arc<tokio::sync::Mutex<()>>,
-    notify_reload: Arc<Notify>,
+    _notify_reload: Arc<Notify>,
 ) -> Result<Box<dyn warp::Reply>, Infallible> {
     let _guard = configuration_save_lock.lock().await;
 

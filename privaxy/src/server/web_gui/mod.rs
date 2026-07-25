@@ -1,5 +1,7 @@
+use crate::configuration::FilterFailureStore;
 use crate::logging::LogHandle;
 use crate::proxy::exclusions::LocalExclusionStore;
+use crate::proxy::tls_failures::TlsFailureStore;
 use crate::statistics::Statistics;
 use crate::WEBAPP_FRONTEND_DIR;
 use crate::{blocker::BlockingDisabledStore, configuration::Configuration};
@@ -23,11 +25,13 @@ pub(crate) mod logs;
 mod pac;
 pub(crate) mod settings;
 pub(crate) mod statistics;
+pub(crate) mod tls_failures;
 
 #[derive(Debug, Serialize)]
 pub(crate) struct ApiError {
     error: String,
 }
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn get_frontend(
     events_sender: broadcast::Sender<events::Event>,
     statistics: Statistics,
@@ -35,6 +39,8 @@ pub(crate) fn get_frontend(
     configuration_updater_sender: &Sender<Configuration>,
     configuration_save_lock: &Arc<tokio::sync::Mutex<()>>,
     local_exclusions_store: &LocalExclusionStore,
+    tls_failure_store: &TlsFailureStore,
+    filter_failure_store: &FilterFailureStore,
     notify_reload: Arc<Notify>,
     log_handle: LogHandle,
 ) -> BoxedFilter<(impl warp::Reply,)> {
@@ -42,7 +48,7 @@ pub(crate) fn get_frontend(
 
     let cors = warp::cors()
         .allow_any_origin()
-        .allow_methods(vec!["GET", "PUT", "POST", "DELETE"])
+        .allow_methods(vec!["GET", "PUT", "POST", "PATCH", "DELETE"])
         .allow_headers(vec![
             http::header::CONTENT_TYPE,
             http::header::CONTENT_LENGTH,
@@ -58,6 +64,8 @@ pub(crate) fn get_frontend(
         configuration_updater_sender,
         configuration_save_lock,
         local_exclusions_store,
+        tls_failure_store,
+        filter_failure_store,
         http_client,
         notify_reload,
         log_handle,
@@ -72,7 +80,7 @@ pub(crate) fn get_frontend(
         .boxed()
 }
 
-pub(self) fn with_arc<T: Clone + Send + Sync + 'static>(
+fn with_arc<T: Clone + Send + Sync + 'static>(
     value: T,
 ) -> impl Filter<Extract = (T,), Error = std::convert::Infallible> + Clone {
     warp::any().map(move || value.clone())
@@ -101,6 +109,7 @@ fn create_static_routes() -> BoxedFilter<(impl warp::Reply,)> {
         .boxed()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn create_api_routes(
     events_sender: broadcast::Sender<events::Event>,
     statistics: Statistics,
@@ -108,6 +117,8 @@ fn create_api_routes(
     configuration_updater_sender: &Sender<Configuration>,
     configuration_save_lock: &Arc<tokio::sync::Mutex<()>>,
     local_exclusions_store: &LocalExclusionStore,
+    tls_failure_store: &TlsFailureStore,
+    filter_failure_store: &FilterFailureStore,
     http_client: reqwest::Client,
     notify_reload: Arc<Notify>,
     log_handle: LogHandle,
@@ -155,6 +166,7 @@ fn create_api_routes(
                 configuration_updater_sender.clone(),
                 configuration_save_lock.clone(),
                 http_client.clone(),
+                filter_failure_store.clone(),
             ));
 
     let custom_filters_route =
@@ -190,6 +202,15 @@ fn create_api_routes(
             blocking_disabled_store.clone(),
         ));
 
+    let tls_failures_route =
+        warp::path("tls-failures")
+            .and(require_auth.clone())
+            .and(tls_failures::create_routes(
+                tls_failure_store.clone(),
+                local_exclusions_store.clone(),
+                configuration_save_lock.clone(),
+            ));
+
     let options_route = warp::options().map(|| "");
 
     let filterlists_route = warp::path("filterlists")
@@ -209,6 +230,7 @@ fn create_api_routes(
         .or(custom_filters_route)
         .or(exclusions_route)
         .or(blocking_enabled_route)
+        .or(tls_failures_route)
         .or(settings_route)
         .or(options_route)
         .or(filterlists_route)
@@ -269,19 +291,19 @@ fn with_blocking_disabled_store(
     warp::any().map(move || blocking_disabled.clone())
 }
 
-pub(self) fn with_configuration_updater_sender(
+fn with_configuration_updater_sender(
     sender: Sender<Configuration>,
 ) -> impl Filter<Extract = (Sender<Configuration>,), Error = std::convert::Infallible> + Clone {
     warp::any().map(move || sender.clone())
 }
 
-pub(self) fn with_http_client(
+fn with_http_client(
     http_client: reqwest::Client,
 ) -> impl Filter<Extract = (reqwest::Client,), Error = std::convert::Infallible> + Clone {
     warp::any().map(move || http_client.clone())
 }
 
-pub(self) fn with_notify_reload(
+fn with_notify_reload(
     notify_reload: Arc<Notify>,
 ) -> impl Filter<Extract = (Arc<Notify>,), Error = std::convert::Infallible> + Clone {
     warp::any().map(move || notify_reload.clone())
@@ -295,6 +317,36 @@ pub(crate) fn get_error_response(err: impl std::error::Error) -> Response<String
         .body(
             serde_json::to_string(&ApiError {
                 error: format!("{:?}", err),
+            })
+            .unwrap(),
+        )
+        .unwrap()
+}
+
+/// JSON 422 for requests whose body was well-formed but semantically invalid
+/// (e.g. a value that is not a hostname).
+pub(crate) fn get_unprocessable_response(message: &str) -> Response<String> {
+    Response::builder()
+        .status(http::StatusCode::UNPROCESSABLE_ENTITY)
+        .header(http::header::CONTENT_TYPE, "application/json")
+        .body(
+            serde_json::to_string(&ApiError {
+                error: message.to_string(),
+            })
+            .unwrap(),
+        )
+        .unwrap()
+}
+
+/// JSON 403 for operations the API refuses regardless of authentication
+/// (e.g. editing a built-in filter list).
+pub(crate) fn get_forbidden_response(message: &str) -> Response<String> {
+    Response::builder()
+        .status(http::StatusCode::FORBIDDEN)
+        .header(http::header::CONTENT_TYPE, "application/json")
+        .body(
+            serde_json::to_string(&ApiError {
+                error: message.to_string(),
             })
             .unwrap(),
         )

@@ -1,4 +1,4 @@
-use reqwasm::http::Request;
+use gloo_net::http::Request;
 use wasm_bindgen_futures::spawn_local;
 use yew::{classes, html, Component, Context, Html};
 
@@ -44,7 +44,7 @@ impl Component for BlockingEnabled {
             Message::EnableBlocking => {
                 self.button_state = ButtonState::Loading;
 
-                let request = base_request.body("true");
+                let request = base_request.body("true").unwrap();
 
                 spawn_local(async move {
                     match request.send().await {
@@ -60,7 +60,7 @@ impl Component for BlockingEnabled {
             Message::DisableBlocking => {
                 self.button_state = ButtonState::Loading;
 
-                let request = base_request.body("false");
+                let request = base_request.body("false").unwrap();
 
                 spawn_local(async move {
                     if let Ok(response) = request.send().await {

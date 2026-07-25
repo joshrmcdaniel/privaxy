@@ -1,3 +1,4 @@
+use super::FilterFailureStore;
 use crate::blocker::AdblockRequester;
 use futures::future::{AbortHandle, Abortable};
 
@@ -10,6 +11,7 @@ pub struct ConfigurationUpdater {
     pub tx: Sender<super::Configuration>,
     http_client: reqwest::Client,
     adblock_requester: AdblockRequester,
+    filter_failure_store: FilterFailureStore,
 }
 
 impl ConfigurationUpdater {
@@ -17,6 +19,7 @@ impl ConfigurationUpdater {
         configuration: super::Configuration,
         http_client: reqwest::Client,
         adblock_requester: AdblockRequester,
+        filter_failure_store: FilterFailureStore,
         tx_rx: Option<(
             sync::mpsc::Sender<super::Configuration>,
             sync::mpsc::Receiver<super::Configuration>,
@@ -31,6 +34,7 @@ impl ConfigurationUpdater {
 
         let http_client_clone = http_client.clone();
         let adblock_requester_clone = adblock_requester.clone();
+        let filter_failure_store_clone = filter_failure_store.clone();
 
         let filters_updater = Abortable::new(
             async move {
@@ -38,6 +42,7 @@ impl ConfigurationUpdater {
                     configuration,
                     adblock_requester_clone,
                     http_client_clone.clone(),
+                    filter_failure_store_clone,
                 )
                 .await
             },
@@ -52,10 +57,11 @@ impl ConfigurationUpdater {
             tx,
             http_client,
             adblock_requester,
+            filter_failure_store,
         }
     }
 
-    pub(crate) fn start(mut self: Self) {
+    pub(crate) fn start(mut self) {
         tokio::spawn(async move {
             loop {
                 let mut configuration = self.rx.recv().await.unwrap();
@@ -64,12 +70,22 @@ impl ConfigurationUpdater {
                 // clone and racing to replace the engine on its own timer.
                 self.filters_updater_abort_handle.abort();
 
-                let filters =
-                    super::filter::get_filters_content(&mut configuration, &self.http_client).await;
+                // Failure entries for filters that were removed or disabled
+                // by this configuration change are no longer actionable.
+                self.filter_failure_store
+                    .sync_with_filters(&configuration.filters);
+
+                let filters = super::filter::get_filters_content(
+                    &mut configuration,
+                    &self.http_client,
+                    &self.filter_failure_store,
+                )
+                .await;
                 self.adblock_requester.replace_engine(filters).await;
 
                 let adblock_requester_clone = self.adblock_requester.clone();
                 let http_client_clone = self.http_client.clone();
+                let filter_failure_store_clone = self.filter_failure_store.clone();
 
                 let (abort_handle, abort_registration) = AbortHandle::new_pair();
                 self.filters_updater_abort_handle = abort_handle;
@@ -80,6 +96,7 @@ impl ConfigurationUpdater {
                             configuration,
                             adblock_requester_clone,
                             http_client_clone,
+                            filter_failure_store_clone,
                         )
                         .await;
                     },
@@ -95,18 +112,23 @@ impl ConfigurationUpdater {
         mut configuration: super::Configuration,
         adblock_requester: AdblockRequester,
         http_client: reqwest::Client,
+        filter_failure_store: FilterFailureStore,
     ) {
         loop {
             tokio::time::sleep(super::FILTERS_UPDATE_AFTER).await;
 
-            if let Err(err) = configuration.update_filters(http_client.clone()).await {
-                log::error!("An error occured while trying to update filters: {:?}", err);
-            }
+            configuration
+                .update_filters(http_client.clone(), &filter_failure_store)
+                .await;
 
             // We don't bother diffing the filters as replacing the engine is very cheap and
             // filters are not updated often enough that the cost would matter.
-            let filters =
-                super::filter::get_filters_content(&mut configuration, &http_client).await;
+            let filters = super::filter::get_filters_content(
+                &mut configuration,
+                &http_client,
+                &filter_failure_store,
+            )
+            .await;
             adblock_requester.replace_engine(filters).await;
 
             log::info!("Updated filters");

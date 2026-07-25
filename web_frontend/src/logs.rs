@@ -1,6 +1,6 @@
 use futures::future::{AbortHandle, Abortable};
 use futures::StreamExt;
-use reqwasm::websocket::futures::WebSocket;
+use gloo_net::websocket::futures::WebSocket;
 use serde::Deserialize;
 use wasm_bindgen_futures::spawn_local;
 use web_sys::HtmlSelectElement;
@@ -36,7 +36,7 @@ impl LogEntry {
 
 /// Minimum severity selected in the level dropdown.
 #[derive(Clone, Copy, PartialEq)]
-enum LevelFilter {
+pub enum LevelFilter {
     All,
     Error,
     Warn,
@@ -100,10 +100,10 @@ impl Component for LogStream {
             async move {
                 while let Some(Ok(msg)) = read.next().await {
                     let entry = match msg {
-                        reqwasm::websocket::Message::Text(s) => {
+                        gloo_net::websocket::Message::Text(s) => {
                             serde_json::from_str::<LogEntry>(&s).unwrap()
                         }
-                        reqwasm::websocket::Message::Bytes(_) => unreachable!(),
+                        gloo_net::websocket::Message::Bytes(_) => unreachable!(),
                     };
 
                     message_callback.emit(entry);

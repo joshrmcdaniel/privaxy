@@ -1,6 +1,6 @@
 use crate::save_button;
 use crate::{failure_banner, success_banner, ApiError};
-use reqwasm::http::Request;
+use gloo_net::http::Request;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use wasm_bindgen_futures::spawn_local;
@@ -213,10 +213,7 @@ impl Component for PacSettingsPage {
             Message::UpdateDirectCidrs(value) => {
                 if let Some(form) = self.form.as_mut() {
                     form.direct_cidrs = value;
-                    form.cidrs_error = match PacFormState::parse_cidrs(&form.direct_cidrs) {
-                        Ok(_) => None,
-                        Err(err) => Some(err),
-                    };
+                    form.cidrs_error = PacFormState::parse_cidrs(&form.direct_cidrs).err();
                 }
             }
             Message::UpdateDirectFqdns(value) => {
@@ -250,7 +247,8 @@ impl Component for PacSettingsPage {
                     };
                     let request = Request::put(PAC_RESOURCE_URL)
                         .header("Content-Type", "application/json")
-                        .body(body);
+                        .body(body)
+                        .unwrap();
                     match request.send().await {
                         Ok(response) if response.ok() => {
                             link.send_message(Message::LoadSuccess(settings));

@@ -3,9 +3,9 @@ use crate::button::{get_css, ButtonColor};
 use crate::failure_banner;
 use crate::success_banner;
 use crate::{save_button, ApiError};
+use gloo_net::http::Request;
 use gloo_utils::format::JsValueSerdeExt;
 use regex::Regex;
-use reqwasm::http::Request;
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
@@ -36,6 +36,7 @@ pub enum Message {
     ValidationSucceeded,
     CaSaveSuccess,
     UpdateTls(bool),
+    UpdateGuiUrl(String),
     UpdateDohMode(String),
     UpdateDohUpstream(String),
     UpdateDohHosts(String),
@@ -44,6 +45,7 @@ pub enum Message {
     AcknowledgeError,
     AcknowledgeSuccess,
 }
+#[allow(dead_code)]
 enum SettingType {
     Text(String),
     Checkbox(bool),
@@ -60,6 +62,11 @@ pub struct NetworkConfig {
     pub web_port: u16,
     /// Enable TLS for the web server.
     pub tls: bool,
+    /// Full base URL of the web GUI as reachable by clients (e.g. behind a
+    /// reverse proxy). Empty when unset; always serialized so that an empty
+    /// string clears the setting server-side.
+    #[serde(default)]
+    pub gui_url: String,
     /// DNS-over-HTTPS interception policy.
     #[serde(default)]
     pub doh: DohConfig,
@@ -127,9 +134,10 @@ async fn save_ca_certificate(cert_pem: &str, key_pem: &str) -> Result<(), ApiErr
         ca_private_key: key_pem,
     })
     .unwrap();
-    let req = reqwasm::http::Request::put("/api/settings/ca-certificate")
+    let req = gloo_net::http::Request::put("/api/settings/ca-certificate")
+        .header("Content-Type", "application/json")
         .body(body)
-        .header("Content-Type", "application/json");
+        .unwrap();
     match req.send().await {
         Ok(resp) => {
             if resp.ok() {
@@ -182,24 +190,37 @@ impl NetworkSettings {
         }
     }
 
+    /// The backend rejects a GUI URL without an http(s) scheme; mirror that
+    /// here so the save button is disabled instead of the save failing.
+    fn gui_url_error(&self) -> Option<String> {
+        let url = self.current_config.gui_url.trim();
+        if url.is_empty() || url.starts_with("http://") || url.starts_with("https://") {
+            None
+        } else {
+            Some("Must be a full URL starting with http:// or https://".to_string())
+        }
+    }
+
     fn validate(&self) -> bool {
         self.proxy_port_error.is_none()
             && self.bind_addr_error.is_none()
             && self.web_port_error.is_none()
             && self.doh_upstream_error().is_none()
+            && self.gui_url_error().is_none()
     }
     fn config_has_changed(&self) -> bool {
         self.current_config.clone() != self.remote_config
     }
     async fn save(&mut self) -> Result<(), ApiError> {
         let body = serde_json::to_string(&self.current_config).unwrap();
-        let req = reqwasm::http::Request::put("/api/settings/network")
+        let req = gloo_net::http::Request::put("/api/settings/network")
+            .header("Content-Type", "application/json")
             .body(body)
-            .header("Content-Type", "application/json");
+            .unwrap();
         match req.send().await {
             Ok(resp) => {
                 if resp.ok() {
-                    return Ok(());
+                    Ok(())
                 } else {
                     log::error!("Failed to save network config");
                     return Err(resp.json::<ApiError>().await.unwrap());
@@ -215,9 +236,11 @@ impl NetworkSettings {
     }
 }
 
+#[allow(clippy::large_enum_variant)]
 enum SettingCategories {
     Network(NetworkSettings),
     Certificate(CaConfig),
+    #[allow(dead_code)]
     Other,
 }
 
@@ -226,6 +249,7 @@ pub(crate) struct GeneralSettings {
     network_settings: Option<NetworkSettings>,
     ca_config: CaConfig,
     loading: bool,
+    #[allow(dead_code)]
     save_callback: Callback<()>,
     show_error: bool,
     show_success: bool,
@@ -233,6 +257,7 @@ pub(crate) struct GeneralSettings {
 }
 
 impl GeneralSettings {
+    #[allow(dead_code)]
     fn save(&self) {
         self.save_callback.emit(());
     }
@@ -434,6 +459,11 @@ impl Component for GeneralSettings {
                     network_settings.current_config.tls = value;
                 }
             }
+            Message::UpdateGuiUrl(value) => {
+                if let Some(ref mut network_settings) = self.network_settings {
+                    network_settings.current_config.gui_url = value;
+                }
+            }
             Message::UpdateDohMode(value) => {
                 if let Some(ref mut network_settings) = self.network_settings {
                     network_settings.current_config.doh.mode = DohMode::from_value(&value);
@@ -632,6 +662,16 @@ impl Component for GeneralSettings {
                                             Message::UpdateTls(input.checked())
                                         }),
                                         "If the web server uses HTTPS") }
+                                    { render_setting(
+                                        "GUI URL",
+                                        network_settings.current_config.gui_url.clone(),
+                                        ctx.link().callback(|e: InputEvent| {
+                                            let input: web_sys::HtmlInputElement = e.target_unchecked_into();
+                                            Message::UpdateGuiUrl(input.value())
+                                        }),
+                                        network_settings.gui_url_error().as_ref(),
+                                        "Optional. Full URL where this web interface is reachable by clients, e.g. http://proxy.example.lan when behind a reverse proxy. Used for links back here on proxy error pages. Leave blank to derive it from the bound address."
+                                    ) }
                                     { render_select_setting(
                                         "DoH handling",
                                         network_settings.current_config.doh.mode.as_value(),

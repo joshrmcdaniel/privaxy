@@ -1,11 +1,10 @@
 use crate::save_button;
 use crate::submit_banner;
-use crate::success_banner;
-use reqwasm::http::Request;
+use gloo_net::http::Request;
 use wasm_bindgen_futures::spawn_local;
 use web_sys::HtmlInputElement;
 use yew::virtual_dom::VNode;
-use yew::{html, Callback, Component, Context, Html, InputEvent, Properties, TargetCast};
+use yew::{html, Component, Context, Html, InputEvent, Properties, TargetCast};
 
 #[derive(Properties, PartialEq)]
 pub struct Props {
@@ -18,6 +17,11 @@ pub struct Props {
     pub defaults_url: Option<String>,
     #[prop_or_default]
     pub defaults_button_label: Option<String>,
+    /// Lines added to the resource elsewhere (e.g. the TLS-failures panel's
+    /// Exclude action) that should appear in the textarea without a reload.
+    /// New entries are appended in place, preserving unsaved draft edits.
+    #[prop_or_default]
+    pub merge_lines: Vec<String>,
 }
 
 pub struct SettingsTextarea {
@@ -25,6 +29,21 @@ pub struct SettingsTextarea {
     changes_saved: bool,
     input_data: String,
     previous_input_data: String,
+}
+
+/// Append `line` to `target` unless an existing (trimmed) line already
+/// matches it.
+fn merge_missing_line(target: &mut String, line: &str) {
+    if target.lines().any(|existing| existing.trim() == line) {
+        return;
+    }
+
+    let trimmed = target.trim_end();
+    *target = if trimmed.is_empty() {
+        line.to_string()
+    } else {
+        format!("{trimmed}\n{line}")
+    };
 }
 
 pub enum Message {
@@ -67,7 +86,8 @@ impl Component for SettingsTextarea {
 
                 let request = Request::put(&ctx.props().resource_url)
                     .header("Content-Type", "application/json")
-                    .body(&serde_json::to_string(&self.input_data).unwrap());
+                    .body(serde_json::to_string(&self.input_data).unwrap())
+                    .unwrap();
 
                 spawn_local(async move {
                     if let Ok(response) = request.send().await {
@@ -129,7 +149,28 @@ impl Component for SettingsTextarea {
         true
     }
 
-    fn changed(&mut self, ctx: &Context<Self>) -> bool {
+    fn changed(&mut self, ctx: &Context<Self>, old_props: &Self::Properties) -> bool {
+        let props = ctx.props();
+
+        // A pure `merge_lines` change appends the new entries in place: the
+        // server already has them, so both the draft and the saved-state
+        // snapshot gain the lines, and unsaved user edits are preserved
+        // (a reload here would silently discard them).
+        if props.resource_url == old_props.resource_url
+            && props.merge_lines != old_props.merge_lines
+        {
+            for line in &props.merge_lines {
+                let line = line.trim();
+                if line.is_empty() {
+                    continue;
+                }
+                merge_missing_line(&mut self.input_data, line);
+                merge_missing_line(&mut self.previous_input_data, line);
+            }
+
+            return true;
+        }
+
         ctx.link().send_message(Message::UpdateInput(String::new()));
         ctx.link().send_message(Message::LoadCurrentState);
 
@@ -207,7 +248,7 @@ impl Component for SettingsTextarea {
             <div class="mt-4">
                 <label for={props.input_name.clone()} class="block text-sm font-medium text-gray-700">{&props.textarea_description}</label>
                 <div class="mt-1">
-                    <textarea {oninput} value={self.input_data.clone()} rows="8" name={props.input_name.clone()} id={props.input_name.clone()} class="shadow-sm focus:ring-blue-500 focus:border-blue-500 block w-full sm:text-sm border-gray-300 rounded-md"></textarea>
+                    <textarea {oninput} value={self.input_data.clone()} rows="8" name={props.input_name.clone()} id={props.input_name.clone()} class="shadow-sm focus:ring-blue-500 focus:border-blue-500 block w-full sm:text-sm border-gray-300 rounded-md" />
                 </div>
             </div>
             <div class="flex items-center">

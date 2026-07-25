@@ -4,7 +4,7 @@ use argon2::Argon2;
 use openssl::rand::rand_bytes;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Default)]
 pub struct Auth {
     #[serde(default)]
     pub username: Option<String>,
@@ -14,17 +14,6 @@ pub struct Auth {
     pub api_key: String,
     #[serde(default)]
     pub session_signing_key: String,
-}
-
-impl Default for Auth {
-    fn default() -> Self {
-        Self {
-            username: None,
-            password_hash: None,
-            api_key: String::new(),
-            session_signing_key: String::new(),
-        }
-    }
 }
 
 impl Auth {

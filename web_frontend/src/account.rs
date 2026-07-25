@@ -1,7 +1,7 @@
-use reqwasm::http::Request;
+use gloo_net::http::Request;
 use serde::{Deserialize, Serialize};
 use wasm_bindgen_futures::spawn_local;
-use web_sys::{FocusEvent, HtmlInputElement};
+use web_sys::{HtmlInputElement, SubmitEvent};
 use yew::prelude::*;
 use yew::{html, Callback, Component, Context, Html};
 
@@ -137,6 +137,7 @@ impl Component for AccountSettings {
                     match Request::post("/api/auth/change-password")
                         .header("Content-Type", "application/json")
                         .body(serde_json::to_string(&payload).unwrap())
+                        .unwrap()
                         .send()
                         .await
                     {
@@ -225,7 +226,7 @@ impl Component for AccountSettings {
             let input: HtmlInputElement = e.target_unchecked_into();
             Message::UpdateConfirmPassword(input.value())
         });
-        let on_submit = link.callback(|e: FocusEvent| {
+        let on_submit = link.callback(|e: SubmitEvent| {
             e.prevent_default();
             Message::SubmitPasswordChange
         });
@@ -327,7 +328,7 @@ fn password_field(
     }
 }
 
-async fn parse_error(response: reqwasm::http::Response) -> String {
+async fn parse_error(response: gloo_net::http::Response) -> String {
     #[derive(Deserialize)]
     struct ApiError {
         error: String,

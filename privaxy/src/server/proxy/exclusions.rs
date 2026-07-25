@@ -32,53 +32,53 @@ impl WildMatchCollection {
 
 lazy_static! {
     static ref DEFAULT_EXCLUSIONS: WildMatchCollection = {
-        let mut exclusions = Vec::new();
-
         // Apple service exclusions, as defined in : https://support.apple.com/en-us/HT210060
         // > Apple services will fail any connection that uses
         // > HTTPS Interception (SSL Inspection). If the HTTPS traffic
         // > traverses a web proxy, disable HTTPS Interception for the hosts
         // > listed in this article.
-        exclusions.push(String::from("*.apple.com"));
-        exclusions.push(String::from("static.ips.apple.com"));
-        exclusions.push(String::from("*.push.apple.com"));
-        exclusions.push(String::from("setup.icloud.com"));
-        exclusions.push(String::from("*.business.apple.com"));
-        exclusions.push(String::from("*.school.apple.com"));
-        exclusions.push(String::from("upload.appleschoolcontent.com"));
-        exclusions.push(String::from("ws-ee-maidsvc.icloud.com"));
-        exclusions.push(String::from("itunes.com"));
-        exclusions.push(String::from("appldnld.apple.com.edgesuite.net"));
-        exclusions.push(String::from("*.itunes.apple.com"));
-        exclusions.push(String::from("updates-http.cdn-apple.com"));
-        exclusions.push(String::from("updates.cdn-apple.com"));
-        exclusions.push(String::from("*.apps.apple.com"));
-        exclusions.push(String::from("*.mzstatic.com"));
-        exclusions.push(String::from("*.appattest.apple.com"));
-        exclusions.push(String::from("doh.dns.apple.com"));
-        exclusions.push(String::from("appleid.cdn-apple.com"));
-        exclusions.push(String::from("*.apple-cloudkit.com"));
-        exclusions.push(String::from("*.apple-livephotoskit.com"));
-        exclusions.push(String::from("*.apzones.com"));
-        exclusions.push(String::from("*.cdn-apple.com"));
-        exclusions.push(String::from("*.gc.apple.com"));
-        exclusions.push(String::from("*.icloud.com"));
-        exclusions.push(String::from("*.icloud.com.cn"));
-        exclusions.push(String::from("*.icloud.apple.com"));
-        exclusions.push(String::from("*.icloud-content.com"));
-        exclusions.push(String::from("*.iwork.apple.com"));
-        exclusions.push(String::from("mask.icloud.com"));
-        exclusions.push(String::from("mask-h2.icloud.com"));
-        exclusions.push(String::from("mask-api.icloud.com"));
-        exclusions.push(String::from("devimages-cdn.apple.com"));
-        exclusions.push(String::from("download.developer.apple.com"));
+        let exclusions = vec![
+            String::from("*.apple.com"),
+            String::from("static.ips.apple.com"),
+            String::from("*.push.apple.com"),
+            String::from("setup.icloud.com"),
+            String::from("*.business.apple.com"),
+            String::from("*.school.apple.com"),
+            String::from("upload.appleschoolcontent.com"),
+            String::from("ws-ee-maidsvc.icloud.com"),
+            String::from("itunes.com"),
+            String::from("appldnld.apple.com.edgesuite.net"),
+            String::from("*.itunes.apple.com"),
+            String::from("updates-http.cdn-apple.com"),
+            String::from("updates.cdn-apple.com"),
+            String::from("*.apps.apple.com"),
+            String::from("*.mzstatic.com"),
+            String::from("*.appattest.apple.com"),
+            String::from("doh.dns.apple.com"),
+            String::from("appleid.cdn-apple.com"),
+            String::from("*.apple-cloudkit.com"),
+            String::from("*.apple-livephotoskit.com"),
+            String::from("*.apzones.com"),
+            String::from("*.cdn-apple.com"),
+            String::from("*.gc.apple.com"),
+            String::from("*.icloud.com"),
+            String::from("*.icloud.com.cn"),
+            String::from("*.icloud.apple.com"),
+            String::from("*.icloud-content.com"),
+            String::from("*.iwork.apple.com"),
+            String::from("mask.icloud.com"),
+            String::from("mask-h2.icloud.com"),
+            String::from("mask-api.icloud.com"),
+            String::from("devimages-cdn.apple.com"),
+            String::from("download.developer.apple.com"),
+        ];
 
         WildMatchCollection::new(exclusions)
     };
 }
 
 /// Hosts the maintainer has observed to use certificate pinning, HSTS preload
-/// + strict TLS, or otherwise break under MITM interception. Exposed to the
+/// plus strict TLS, or otherwise break under MITM interception. Exposed to the
 /// web UI via the "Reset to defaults" button so users can opt in by populating
 /// their own exclusions list. These are NOT applied automatically — see
 /// `DEFAULT_EXCLUSIONS` above for the always-on Apple safety net.
@@ -204,6 +204,21 @@ pub fn recommended_exclusions() -> &'static [&'static str] {
         "ctldl.windowsupdate.com",
         "crl.microsoft.com",
         "clientconfig.passport.net",
+        // RCS messaging via Google Jibe (Apple and Google Messages clients).
+        // The clients certificate-pin, and connections arrive with a
+        // parenthesized service selector in the CONNECT authority
+        // (`rbm.goog(smsft):443`) that the proxy strips before matching.
+        "rbm.goog",
+        "*.rbm.goog",
+        "telephony.goog",
+        "*.telephony.goog",
+        "jibe.google.com",
+        "*.jibe.google.com",
+        "jibemobile.com",
+        "*.jibemobile.com",
+        "messages.google.com",
+        "rcs.telephony.goog",
+        "*.rcs.telephony.goog",
         // Google client config (used by Chrome / browser cert pinning)
         "clients1.google.com",
         "clients2.google.com",

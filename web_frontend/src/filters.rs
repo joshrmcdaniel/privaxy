@@ -1,7 +1,9 @@
 use crate::button::ButtonState;
+use crate::filter_edit::FilterEditModal;
+use crate::filter_failures::FilterFailuresPanel;
 use crate::filterlists::SearchFilterList;
 use crate::{failure_banner, save_button, submit_banner, ApiError};
-use reqwasm::http::Request;
+use gloo_net::http::Request;
 use serde::{Deserialize, Serialize};
 use serde_json::de::IoRead;
 use serde_json::StreamDeserializer;
@@ -143,7 +145,8 @@ impl Component for AddFilterComponent {
 
                 let request = Request::post("/api/filters")
                     .header("Content-Type", "application/json")
-                    .body(serde_json::to_string(&request_body).unwrap());
+                    .body(serde_json::to_string(&request_body).unwrap())
+                    .unwrap();
 
                 let link = self.link.clone();
                 spawn_local(async move {
@@ -238,7 +241,7 @@ impl Component for AddFilterComponent {
             .collect();
 
         let url = self.url.clone();
-        let category = self.category.clone();
+        let category = self.category;
         let title = self.title.clone();
 
         let failure_banner = if self.show_error {
@@ -309,7 +312,7 @@ impl Component for AddFilterComponent {
                                         />
                                     </div>
                                     <div class="flex space-x-4">
-                                        <button onclick={_ctx.link().callback(move |_| AddFilterMessage::Save(url.clone(), title.clone(), category.clone()))} class="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded z-60">{"Save"}</button>
+                                        <button onclick={_ctx.link().callback(move |_| AddFilterMessage::Save(url.clone(), title.clone(), category))} class="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded z-60">{"Save"}</button>
                                         <button onclick={_ctx.link().callback(|_| AddFilterMessage::Close)} class="bg-gray-500 hover:bg-gray-700 text-white font-bold py-2 px-4 rounded z-60">{"Cancel"}</button>
                                     </div>
                                 </div>
@@ -330,6 +333,10 @@ pub struct Filter {
     pub title: String,
     group: FilterGroup,
     file_name: String,
+    pub url: String,
+    /// Whether this is one of the built-in lists shipped with the package;
+    /// those can only be enabled/disabled, never edited or removed.
+    pub is_default: bool,
 }
 
 impl Filter {
@@ -339,6 +346,8 @@ impl Filter {
             title,
             group,
             file_name,
+            url: String::new(),
+            is_default: false,
         }
     }
 }
@@ -360,6 +369,12 @@ pub struct FilterStatusChangeRequest {
     file_name: String,
 }
 
+impl FilterStatusChangeRequest {
+    pub fn new(file_name: String, enabled: bool) -> Self {
+        Self { enabled, file_name }
+    }
+}
+
 pub type FilterConfiguration = Vec<Filter>;
 
 pub enum Message {
@@ -369,27 +384,33 @@ pub enum Message {
     Save,
     ChangesSaved,
     AckChanges,
+    OpenEdit(Filter),
+    CloseEdit,
+    EditCompleted,
 }
 
 pub struct Filters {
     filter_configuration: Option<FilterConfiguration>,
     filter_configuration_before_changes: Option<FilterConfiguration>,
     changes_saved: bool,
+    editing_filter: Option<Filter>,
 }
 
 impl Filters {
     fn configuration_has_changed(&self) -> bool {
         self.filter_configuration != self.filter_configuration_before_changes
     }
+    #[allow(dead_code)]
     pub fn get_filters(&self) -> Vec<Filter> {
         self.filter_configuration.as_ref().unwrap().clone()
     }
 
+    #[allow(dead_code)]
     pub fn has_filter(&self, filter: &Filter) -> bool {
         self.filter_configuration
             .as_ref()
             .unwrap()
-            .into_iter()
+            .iter()
             .any(|f| f.file_name == filter.file_name)
     }
 }
@@ -405,6 +426,7 @@ impl Component for Filters {
             filter_configuration: None,
             filter_configuration_before_changes: None,
             changes_saved: false,
+            editing_filter: None,
         }
     }
 
@@ -459,20 +481,16 @@ impl Component for Filters {
 
                 let request = Request::put("/api/filters")
                     .header("Content-Type", "application/json")
-                    .body(serde_json::to_string(&request_body).unwrap());
+                    .body(serde_json::to_string(&request_body).unwrap())
+                    .unwrap();
 
                 let callback = ctx.link().callback(|message: Message| message);
 
                 spawn_local(async move {
-                    match request.send().await {
-                        Ok(response) => {
-                            if response.ok() {
-                                callback.emit(Message::ChangesSaved);
-
-                                return;
-                            }
+                    if let Ok(response) = request.send().await {
+                        if response.ok() {
+                            callback.emit(Message::ChangesSaved);
                         }
-                        Err(_) => {}
                     }
                 });
 
@@ -481,22 +499,27 @@ impl Component for Filters {
             Message::UpdateFilterSelection((filter_name, enabled)) => {
                 self.changes_saved = false;
 
-                self.filter_configuration
+                if let Some(filter) = self
+                    .filter_configuration
                     .as_mut()
                     .unwrap()
                     .iter_mut()
                     .find(|filter| filter.file_name == filter_name)
-                    .and_then(|filter| {
-                        filter.enabled = enabled;
-
-                        Some(filter)
-                    });
+                {
+                    filter.enabled = enabled;
+                }
             }
             Message::ChangesSaved => {
                 self.changes_saved = true;
                 self.filter_configuration_before_changes = self.filter_configuration.clone();
             }
             Message::AckChanges => self.changes_saved = false,
+            Message::OpenEdit(filter) => self.editing_filter = Some(filter),
+            Message::CloseEdit => self.editing_filter = None,
+            Message::EditCompleted => {
+                self.editing_filter = None;
+                ctx.link().send_message(Message::Load);
+            }
         };
 
         true
@@ -518,6 +541,7 @@ impl Component for Filters {
             });
         log::debug!("Retrieved callback.");
         let save_callback = ctx.link().callback(|_| Message::Save);
+        let edit_callback = ctx.link().callback(Message::OpenEdit);
         let render_category_filter = |filter: &Filter| {
             let filter_file_name = filter.file_name.clone();
             let filter_enabled = filter.enabled;
@@ -526,6 +550,26 @@ impl Component for Filters {
             let checkbox_callback = Callback::from(move |_| {
                 callback_clone.emit((filter_file_name.to_string(), !filter_enabled))
             });
+            // Built-in lists shipped with the package can only be toggled;
+            // user-added lists also get an edit (rename/delete) button.
+            let edit_button = if filter.is_default {
+                html! {}
+            } else {
+                let edit_callback = edit_callback.clone();
+                let filter_clone = filter.clone();
+                html! {
+                    <button type="button"
+                        class="mr-4 text-gray-400 hover:text-blue-600"
+                        title="Edit or remove this filter list"
+                        onclick={Callback::from(move |_| edit_callback.emit(filter_clone.clone()))}>
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none"
+                            viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                        </svg>
+                    </button>
+                }
+            };
             log::debug!("Returning category filter.");
             html! {
             <div class="relative flex items-start py-4">
@@ -533,6 +577,7 @@ impl Component for Filters {
                     <label for={filter.file_name.clone()} class="select-none">{&filter.title}</label>
                 </div>
                 <div class="ml-3 flex items-center h-5">
+                    { edit_button }
                     <input checked={filter.enabled} onchange={checkbox_callback} name={filter.file_name.clone()} type="checkbox"
                         class="focus:ring-blue-500 h-4 w-4 text-blue-600 border-gray-300 rounded" />
                 </div>
@@ -591,12 +636,27 @@ impl Component for Filters {
             </div>
         };
 
+        let edit_modal = match &self.editing_filter {
+            Some(filter) => html! {
+                <FilterEditModal
+                    file_name={filter.file_name.clone()}
+                    title={filter.title.clone()}
+                    url={filter.url.clone()}
+                    group={filter.group}
+                    on_close={ctx.link().callback(|_| Message::CloseEdit)}
+                    on_changed={ctx.link().callback(|_| Message::EditCompleted)} />
+            },
+            None => html! {},
+        };
+
         match &self.filter_configuration {
             Some(filter_configuration) => {
                 html! {
                         <>
                             { title }
+                            <FilterFailuresPanel on_changed={ctx.link().callback(|_| Message::Load)} />
                             {success_banner}
+                            { edit_modal }
                             <div class="mb-5 flex space-x-4">
                                 <AddFilterComponent state={save_button::SaveButtonState::Enabled}/>
                                 <SearchFilterList filter_configuration={filter_configuration.clone()}/>

@@ -1,14 +1,17 @@
 use crate::blocker::AdblockRequester;
-use crate::configuration::NetworkConfig;
+use crate::configuration::{FilterFailureStore, NetworkConfig};
 use crate::proxy::exclusions::LocalExclusionStore;
 use crate::web_gui::events::Event;
-use hyper::server::conn::AddrStream;
-use hyper::service::{make_service_fn, service_fn};
-use hyper::{Client, Server};
+use hyper::service::service_fn;
+use hyper_util::client::legacy::Client;
+use hyper_util::rt::{TokioExecutor, TokioIo};
+use hyper_util::server::conn::auto;
+use hyper_util::server::graceful::GracefulShutdown;
 use include_dir::{include_dir, Dir};
 use proxy::exclusions;
+use proxy::serve::UpgradeClient;
+use proxy::tls_failures::TlsFailureStore;
 use reqwest::redirect::Policy;
-use std::convert::Infallible;
 use std::env;
 use std::net::IpAddr;
 use std::net::SocketAddr;
@@ -16,6 +19,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
+use tokio::net::TcpListener;
 use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::broadcast;
 use tokio::sync::Notify;
@@ -32,6 +36,53 @@ mod web_gui;
 
 pub const WEBAPP_FRONTEND_DIR: Dir<'_> = include_dir!("web_frontend/dist");
 
+/// Custom `getrandom` backend for the `mips{,el}-unknown-linux-gnu` cross
+/// targets.
+///
+/// getrandom 0.3's default Linux backend for these targets calls the libc
+/// `getrandom()` wrapper, which the cross-toolchain's pre-2.25 glibc does not
+/// export — so the binary fails to link (`undefined reference to getrandom`).
+/// We point getrandom at its `custom` backend for these triples (see
+/// `.cargo/config.toml`) and service it here with the raw `SYS_getrandom`
+/// syscall. The syscall is independent of the libc version, so the resulting
+/// binary still runs on the old-glibc routers we target; pre-3.17 kernels that
+/// lack the syscall fall back to `/dev/urandom`, matching getrandom 0.2's old
+/// behavior. musl MIPS and every non-MIPS target keep getrandom's stock
+/// backend and never reach this code.
+#[cfg(all(target_os = "linux", target_arch = "mips", target_env = "gnu"))]
+#[no_mangle]
+unsafe extern "Rust" fn __getrandom_v03_custom(
+    dest: *mut u8,
+    len: usize,
+) -> Result<(), getrandom::Error> {
+    let mut filled = 0usize;
+    while filled < len {
+        let ret = libc::syscall(libc::SYS_getrandom, dest.add(filled), len - filled, 0u32);
+        if ret < 0 {
+            match std::io::Error::last_os_error().raw_os_error() {
+                // Interrupted before any bytes were read; retry.
+                Some(libc::EINTR) => continue,
+                // Kernel predates getrandom(2) (pre-3.17): use /dev/urandom.
+                Some(libc::ENOSYS) => return urandom_fallback(dest, len),
+                _ => return Err(getrandom::Error::UNEXPECTED),
+            }
+        }
+        filled += ret as usize;
+    }
+    Ok(())
+}
+
+#[cfg(all(target_os = "linux", target_arch = "mips", target_env = "gnu"))]
+unsafe fn urandom_fallback(dest: *mut u8, len: usize) -> Result<(), getrandom::Error> {
+    use std::io::Read;
+
+    let buf = std::slice::from_raw_parts_mut(dest, len);
+    let mut file = std::fs::File::open("/dev/urandom").map_err(|_| getrandom::Error::UNEXPECTED)?;
+    file.read_exact(buf)
+        .map_err(|_| getrandom::Error::UNEXPECTED)?;
+    Ok(())
+}
+
 #[derive(Debug)]
 pub struct PrivaxyServer {
     pub ca_certificate_pem: String,
@@ -40,6 +91,8 @@ pub struct PrivaxyServer {
     pub blocking_disabled_store: blocker::BlockingDisabledStore,
     pub statistics: statistics::Statistics,
     pub local_exclusion_store: exclusions::LocalExclusionStore,
+    pub tls_failure_store: TlsFailureStore,
+    pub filter_failure_store: FilterFailureStore,
     // A Sender is required to subscribe to broadcasted messages
     pub requests_broadcast_sender: broadcast::Sender<Event>,
 }
@@ -79,6 +132,13 @@ async fn handle_signals() -> (Arc<Notify>, Arc<Notify>) {
 }
 
 pub async fn start_privaxy() -> PrivaxyServer {
+    // rustls 0.23 no longer bakes in a crypto provider: a process-wide default
+    // must be installed before any TLS config is built (the proxy's per-host
+    // certs, the upstream HTTPS connector, the reqwest client, and the web GUI
+    // TLS listener all rely on it). We pin the `ring` provider so the tier-3
+    // MIPS/musl cross builds keep working (aws-lc-rs needs a C toolchain).
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
     // Install the global logger first so every subsequent record is both
     // written to stderr and made available to the `/api/logs` stream. The
     // configured level is applied once the configuration is read below.
@@ -101,7 +161,6 @@ pub async fn start_privaxy() -> PrivaxyServer {
         // additionally fails fast on unreachable hosts.
         .connect_timeout(Duration::from_secs(10))
         .pool_idle_timeout(Duration::from_secs(30))
-        .tcp_keepalive(Duration::from_secs(60))
         // h2-heavy origins multiplex every subresource over a
         // single connection whose flow-control window defaults to a small,
         // shared 64 KB. When we drain one stream's body slowly (the browser
@@ -131,7 +190,7 @@ pub async fn start_privaxy() -> PrivaxyServer {
     log_handle.set_level(configuration.debug.log_level.to_level_filter());
 
     let local_exclusion_store =
-        LocalExclusionStore::new(Vec::from_iter(configuration.exclusions.clone().into_iter()));
+        LocalExclusionStore::new(Vec::from_iter(configuration.exclusions.clone()));
     let local_exclusion_store_clone = local_exclusion_store.clone();
 
     let ca_certificate = match configuration.ca.get_ca_certificate().await {
@@ -157,6 +216,12 @@ pub async fn start_privaxy() -> PrivaxyServer {
     let statistics = statistics::Statistics::new();
     let statistics_clone = statistics.clone();
 
+    let tls_failure_store = TlsFailureStore::new(configuration.ignored_tls_failures.clone());
+    let tls_failure_store_clone = tls_failure_store.clone();
+
+    let filter_failure_store = FilterFailureStore::new();
+    let filter_failure_store_clone = filter_failure_store.clone();
+
     let (broadcast_tx, _broadcast_rx) = broadcast::channel(32);
     let broadcast_tx_clone = broadcast_tx.clone();
 
@@ -173,6 +238,7 @@ pub async fn start_privaxy() -> PrivaxyServer {
         configuration.clone(),
         client.clone(),
         blocker_requester.clone(),
+        filter_failure_store.clone(),
         None,
     )
     .await;
@@ -188,6 +254,8 @@ pub async fn start_privaxy() -> PrivaxyServer {
 
     let block_disable_ref = blocking_disabled_store.clone();
     let local_exclusion_store_ref = local_exclusion_store.clone();
+    let tls_failure_store_ref = tls_failure_store.clone();
+    let filter_failure_store_ref = filter_failure_store.clone();
     let stats_clone = statistics.clone();
     let configuration_updater_tx_ref = configuration_updater_tx.clone();
     let configuration_save_lock_ref = configuration_save_lock.clone();
@@ -203,6 +271,8 @@ pub async fn start_privaxy() -> PrivaxyServer {
             privaxy_frontend(
                 broadcast_tx_ref.clone(),
                 local_exclusion_store_ref.clone(),
+                tls_failure_store_ref.clone(),
+                filter_failure_store_ref.clone(),
                 stats_clone.clone(),
                 block_disable_ref.clone(),
                 configuration_updater_tx_ref.clone(),
@@ -230,6 +300,7 @@ pub async fn start_privaxy() -> PrivaxyServer {
     tokio::spawn(async move {
         let notify_reload_backend = notify_reload_clone.clone();
         let cfg_lock_backend = configuration_save_lock_ref.clone();
+        let mut local_exclusion_store = local_exclusion_store;
         let mut rt_cert_cache =
             cert::CertCache::new(ca_certificate.clone(), ca_private_key.clone());
         let mut rt_ca_certificate = ca_certificate;
@@ -242,11 +313,19 @@ pub async fn start_privaxy() -> PrivaxyServer {
                 broadcast_tx.clone(),
                 statistics.clone(),
                 local_exclusion_store.clone(),
+                tls_failure_store.clone(),
                 cfg_lock_backend.clone(),
                 notify_reload_backend.clone(),
             )
             .await;
             let cfg = read_configuration(&cfg_lock_backend).await;
+            // The exclusion store is only otherwise mutated by the web UI
+            // route; without this refresh, exclusions edited in the
+            // configuration file never take effect on SIGHUP reload.
+            local_exclusion_store.replace_exclusions(Vec::from_iter(cfg.exclusions.clone()));
+            // Same for the TLS-failure ignore set: pick up hand-edited
+            // `ignored_tls_failures` entries on SIGHUP reload.
+            tls_failure_store.set_ignored(cfg.ignored_tls_failures.clone());
             let ca_cert = cfg.ca.get_ca_certificate().await.unwrap();
             let ca_key = cfg.ca.get_ca_private_key().await.unwrap();
             if !ca_key.public_eq(&rt_ca_certificate.public_key().unwrap()) {
@@ -262,13 +341,18 @@ pub async fn start_privaxy() -> PrivaxyServer {
         blocking_disabled_store: blocking_disabled_store_clone,
         statistics: statistics_clone,
         local_exclusion_store: local_exclusion_store_clone,
+        tls_failure_store: tls_failure_store_clone,
+        filter_failure_store: filter_failure_store_clone,
         requests_broadcast_sender: broadcast_tx_clone,
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn privaxy_frontend(
     broadcast_tx: tokio::sync::broadcast::Sender<Event>,
     local_exclusion_store: LocalExclusionStore,
+    tls_failure_store: TlsFailureStore,
+    filter_failure_store: FilterFailureStore,
     statistics: statistics::Statistics,
     block_disable_ref: blocker::BlockingDisabledStore,
     configuration_updater_tx: tokio::sync::mpsc::Sender<configuration::Configuration>,
@@ -283,10 +367,11 @@ async fn privaxy_frontend(
         &configuration_updater_tx,
         &configuration_save_lock,
         &local_exclusion_store,
+        &tls_failure_store,
+        &filter_failure_store,
         notify_reload.clone(),
         log_handle.clone(),
     );
-    let frontend_server = warp::serve(frontend);
     let config = read_configuration(&configuration_save_lock).await;
     let ip = env_or_config_ip(&config.network).await;
     let web_api_server_addr = SocketAddr::from((ip, config.network.web_port));
@@ -311,30 +396,133 @@ async fn privaxy_frontend(
                 panic!("Failed to read or create TLS key: {err}");
             }
         };
+        let server_config = web_tls_server_config(&tls_cert, &tls_key);
         tokio::spawn(async move {
-            let (_, task) = frontend_server
-                .tls()
-                .cert(tls_cert.to_pem().unwrap())
-                .key(tls_key.private_key_to_pem_pkcs8().unwrap())
-                .bind_with_graceful_shutdown(web_api_server_addr, async move {
+            serve_frontend(
+                frontend,
+                web_api_server_addr,
+                Some(server_config),
+                async move {
                     notify_reload.clone().notified().await;
-                });
-            log::info!("Web server available at https://{web_api_server_addr}/");
-            log::info!("API server available at https://{web_api_server_addr}/api");
-
-            task.await;
+                },
+            )
+            .await;
         });
     } else {
         tokio::spawn(async move {
-            let (_, task) =
-                frontend_server.bind_with_graceful_shutdown(web_api_server_addr, async move {
-                    let _ = notify_reload.clone().notified().await;
-                });
-            log::info!("Web server available at http://{web_api_server_addr}/");
-            log::info!("API server available at http://{web_api_server_addr}/api");
-            task.await
+            serve_frontend(frontend, web_api_server_addr, None, async move {
+                let _ = notify_reload.clone().notified().await;
+            })
+            .await;
         });
     }
+}
+
+/// Build a rustls `ServerConfig` for the web GUI from the OpenSSL-generated
+/// TLS leaf certificate and key. warp 0.4 dropped its built-in `.tls()`
+/// support, so the HTTPS web GUI now terminates TLS via `tokio-rustls` and is
+/// served through hyper-util (see `serve_frontend_tls`).
+fn web_tls_server_config(
+    cert: &openssl::x509::X509,
+    key: &openssl::pkey::PKeyRef<openssl::pkey::Private>,
+) -> rustls::ServerConfig {
+    use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+
+    let certs = vec![CertificateDer::from(cert.to_der().unwrap())];
+    let key = PrivateKeyDer::try_from(key.private_key_to_der().unwrap()).unwrap();
+    rustls::ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(certs, key)
+        .expect("valid web GUI TLS certificate/key")
+}
+
+/// Serve the warp frontend filter, optionally over TLS. warp 0.4 dropped both
+/// its built-in `.tls()` support and the high-level graceful-shutdown server,
+/// so we accept connections ourselves, optionally terminate TLS with
+/// `tokio-rustls`, and drive each connection with hyper-util's auto builder
+/// (HTTP/1+2, with upgrade support so the WebSocket-based live feeds keep
+/// working).
+async fn serve_frontend<F, S>(
+    frontend: F,
+    addr: SocketAddr,
+    tls_config: Option<rustls::ServerConfig>,
+    shutdown: S,
+) where
+    F: warp::Filter + Clone + Send + Sync + 'static,
+    F::Extract: warp::reply::Reply,
+    S: std::future::Future<Output = ()> + Send + 'static,
+{
+    use tokio_rustls::TlsAcceptor;
+
+    let listener = match TcpListener::bind(addr).await {
+        Ok(listener) => listener,
+        Err(err) => {
+            log::error!("Unable to bind web GUI to {}: {}", addr, err);
+            return;
+        }
+    };
+    let scheme = if tls_config.is_some() {
+        "https"
+    } else {
+        "http"
+    };
+    log::info!("Web server available at {scheme}://{addr}/");
+    log::info!("API server available at {scheme}://{addr}/api");
+
+    let tls_acceptor = tls_config.map(|config| TlsAcceptor::from(Arc::new(config)));
+    let warp_service = warp::service(frontend);
+    let graceful = GracefulShutdown::new();
+
+    tokio::pin!(shutdown);
+
+    loop {
+        tokio::select! {
+            accepted = listener.accept() => {
+                let (stream, _peer) = match accepted {
+                    Ok(pair) => pair,
+                    Err(err) => {
+                        log::warn!("Failed to accept web GUI connection: {}", err);
+                        continue;
+                    }
+                };
+                let tls_acceptor = tls_acceptor.clone();
+                let hyper_service =
+                    hyper_util::service::TowerToHyperService::new(warp_service.clone());
+                let watcher = graceful.watcher();
+                tokio::spawn(async move {
+                    let builder = auto::Builder::new(TokioExecutor::new());
+                    match tls_acceptor {
+                        Some(tls_acceptor) => {
+                            let tls_stream = match tls_acceptor.accept(stream).await {
+                                Ok(tls_stream) => tls_stream,
+                                Err(err) => {
+                                    log::debug!("Web GUI TLS handshake failed: {}", err);
+                                    return;
+                                }
+                            };
+                            let connection = builder.serve_connection_with_upgrades(
+                                TokioIo::new(tls_stream),
+                                hyper_service,
+                            );
+                            let _ = watcher.watch(connection.into_owned()).await;
+                        }
+                        None => {
+                            let connection = builder.serve_connection_with_upgrades(
+                                TokioIo::new(stream),
+                                hyper_service,
+                            );
+                            let _ = watcher.watch(connection.into_owned()).await;
+                        }
+                    }
+                });
+            }
+            _ = &mut shutdown => {
+                break;
+            }
+        }
+    }
+
+    graceful.shutdown().await;
 }
 
 async fn read_configuration(
@@ -354,6 +542,75 @@ async fn env_or_config_ip(network_config: &NetworkConfig) -> IpAddr {
     }
 }
 
+/// Bracket IPv6 addresses so they are usable as the host part of a URL.
+fn format_ip_host(ip: IpAddr) -> String {
+    match ip {
+        IpAddr::V4(ip) => ip.to_string(),
+        IpAddr::V6(ip) => format!("[{ip}]"),
+    }
+}
+
+/// Where the web GUI can be reached from a proxied client's point of view.
+/// Used to build links back to the GUI (e.g. the "Exclude this host" button on
+/// proxy error pages). When the GUI listens on an unspecified address and no
+/// FQDN is configured, the host is only known per connection — from the local
+/// address the client dialed — hence `base_url` taking it as a parameter.
+#[derive(Debug, Clone)]
+pub(crate) struct WebGuiUrl {
+    /// Operator-declared full base URL, used verbatim when set. This is the
+    /// only variant that can express a reverse-proxied GUI (different port,
+    /// or a host the server never sees, e.g. behind Docker NAT).
+    override_url: Option<String>,
+    scheme: &'static str,
+    configured_host: Option<String>,
+    web_port: u16,
+}
+
+impl WebGuiUrl {
+    async fn from_network_config(network: &NetworkConfig) -> Self {
+        let override_url = network
+            .gui_url
+            .as_ref()
+            .map(|url| url.trim().trim_end_matches('/').to_string())
+            .filter(|url| !url.is_empty());
+        let scheme = if network.tls { "https" } else { "http" };
+        let configured_host = match network.listen_url.clone() {
+            // An operator-declared FQDN wins over any bound address.
+            Some(listen_url) => Some(listen_url),
+            None => {
+                let ip = env_or_config_ip(network).await;
+                if ip.is_unspecified() {
+                    None
+                } else {
+                    Some(format_ip_host(ip))
+                }
+            }
+        };
+
+        Self {
+            override_url,
+            scheme,
+            configured_host,
+            web_port: network.web_port,
+        }
+    }
+
+    fn base_url(&self, dialed_ip: Option<IpAddr>) -> Option<String> {
+        if let Some(url) = &self.override_url {
+            return Some(url.clone());
+        }
+        let host = match &self.configured_host {
+            Some(host) => host.clone(),
+            None => format_ip_host(dialed_ip?),
+        };
+        let scheme = self.scheme;
+        let web_port = self.web_port;
+
+        Some(format!("{scheme}://{host}:{web_port}"))
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn privaxy_backend(
     client: reqwest::Client,
     cert_cache: cert::CertCache,
@@ -361,6 +618,7 @@ async fn privaxy_backend(
     broadcast_tx: broadcast::Sender<Event>,
     statistics: statistics::Statistics,
     local_exclusion_store: LocalExclusionStore,
+    tls_failure_store: TlsFailureStore,
     configuration_save_lock: Arc<tokio::sync::Mutex<()>>,
     notify_reload: Arc<tokio::sync::Notify>,
 ) {
@@ -368,18 +626,20 @@ async fn privaxy_backend(
     // connect timeout and OS-level keepalive, an upgrade can hang on a pooled
     // keep-alive connection the remote has silently dropped, surfacing as
     // "upgrade expected but not completed".
-    let mut http_connector = hyper::client::HttpConnector::new();
+    let mut http_connector = hyper_util::client::legacy::connect::HttpConnector::new();
     http_connector.enforce_http(false);
     http_connector.set_connect_timeout(Some(Duration::from_secs(10)));
     http_connector.set_keepalive(Some(Duration::from_secs(60)));
 
     let https_connector = hyper_rustls::HttpsConnectorBuilder::new()
         .with_native_roots()
+        .expect("failed to load native root certificates")
         .https_or_http()
         .enable_http1()
         .wrap_connector(http_connector);
     let config = read_configuration(&configuration_save_lock).await;
     let network_config = &config.network;
+    let web_gui_url = WebGuiUrl::from_network_config(network_config).await;
     let doh_config = network_config.doh.clone();
     // Read once per (re)start; the backend loop re-runs this on reload, so
     // toggling the setting in the UI takes effect after its notify_reload.
@@ -392,54 +652,161 @@ async fn privaxy_backend(
     // An upgraded connection is consumed by the tunnel anyway, so idle pooling
     // buys nothing and only risks reusing a stale connection under a long-lived
     // WebSocket — disable it.
-    let hyper_client = Client::builder()
+    let hyper_client: UpgradeClient = Client::builder(TokioExecutor::new())
         .pool_max_idle_per_host(0)
         .build(https_connector);
-
-    let make_service = make_service_fn(move |conn: &AddrStream| {
-        let client_ip_address = conn.remote_addr().ip();
-
-        let client = client.clone();
-        let hyper_client = hyper_client.clone();
-        let cert_cache = cert_cache.clone();
-        let blocker_requester = blocker_requester.clone();
-        let broadcast_tx = broadcast_tx.clone();
-        let statistics = statistics.clone();
-        let local_exclusion_store = local_exclusion_store.clone();
-        let doh_config = doh_config.clone();
-
-        async move {
-            Ok::<_, Infallible>(service_fn(move |req| {
-                proxy::serve_mitm_session(
-                    blocker_requester.clone(),
-                    hyper_client.clone(),
-                    client.clone(),
-                    req,
-                    cert_cache.clone(),
-                    broadcast_tx.clone(),
-                    statistics.clone(),
-                    client_ip_address,
-                    local_exclusion_store.clone(),
-                    doh_config.clone(),
-                    scriptlet_debug_logging,
-                )
-            }))
-        }
-    });
 
     let ip = env_or_config_ip(network_config).await;
     let proxy_server_addr = SocketAddr::from((ip, network_config.proxy_port));
 
-    let server = Server::bind(&proxy_server_addr)
-        .http1_preserve_header_case(true)
-        .http1_title_case_headers(true)
-        .tcp_keepalive(Some(Duration::from_secs(600)))
-        .serve(make_service)
-        .with_graceful_shutdown(async move {
-            log::info!("Proxy available at http://{}", proxy_server_addr);
-            let _ = notify_reload.clone().notified().await;
-            log::info!("Stopping Privaxy proxy");
-        });
+    // hyper 1.0 removed the high-level `Server`; we accept connections by hand
+    // and drive each one with hyper-util's auto (HTTP/1+2) builder. The old
+    // `Server::tcp_keepalive`/`http1_*` knobs are reproduced below.
+    let listener = match TcpListener::bind(proxy_server_addr).await {
+        Ok(listener) => listener,
+        Err(err) => {
+            log::error!("Unable to bind proxy to {}: {}", proxy_server_addr, err);
+            return;
+        }
+    };
+    log::info!("Proxy available at http://{}", proxy_server_addr);
 
-    let _ = server.await;
+    let mut builder = auto::Builder::new(TokioExecutor::new());
+    builder
+        .http1()
+        .preserve_header_case(true)
+        .title_case_headers(true);
+    let graceful = GracefulShutdown::new();
+
+    let shutdown = async move {
+        let _ = notify_reload.clone().notified().await;
+        log::info!("Stopping Privaxy proxy");
+    };
+    tokio::pin!(shutdown);
+
+    loop {
+        tokio::select! {
+            accepted = listener.accept() => {
+                let (stream, peer_addr) = match accepted {
+                    Ok(pair) => pair,
+                    Err(err) => {
+                        log::warn!("Failed to accept proxy connection: {}", err);
+                        continue;
+                    }
+                };
+
+                // Reproduce the old `Server::tcp_keepalive(600s)`: enable
+                // OS-level keepalive on each accepted socket.
+                let _ = socket2::SockRef::from(&stream).set_tcp_keepalive(
+                    &socket2::TcpKeepalive::new().with_time(Duration::from_secs(600)),
+                );
+
+                let client_ip_address = peer_addr.ip();
+                let client = client.clone();
+                let hyper_client = hyper_client.clone();
+                let cert_cache = cert_cache.clone();
+                let blocker_requester = blocker_requester.clone();
+                let broadcast_tx = broadcast_tx.clone();
+                let statistics = statistics.clone();
+                let local_exclusion_store = local_exclusion_store.clone();
+                let tls_failure_store = tls_failure_store.clone();
+                let doh_config = doh_config.clone();
+                // The address the client dialed to reach the proxy is the best
+                // guess for a GUI host when none is configured; it must be read
+                // before the stream is consumed by the connection below.
+                let gui_base_url =
+                    web_gui_url.base_url(stream.local_addr().ok().map(|addr| addr.ip()));
+
+                let service = service_fn(move |req| {
+                    proxy::serve_mitm_session(
+                        blocker_requester.clone(),
+                        hyper_client.clone(),
+                        client.clone(),
+                        req,
+                        cert_cache.clone(),
+                        broadcast_tx.clone(),
+                        statistics.clone(),
+                        client_ip_address,
+                        local_exclusion_store.clone(),
+                        doh_config.clone(),
+                        scriptlet_debug_logging,
+                        tls_failure_store.clone(),
+                        gui_base_url.clone(),
+                    )
+                });
+
+                let connection = builder
+                    .serve_connection_with_upgrades(TokioIo::new(stream), service);
+                let watched = graceful.watch(connection.into_owned());
+                tokio::spawn(async move {
+                    let _ = watched.await;
+                });
+            }
+            _ = &mut shutdown => {
+                break;
+            }
+        }
+    }
+
+    graceful.shutdown().await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn gui_url(configured_host: Option<&str>, tls: bool) -> WebGuiUrl {
+        WebGuiUrl {
+            override_url: None,
+            scheme: if tls { "https" } else { "http" },
+            configured_host: configured_host.map(str::to_string),
+            web_port: 8200,
+        }
+    }
+
+    #[test]
+    fn base_url_prefers_override_url_over_everything() {
+        let mut url = gui_url(Some("privaxy.lan"), false);
+        url.override_url = Some("http://proxy.lan".to_string());
+        assert_eq!(
+            url.base_url(Some("172.17.0.2".parse().unwrap())),
+            Some("http://proxy.lan".to_string())
+        );
+    }
+
+    #[test]
+    fn base_url_prefers_configured_host_over_dialed_ip() {
+        let url = gui_url(Some("privaxy.lan"), false);
+        assert_eq!(
+            url.base_url(Some("192.168.1.2".parse().unwrap())),
+            Some("http://privaxy.lan:8200".to_string())
+        );
+    }
+
+    #[test]
+    fn base_url_falls_back_to_dialed_ip_and_brackets_ipv6() {
+        let url = gui_url(None, false);
+        assert_eq!(
+            url.base_url(Some("192.168.1.2".parse().unwrap())),
+            Some("http://192.168.1.2:8200".to_string())
+        );
+        assert_eq!(
+            url.base_url(Some("fd00::1".parse().unwrap())),
+            Some("http://[fd00::1]:8200".to_string())
+        );
+    }
+
+    #[test]
+    fn base_url_is_none_without_any_host() {
+        assert_eq!(gui_url(None, false).base_url(None), None);
+    }
+
+    #[test]
+    fn base_url_uses_https_scheme_when_tls_enabled() {
+        let url = gui_url(Some("privaxy.lan"), true);
+        assert_eq!(
+            url.base_url(None),
+            Some("https://privaxy.lan:8200".to_string())
+        );
+    }
 }

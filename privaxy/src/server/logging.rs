@@ -44,19 +44,15 @@ const DEPENDENCY_DEFAULT_LEVEL: LevelFilter = LevelFilter::Warn;
 /// from the web UI. Mirrors `log::LevelFilter` but owns its serialized form.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum LogLevel {
     Off,
     Error,
     Warn,
+    #[default]
     Info,
     Debug,
     Trace,
-}
-
-impl Default for LogLevel {
-    fn default() -> Self {
-        Self::Info
-    }
 }
 
 impl LogLevel {
