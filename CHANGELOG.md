@@ -5,6 +5,16 @@
 - The PAC route now also answers at `/wpad.dat`, so DNS-based WPAD
   auto-discovery (`http://wpad.<search domain>/wpad.dat`) can point straight
   at Privaxy without needing a rewrite in a fronting reverse proxy.
+- New `network.gui_url` setting: full base URL of the web GUI as reachable by
+  clients, e.g. `gui_url = "http://proxy.example.lan"` when the GUI sits
+  behind a reverse proxy. Used verbatim for links back to the GUI on proxy
+  error pages (the "exclude this host" button), winning over `listen_url` and
+  the bound/dialed address. Fixes the exclude link pointing at an unreachable
+  container IP when Privaxy runs behind Docker NAT with the GUI fronted by a
+  reverse proxy on a different port. Editable from Settings → General
+  (network section) as "GUI URL"; must start with `http://` or `https://`
+  (validated in both the form and the API), and clearing the field unsets it.
+  Older API clients that omit the field keep the stored value.
 - Fix PAC rendering of CIDR bypass rules entered as `subnet/22`: the GUI
   stores the bare prefix length, which was emitted verbatim into
   `isInNet(host, subnet, "22")` — an invalid mask for standard PAC engines,
