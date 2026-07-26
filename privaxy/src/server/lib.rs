@@ -9,8 +9,10 @@ use hyper_util::server::conn::auto;
 use hyper_util::server::graceful::GracefulShutdown;
 use include_dir::{include_dir, Dir};
 use proxy::exclusions;
+use proxy::gm::storage::GmStorageStore;
 use proxy::serve::UpgradeClient;
 use proxy::tls_failures::TlsFailureStore;
+use proxy::userscripts::{PrivateNetworkAccess, UserScriptContext, UserScriptStore};
 use reqwest::redirect::Policy;
 use std::env;
 use std::net::IpAddr;
@@ -93,6 +95,8 @@ pub struct PrivaxyServer {
     pub local_exclusion_store: exclusions::LocalExclusionStore,
     pub tls_failure_store: TlsFailureStore,
     pub filter_failure_store: FilterFailureStore,
+    pub user_script_store: UserScriptStore,
+    pub gm_storage: GmStorageStore,
     // A Sender is required to subscribe to broadcasted messages
     pub requests_broadcast_sender: broadcast::Sender<Event>,
 }
@@ -222,6 +226,20 @@ pub async fn start_privaxy() -> PrivaxyServer {
     let filter_failure_store = FilterFailureStore::new();
     let filter_failure_store_clone = filter_failure_store.clone();
 
+    // Compiled up-front so the first page load already has its userscripts;
+    // the store is then mutated in place by the API and re-read per request.
+    let user_script_store = UserScriptStore::new(
+        proxy::userscripts::compile_active_userscripts(&configuration, &client).await,
+    );
+    let user_script_store_clone = user_script_store.clone();
+
+    // Persistent GM_setValue data, loaded once and flushed on a debounce.
+    let gm_storage = GmStorageStore::load().await;
+    let gm_storage_clone = gm_storage.clone();
+
+    let private_network_access =
+        PrivateNetworkAccess::new(configuration.userscripts.allow_private_network_requests);
+
     let (broadcast_tx, _broadcast_rx) = broadcast::channel(32);
     let broadcast_tx_clone = broadcast_tx.clone();
 
@@ -239,6 +257,7 @@ pub async fn start_privaxy() -> PrivaxyServer {
         client.clone(),
         blocker_requester.clone(),
         filter_failure_store.clone(),
+        user_script_store.clone(),
         None,
     )
     .await;
@@ -256,6 +275,9 @@ pub async fn start_privaxy() -> PrivaxyServer {
     let local_exclusion_store_ref = local_exclusion_store.clone();
     let tls_failure_store_ref = tls_failure_store.clone();
     let filter_failure_store_ref = filter_failure_store.clone();
+    let user_script_store_ref = user_script_store.clone();
+    let gm_storage_ref = gm_storage.clone();
+    let private_network_access_ref = private_network_access.clone();
     let stats_clone = statistics.clone();
     let configuration_updater_tx_ref = configuration_updater_tx.clone();
     let configuration_save_lock_ref = configuration_save_lock.clone();
@@ -273,6 +295,9 @@ pub async fn start_privaxy() -> PrivaxyServer {
                 local_exclusion_store_ref.clone(),
                 tls_failure_store_ref.clone(),
                 filter_failure_store_ref.clone(),
+                user_script_store_ref.clone(),
+                gm_storage_ref.clone(),
+                private_network_access_ref.clone(),
                 stats_clone.clone(),
                 block_disable_ref.clone(),
                 configuration_updater_tx_ref.clone(),
@@ -314,11 +339,26 @@ pub async fn start_privaxy() -> PrivaxyServer {
                 statistics.clone(),
                 local_exclusion_store.clone(),
                 tls_failure_store.clone(),
+                user_script_store.clone(),
+                gm_storage.clone(),
+                private_network_access.clone(),
                 cfg_lock_backend.clone(),
                 notify_reload_backend.clone(),
             )
             .await;
-            let cfg = read_configuration(&cfg_lock_backend).await;
+            let cfg = match read_configuration(&cfg_lock_backend).await {
+                Ok(cfg) => cfg,
+                Err(err) => {
+                    // Keep running with the stores as they are and try again on
+                    // the next reload, rather than tearing down a working proxy
+                    // because someone mistyped the configuration file.
+                    log::error!(
+                        "Not applying configuration on reload, it could not be read: {err}. \
+                         Continuing with the previous settings."
+                    );
+                    continue;
+                }
+            };
             // The exclusion store is only otherwise mutated by the web UI
             // route; without this refresh, exclusions edited in the
             // configuration file never take effect on SIGHUP reload.
@@ -326,11 +366,27 @@ pub async fn start_privaxy() -> PrivaxyServer {
             // Same for the TLS-failure ignore set: pick up hand-edited
             // `ignored_tls_failures` entries on SIGHUP reload.
             tls_failure_store.set_ignored(cfg.ignored_tls_failures.clone());
-            let ca_cert = cfg.ca.get_ca_certificate().await.unwrap();
-            let ca_key = cfg.ca.get_ca_private_key().await.unwrap();
-            if !ca_key.public_eq(&rt_ca_certificate.public_key().unwrap()) {
-                rt_ca_certificate = ca_cert.clone();
-                rt_cert_cache = cert::CertCache::new(ca_cert, ca_key);
+            // The API replaces the userscript store in place on every change,
+            // so this refresh exists for the other path: a `[userscripts]`
+            // section edited directly in the configuration file.
+            proxy::userscripts::reload_userscripts(&user_script_store, &cfg, &client).await;
+            private_network_access.set(cfg.userscripts.allow_private_network_requests);
+            // A CA that no longer decodes must not bring the proxy down either;
+            // the existing cert cache stays in use.
+            match (
+                cfg.ca.get_ca_certificate().await,
+                cfg.ca.get_ca_private_key().await,
+            ) {
+                (Ok(ca_cert), Ok(ca_key)) => match rt_ca_certificate.public_key() {
+                    Ok(current_public_key) if ca_key.public_eq(&current_public_key) => {}
+                    _ => {
+                        rt_ca_certificate = ca_cert.clone();
+                        rt_cert_cache = cert::CertCache::new(ca_cert, ca_key);
+                    }
+                },
+                _ => log::error!(
+                    "Keeping the previous CA: the configured certificate or key could not be read"
+                ),
             }
         }
     });
@@ -343,6 +399,8 @@ pub async fn start_privaxy() -> PrivaxyServer {
         local_exclusion_store: local_exclusion_store_clone,
         tls_failure_store: tls_failure_store_clone,
         filter_failure_store: filter_failure_store_clone,
+        user_script_store: user_script_store_clone,
+        gm_storage: gm_storage_clone,
         requests_broadcast_sender: broadcast_tx_clone,
     }
 }
@@ -353,6 +411,9 @@ async fn privaxy_frontend(
     local_exclusion_store: LocalExclusionStore,
     tls_failure_store: TlsFailureStore,
     filter_failure_store: FilterFailureStore,
+    user_script_store: UserScriptStore,
+    gm_storage: GmStorageStore,
+    private_network_access: PrivateNetworkAccess,
     statistics: statistics::Statistics,
     block_disable_ref: blocker::BlockingDisabledStore,
     configuration_updater_tx: tokio::sync::mpsc::Sender<configuration::Configuration>,
@@ -369,10 +430,23 @@ async fn privaxy_frontend(
         &local_exclusion_store,
         &tls_failure_store,
         &filter_failure_store,
+        &user_script_store,
+        &gm_storage,
+        &private_network_access,
         notify_reload.clone(),
         log_handle.clone(),
     );
-    let config = read_configuration(&configuration_save_lock).await;
+    let config = match read_configuration(&configuration_save_lock).await {
+        Ok(config) => config,
+        Err(err) => {
+            // Without a configuration there is nothing to bind to. Wait for the
+            // next reload rather than returning immediately, which would spin
+            // the surrounding loop as fast as it can restart us.
+            log::error!("Cannot start the frontend, the configuration could not be read: {err}");
+            notify_reload.notified().await;
+            return;
+        }
+    };
     let ip = env_or_config_ip(&config.network).await;
     let web_api_server_addr = SocketAddr::from((ip, config.network.web_port));
     if config.network.tls {
@@ -525,15 +599,47 @@ async fn serve_frontend<F, S>(
     graceful.shutdown().await;
 }
 
+/// The last configuration that parsed.
+///
+/// `SIGHUP` tears the server loops down before anything has looked at the new
+/// file, so a configuration that fails to parse would otherwise leave both
+/// listeners closed until the next signal. Keeping the previous one lets a reload
+/// over a broken file degrade to "carry on with the old settings".
+static LAST_GOOD_CONFIGURATION: std::sync::Mutex<Option<configuration::Configuration>> =
+    std::sync::Mutex::new(None);
+
+/// Read the configuration from disk under the save lock, falling back to the
+/// last one that parsed.
+///
+/// Returns an error rather than unwrapping: a hand-edited configuration with a
+/// syntax error (a duplicate TOML key, say) used to panic a worker here, which
+/// took both server loops down while the process kept running — ports stopped
+/// listening with no way back short of a restart. An error now only surfaces
+/// when there is no previous configuration to fall back on, i.e. at startup,
+/// where there is genuinely nothing to serve.
 async fn read_configuration(
     configuration_save_lock: &Arc<tokio::sync::Mutex<()>>,
-) -> configuration::Configuration {
+) -> configuration::ConfigurationResult<configuration::Configuration> {
     let lock = configuration_save_lock.lock().await;
-    let config = configuration::Configuration::read_from_home()
-        .await
-        .unwrap();
+    let result = configuration::Configuration::read_from_home().await;
     drop(lock);
-    config
+
+    match result {
+        Ok(config) => {
+            *LAST_GOOD_CONFIGURATION.lock().unwrap() = Some(config.clone());
+            Ok(config)
+        }
+        Err(err) => match LAST_GOOD_CONFIGURATION.lock().unwrap().clone() {
+            Some(previous) => {
+                log::error!(
+                    "The configuration file could not be read ({err}); continuing with the last \
+                     settings that loaded. Fix the file and reload again to apply it."
+                );
+                Ok(previous)
+            }
+            None => Err(err),
+        },
+    }
 }
 async fn env_or_config_ip(network_config: &NetworkConfig) -> IpAddr {
     match env::var("PRIVAXY_IP_ADDRESS") {
@@ -619,6 +725,9 @@ async fn privaxy_backend(
     statistics: statistics::Statistics,
     local_exclusion_store: LocalExclusionStore,
     tls_failure_store: TlsFailureStore,
+    user_script_store: UserScriptStore,
+    gm_storage: GmStorageStore,
+    private_network_access: PrivateNetworkAccess,
     configuration_save_lock: Arc<tokio::sync::Mutex<()>>,
     notify_reload: Arc<tokio::sync::Notify>,
 ) {
@@ -637,13 +746,33 @@ async fn privaxy_backend(
         .https_or_http()
         .enable_http1()
         .wrap_connector(http_connector);
-    let config = read_configuration(&configuration_save_lock).await;
+    let config = match read_configuration(&configuration_save_lock).await {
+        Ok(config) => config,
+        Err(err) => {
+            // As in the frontend loop: nothing to bind to, and returning at once
+            // would spin the caller's restart loop.
+            log::error!("Cannot start the proxy, the configuration could not be read: {err}");
+            notify_reload.notified().await;
+            return;
+        }
+    };
     let network_config = &config.network;
     let web_gui_url = WebGuiUrl::from_network_config(network_config).await;
     let doh_config = network_config.doh.clone();
     // Read once per (re)start; the backend loop re-runs this on reload, so
     // toggling the setting in the UI takes effect after its notify_reload.
     let scriptlet_debug_logging = config.debug.scriptlet_console_logging;
+
+    // Everything the request path needs for userscripts. The signing key is
+    // captured here so minting (at injection) and verification (on the reserved
+    // endpoint) always agree, even if the stored key is rotated mid-run: both
+    // sides keep using this copy until the next reload.
+    let user_scripts = UserScriptContext {
+        store: user_script_store,
+        gm_storage,
+        endpoint_signing_key: config.auth.session_signing_key.clone(),
+        allow_private_network_requests: private_network_access,
+    };
 
     // The hyper client is only used to perform upgrades. We don't need to
     // handle compression.
@@ -710,6 +839,7 @@ async fn privaxy_backend(
                 let statistics = statistics.clone();
                 let local_exclusion_store = local_exclusion_store.clone();
                 let tls_failure_store = tls_failure_store.clone();
+                let user_scripts = user_scripts.clone();
                 let doh_config = doh_config.clone();
                 // The address the client dialed to reach the proxy is the best
                 // guess for a GUI host when none is configured; it must be read
@@ -732,6 +862,7 @@ async fn privaxy_backend(
                         scriptlet_debug_logging,
                         tls_failure_store.clone(),
                         gui_base_url.clone(),
+                        user_scripts.clone(),
                     )
                 });
 

@@ -1,5 +1,7 @@
 use super::doh::{self, DohAction};
+use super::gm::endpoint as gm_endpoint;
 use super::html_rewriter::Rewriter;
+use super::userscripts::UserScriptContext;
 use super::{body_channel, boxed_incoming, empty_body, full_body, BodySender, ProxyBody};
 use crate::blocker::AdblockRequester;
 use crate::configuration::DohConfig;
@@ -11,7 +13,7 @@ use bytes::Bytes;
 use futures::TryStreamExt;
 use http::uri::{Authority, Scheme};
 use http::{HeaderMap, HeaderValue, Request, Response, StatusCode, Uri};
-use http_body_util::BodyStream;
+use http_body_util::{BodyExt, BodyStream, Limited};
 use hyper::body::{Frame, Incoming};
 use hyper_rustls::HttpsConnector;
 use hyper_util::client::legacy::connect::HttpConnector;
@@ -19,6 +21,7 @@ use hyper_util::client::legacy::Client as HyperClient;
 use hyper_util::rt::TokioIo;
 use std::net::IpAddr;
 use tokio::sync::broadcast;
+use url::Url;
 
 /// Type of the hyper client used for upgrade tunneling (websockets, etc.).
 pub(crate) type UpgradeClient = HyperClient<HttpsConnector<HttpConnector>, ProxyBody>;
@@ -44,6 +47,10 @@ const CSP_HEADERS: [&str; 3] = [
     "x-content-security-policy",
     "x-webkit-csp",
 ];
+
+/// Cap on a buffered request body for the reserved endpoints. Generous for a
+/// batch of `GM_setValue` writes and far below anything worth buffering.
+const MAX_RESERVED_ENDPOINT_BODY_BYTES: usize = 256 * 1024;
 
 /// 16 random bytes → 22 chars of url-safe base64. Plenty of entropy and
 /// avoids `=` padding that some CSP parsers historically choked on.
@@ -277,6 +284,7 @@ pub(crate) async fn serve(
     doh_config: DohConfig,
     scriptlet_debug_logging: bool,
     gui_base_url: Option<String>,
+    user_scripts: UserScriptContext,
 ) -> Result<Response<ProxyBody>, hyper::Error> {
     let scheme_string = scheme.to_string();
 
@@ -297,6 +305,25 @@ pub(crate) async fn serve(
 
     if request.headers().contains_key(http::header::UPGRADE) {
         return Ok(perform_two_ends_upgrade(request, uri, hyper_client).await);
+    }
+
+    // Requests to the reserved path are answered by the proxy on the page's own
+    // origin and never forwarded upstream, which is what lets a userscript
+    // running in the page's main world reach Privaxy without CORS. Handled
+    // before any statistics counting: these are not proxied traffic.
+    if gm_endpoint::is_reserved(uri.path()) {
+        let (parts, body) = request.into_parts();
+        // Bounded so a hostile page cannot make the proxy buffer an unbounded
+        // body; an oversized request simply fails to parse below.
+        let collected = Limited::new(body, MAX_RESERVED_ENDPOINT_BODY_BYTES)
+            .collect()
+            .await
+            .map(|collected| collected.to_bytes())
+            .unwrap_or_default();
+
+        return Ok(
+            gm_endpoint::handle(&uri, &parts.method, &collected, &user_scripts, &client).await,
+        );
     }
 
     let (mut parts, body) = request.into_parts();
@@ -488,6 +515,27 @@ pub(crate) async fn serve(
             .get_cosmetic_response(match_url.clone(), Vec::new(), Vec::new())
             .await;
 
+        // Userscripts are matched against the same canonical URL the adblock
+        // engine uses. The store is consulted per request rather than captured
+        // once per proxy start, so scripts added or toggled in the web UI apply
+        // to the very next page load without a reload.
+        let matched_user_scripts = if user_scripts.store.is_empty() {
+            Vec::new()
+        } else {
+            match Url::parse(&match_url) {
+                Ok(url) => user_scripts.store.matching(&url),
+                Err(err) => {
+                    log::debug!("Not matching userscripts against {match_url}: {err}");
+                    Vec::new()
+                }
+            }
+        };
+
+        // Minted per page and handed to the in-page runtime so it can persist
+        // GM values. Bound to this origin; see `userscript_token`.
+        let endpoint_token = gm_endpoint::origin_of(&uri)
+            .map(|origin| super::gm::token::mint(&origin, &user_scripts.endpoint_signing_key));
+
         let rewriter = Rewriter::new(
             match_url.clone(),
             adblock_requester,
@@ -498,6 +546,9 @@ pub(crate) async fn serve(
             head_cosmetics.injected_script,
             head_cosmetics.procedural_filters,
             scriptlet_debug_logging,
+            matched_user_scripts,
+            user_scripts.gm_storage.clone(),
+            endpoint_token,
         );
 
         tokio::task::spawn_blocking(|| rewriter.rewrite());
