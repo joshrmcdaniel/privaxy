@@ -8,7 +8,7 @@ use hyper::body::Frame;
 use lol_html::html_content::ContentType;
 use lol_html::{element, HtmlRewriter, Settings};
 use regex::Regex;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 
@@ -40,6 +40,22 @@ pub struct Rewriter {
     // `ProceduralOrActionFilter`; they're handed to the in-page shim injected
     // into `<head>` alongside the scriptlets.
     procedural_filters: Vec<String>,
+    // Whether this URL is expected to produce plain-CSS cosmetic rules, decided
+    // from the URL-scoped lookup done before the body was parsed.
+    //
+    // The document is styled by the `<style>` block appended at end-of-body, but
+    // that is an *author-origin* stylesheet and so stops at every shadow
+    // boundary. uBO does not have this problem: an extension injects cosmetic CSS
+    // with `insertCSS` at **user** origin, and user-origin sheets do pierce shadow
+    // roots — which is why rules targeting shadow content exist in the lists and
+    // work everywhere else. A proxy has no user-origin privilege, so the shim
+    // adopts the rules into each root itself.
+    //
+    // Only the *fact* that there will be rules travels through here. The rules
+    // themselves are read back out of the emitted block by the shim, so they are
+    // not serialized into the page a second time — on a typical host that would
+    // duplicate ~36 KB of CSS per response.
+    expect_cosmetic_css: bool,
     // When set (config `debug.scriptlet_console_logging`), the empty
     // per-scriptlet `catch` emitted by adblock-rust is rewritten to log the
     // caught error to the page console instead of swallowing it.
@@ -57,10 +73,17 @@ pub struct Rewriter {
     endpoint_token: Option<String>,
 }
 
-/// In-page evaluator for procedural cosmetic filters. Defines the idempotent
-/// `window.__privaxyApplyProcedural(filters)` global; see the source file for
-/// the supported operators and actions.
-const PROCEDURAL_COSMETICS_SHIM: &str = include_str!("../../resources/procedural_cosmetics.js");
+/// In-page evaluator for procedural cosmetic filters, and the only path by which
+/// plain cosmetic CSS reaches a shadow root. Defines the idempotent
+/// `window.__privaxyApplyProcedural(filters, expectCosmeticCss)` global; see the
+/// source file for the supported operators and actions.
+///
+/// Taken from `OUT_DIR`, not `src/resources`: `build.rs` strips the comments out
+/// first, because this is injected inline into most HTML responses and the proxy
+/// sends them uncompressed. Read `src/resources/procedural_cosmetics.js` for the
+/// commented original.
+const PROCEDURAL_COSMETICS_SHIM: &str =
+    include_str!(concat!(env!("OUT_DIR"), "/procedural_cosmetics.js"));
 
 /// In-page userscript runtime; defines `window.__privaxyRunUserScript`.
 const USERSCRIPT_SHIM: &str = include_str!("../../resources/userscript_shim.js");
@@ -95,6 +118,35 @@ const USERSCRIPT_API_NAMES: &[&str] = &[
     "GM",
 ];
 
+/// Marks the end-of-body cosmetic `<style>` block so the in-page shim can find
+/// it and adopt its rules into shadow roots.
+///
+/// The shim looks this attribute up by name (`procedural_cosmetics.js`, see
+/// `cosmeticCss`); the two must stay in step. Reading the block back is what
+/// keeps the rules from being serialized into the page twice, and it also means
+/// roots receive the class/id-indexed generic selectors, which only exist once
+/// the document has been scanned.
+const COSMETIC_STYLE_MARKER: &str = "data-privaxy-cosmetics";
+
+/// Render cosmetic selectors as a CSS payload: the hide selectors first, then
+/// the ones that set styles.
+fn build_cosmetic_css(
+    hidden_selectors: &[String],
+    style_selectors: &HashMap<String, Vec<String>>,
+) -> String {
+    let hidden: String = hidden_selectors
+        .iter()
+        .map(|selector| format!("{} {{ display: none !important; }}", selector))
+        .collect();
+
+    let styles: String = style_selectors
+        .iter()
+        .map(|(selector, content)| format!("{} {{ {} }}", selector, content.join(";")))
+        .collect();
+
+    format!("{hidden}\n{styles}")
+}
+
 /// Neutralize any `</script` sequence in JavaScript destined for an inline
 /// `<script>` element: the HTML parser ends the element at the first such
 /// sequence regardless of JavaScript string quoting.
@@ -122,6 +174,7 @@ impl Rewriter {
         csp_nonce: String,
         injected_script: Option<String>,
         procedural_filters: Vec<String>,
+        expect_cosmetic_css: bool,
         scriptlet_debug_logging: bool,
         user_scripts: Vec<Arc<CompiledUserScript>>,
         gm_storage: GmStorageStore,
@@ -137,6 +190,7 @@ impl Rewriter {
             csp_nonce,
             injected_script,
             procedural_filters,
+            expect_cosmetic_css,
             scriptlet_debug_logging,
             user_scripts,
             gm_storage,
@@ -151,9 +205,16 @@ impl Rewriter {
     fn build_head_script(
         injected_script: Option<String>,
         procedural_filters: &[String],
+        expect_cosmetic_css: bool,
         scriptlet_debug_logging: bool,
     ) -> Option<String> {
-        if injected_script.is_none() && procedural_filters.is_empty() {
+        // The shim is needed for plain CSS as well as procedural rules now: it is
+        // the only way plain rules reach a shadow root. Procedural rules are rare
+        // (most hosts have none), so gating solely on them would leave shadow
+        // roots unstyled on essentially every page.
+        let shim_needed = !procedural_filters.is_empty() || expect_cosmetic_css;
+
+        if injected_script.is_none() && !shim_needed {
             return None;
         }
 
@@ -182,16 +243,21 @@ impl Rewriter {
             payload.push_str(&script);
         }
 
-        if !procedural_filters.is_empty() {
+        if shim_needed {
             if !payload.is_empty() {
                 payload.push('\n');
             }
             payload.push_str(PROCEDURAL_COSMETICS_SHIM);
             // Each filter is already valid JSON, so they're spliced straight
-            // into an array literal without re-serialization.
+            // into an array literal without re-serialization. The second argument
+            // tells the shim to expect a cosmetic `<style>` block later in the
+            // document; without it a page whose only cosmetic rules are plain CSS
+            // would look like nothing to do.
             payload.push_str(";window.__privaxyApplyProcedural([");
             payload.push_str(&procedural_filters.join(","));
-            payload.push_str("]);");
+            payload.push_str("],");
+            payload.push_str(if expect_cosmetic_css { "true" } else { "false" });
+            payload.push_str(");");
         }
 
         Some(payload)
@@ -335,18 +401,24 @@ impl Rewriter {
     /// Everything the rewriter prepends to `<head>`: the blocking payload
     /// (scriptlets plus the procedural-cosmetics shim) followed by any matched
     /// userscripts. Returns `None` when there is nothing to inject.
+    #[allow(clippy::too_many_arguments)]
     fn build_head_html(
         injected_script: Option<String>,
         procedural_filters: &[String],
+        expect_cosmetic_css: bool,
         scriptlet_debug_logging: bool,
         user_scripts: &[Arc<CompiledUserScript>],
         csp_nonce: &str,
         gm_storage: &GmStorageStore,
         endpoint_token: Option<&str>,
     ) -> Option<String> {
-        let blocking_payload =
-            Self::build_head_script(injected_script, procedural_filters, scriptlet_debug_logging)
-                .map(|payload| inline_script_tag(&payload, csp_nonce));
+        let blocking_payload = Self::build_head_script(
+            injected_script,
+            procedural_filters,
+            expect_cosmetic_css,
+            scriptlet_debug_logging,
+        )
+        .map(|payload| inline_script_tag(&payload, csp_nonce));
 
         let userscript_tags =
             Self::build_userscript_tags(user_scripts, csp_nonce, gm_storage, endpoint_token);
@@ -391,6 +463,7 @@ impl Rewriter {
         let pending_script = Arc::new(Mutex::new(Self::build_head_html(
             self.injected_script,
             &self.procedural_filters,
+            self.expect_cosmetic_css,
             self.scriptlet_debug_logging,
             &self.user_scripts,
             &csp_nonce,
@@ -504,35 +577,32 @@ impl Rewriter {
                     )
                     .await;
 
-                let hidden_selectors: String = blocker_result
-                    .hidden_selectors
-                    .into_iter()
-                    .map(|selector| format!("{} {{ display: none !important; }}", selector))
-                    .collect();
-
-                let style_selectors: String = blocker_result
-                    .style_selectors
-                    .into_iter()
-                    .map(|(selector, content)| format!("{} {{ {} }}", selector, content.join(";")))
-                    .collect();
+                // This lookup passes the collected IDs and classes, so unlike the
+                // URL-scoped set handed to the shim it also contains the
+                // class/id-indexed generic selectors.
+                let cosmetic_css = build_cosmetic_css(
+                    &blocker_result.hidden_selectors,
+                    &blocker_result.style_selectors,
+                );
 
                 // Count the response as modified whenever we inject any cosmetic
                 // rules — hide selectors as well as style selectors. Previously
                 // only style selectors flipped this flag, so pages where we hid
                 // ad elements via `display: none` were undercounted.
-                let response_has_been_modified =
-                    !hidden_selectors.is_empty() || !style_selectors.is_empty();
+                let response_has_been_modified = !cosmetic_css.trim().is_empty();
 
                 // Scriptlets (`blocker_result.injected_script`) are intentionally
                 // ignored here: they're injected into <head> from the rewriter
                 // path so they run before the page's own scripts.
                 let _ = blocker_result.injected_script;
 
+                // The marker attribute is what lets the in-page shim find this
+                // block and adopt its rules into shadow roots, which
+                // author-origin CSS cannot reach on its own.
                 let mut to_append_to_response = format!(
                     r#"
 <!-- privaxy proxy -->
-<style nonce="{csp_nonce}">{hidden_selectors}
-{style_selectors}
+<style nonce="{csp_nonce}" {COSMETIC_STYLE_MARKER}>{cosmetic_css}
 </style>
 <!-- privaxy proxy -->"#
                 );

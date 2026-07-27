@@ -515,6 +515,20 @@ pub(crate) async fn serve(
             .get_cosmetic_response(match_url.clone(), Vec::new(), Vec::new())
             .await;
 
+        // Whether the end-of-body lookup will produce a non-empty cosmetic
+        // `<style>` block. The shim reads its rules out of that block to adopt
+        // them into shadow roots — author-origin CSS cannot cross a shadow
+        // boundary — but the block only exists after the body has been parsed, so
+        // the decision to inject the shim at all has to be made from here.
+        //
+        // This is a prediction, and an exact one in practice: the end-of-body
+        // lookup adds the class/id-indexed generic selectors on top of what is
+        // seen here, and those are only collected when `generichide` is off — in
+        // which case the URL-scoped set already carries the generic selectors that
+        // are not class/id-indexable, and is non-empty.
+        let expect_cosmetic_css = !head_cosmetics.hidden_selectors.is_empty()
+            || !head_cosmetics.style_selectors.is_empty();
+
         // Userscripts are matched against the same canonical URL the adblock
         // engine uses. The store is consulted per request rather than captured
         // once per proxy start, so scripts added or toggled in the web UI apply
@@ -545,6 +559,7 @@ pub(crate) async fn serve(
             csp_nonce.expect("csp_nonce is Some whenever is_html"),
             head_cosmetics.injected_script,
             head_cosmetics.procedural_filters,
+            expect_cosmetic_css,
             scriptlet_debug_logging,
             matched_user_scripts,
             user_scripts.gm_storage.clone(),
