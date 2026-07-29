@@ -2191,6 +2191,7 @@ dependencies = [
  "mime_guess",
  "once_cell",
  "openssl",
+ "portable-atomic",
  "regex",
  "reqwest",
  "rustls",

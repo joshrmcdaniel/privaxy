@@ -1,11 +1,9 @@
+use portable_atomic::{AtomicU64, Ordering};
 use serde::Serialize;
 use std::{
     collections::HashMap,
     net::IpAddr,
-    sync::{
-        atomic::{AtomicU64, Ordering},
-        Arc, Mutex,
-    },
+    sync::{Arc, Mutex},
 };
 use uluru::LRUCache;
 
