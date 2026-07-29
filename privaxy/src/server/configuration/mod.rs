@@ -8,6 +8,7 @@ mod filter;
 mod filter_failures;
 mod network;
 mod updater;
+mod userscript;
 pub use auth::*;
 pub use ca::*;
 pub use filter::*;
@@ -17,6 +18,7 @@ pub use network::*;
 use std::env;
 use std::path::{Path, PathBuf};
 pub use updater::*;
+pub use userscript::*;
 
 use crate::proxy::exclusions::recommended_exclusions;
 use crate::proxy::tls_failures::TlsFailureStore;
@@ -53,6 +55,12 @@ pub enum ConfigurationError {
     FilterError(String),
     #[error("filter validation error: {0}")]
     FilterValidationError(String),
+    #[error("userscript error: {0}")]
+    UserScript(#[from] UserScriptError),
+    #[error("unable to fetch userscript: {0}")]
+    UserScriptFetchError(String),
+    #[error("no userscript with file name {0}")]
+    UserScriptNotFound(String),
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -71,6 +79,11 @@ pub struct Configuration {
     pub auth: Auth,
     #[serde(default)]
     pub debug: DebugConfig,
+    /// Userscripts and the master switch governing them. Absent from
+    /// configuration files written before the feature existed, hence the serde
+    /// default.
+    #[serde(default)]
+    pub userscripts: UserScriptsConfig,
 }
 
 /// Opt-in diagnostics. Off by default — these add visible/observable behavior to
@@ -347,6 +360,144 @@ impl Configuration {
         Ok(())
     }
 
+    pub async fn set_userscript_enabled_status(
+        &mut self,
+        file_name: &str,
+        enabled: bool,
+    ) -> ConfigurationResult<()> {
+        let script = self
+            .userscripts
+            .scripts
+            .iter_mut()
+            .find(|script| script.file_name == file_name)
+            .ok_or_else(|| ConfigurationError::UserScriptNotFound(file_name.to_string()))?;
+
+        script.enabled = enabled;
+
+        self.save().await
+    }
+
+    /// Install `script` with the given body, taking its title from the parsed
+    /// `@name`.
+    ///
+    /// The body is parsed before anything is written, so a script that could
+    /// never run is refused rather than stored.
+    pub async fn add_userscript(
+        &mut self,
+        mut script: UserScript,
+        body: &str,
+    ) -> ConfigurationResult<UserScript> {
+        let metadata = UserScriptMetadata::parse(body)?;
+        script.title = metadata.name;
+
+        script.write_body(body).await?;
+        self.userscripts.scripts.push(script.clone());
+        self.save().await?;
+
+        Ok(script)
+    }
+
+    /// Replace the body of the script identified by `file_name`, refreshing its
+    /// title from the new `@name`. The identity (and therefore the on-disk file)
+    /// is preserved, so an edit never orphans a body.
+    pub async fn replace_userscript_body(
+        &mut self,
+        file_name: &str,
+        body: &str,
+    ) -> ConfigurationResult<UserScript> {
+        let metadata = UserScriptMetadata::parse(body)?;
+
+        let script = self
+            .userscripts
+            .scripts
+            .iter_mut()
+            .find(|script| script.file_name == file_name)
+            .ok_or_else(|| ConfigurationError::UserScriptNotFound(file_name.to_string()))?;
+
+        script.title = metadata.name;
+        let script = script.clone();
+
+        script.write_body(body).await?;
+        self.save().await?;
+
+        Ok(script)
+    }
+
+    /// Uninstall a script, removing both its configuration entry and its body.
+    pub async fn remove_userscript(&mut self, file_name: &str) -> ConfigurationResult<()> {
+        let index = self
+            .userscripts
+            .scripts
+            .iter()
+            .position(|script| script.file_name == file_name)
+            .ok_or_else(|| ConfigurationError::UserScriptNotFound(file_name.to_string()))?;
+
+        let script = self.userscripts.scripts.remove(index);
+
+        self.save().await?;
+        script.delete_body().await?;
+
+        Ok(())
+    }
+
+    /// Re-fetch every enabled script that was installed from a URL.
+    ///
+    /// Individual failures are logged and skipped: a script whose upstream has
+    /// moved keeps running from its on-disk copy. Returns one outcome per script
+    /// attempted so callers can report what actually changed.
+    pub async fn update_userscripts(
+        &mut self,
+        http_client: &reqwest::Client,
+    ) -> Vec<UserScriptRefresh> {
+        let futures = self
+            .userscripts
+            .scripts
+            .iter_mut()
+            .filter(|script| script.enabled && script.url.is_some())
+            .map(|script| async move {
+                let result = script.update(http_client).await;
+                (script, result)
+            });
+
+        let mut outcomes = Vec::new();
+        for (script, result) in join_all(futures).await {
+            outcomes.push(match result {
+                Ok(UserScriptUpdate::Updated { version }) => {
+                    log::info!(
+                        "Updated userscript '{}'{}",
+                        script.title,
+                        version
+                            .as_deref()
+                            .map(|version| format!(" to {version}"))
+                            .unwrap_or_default()
+                    );
+                    UserScriptRefresh {
+                        file_name: script.file_name.clone(),
+                        title: script.title.clone(),
+                        outcome: RefreshOutcome::Updated { version },
+                    }
+                }
+                Ok(UserScriptUpdate::AlreadyCurrent) => UserScriptRefresh {
+                    file_name: script.file_name.clone(),
+                    title: script.title.clone(),
+                    outcome: RefreshOutcome::AlreadyCurrent,
+                },
+                Err(err) => {
+                    log::warn!("Failed to update userscript '{}': {err}", script.title);
+                    UserScriptRefresh {
+                        file_name: script.file_name.clone(),
+                        title: script.title.clone(),
+                        outcome: RefreshOutcome::Failed {
+                            error: err.to_string(),
+                        },
+                    }
+                }
+            });
+        }
+
+        outcomes
+    }
+
     pub async fn set_network_settings(
         &mut self,
         network_config: &NetworkConfig,
@@ -417,6 +568,7 @@ impl Configuration {
             custom_filters: Vec::new(),
             auth: Auth::new_initialized(),
             debug: DebugConfig::default(),
+            userscripts: UserScriptsConfig::default(),
         })
     }
 }

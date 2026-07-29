@@ -6,6 +6,7 @@ use crate::general::GeneralSettings;
 use crate::pac::PacSettingsPage;
 use crate::set_title;
 use crate::settings_textarea::SettingsTextarea;
+use crate::userscripts::UserScriptsPage;
 use yew::prelude::*;
 use yew::{html, Html};
 use yew_router::prelude::*;
@@ -20,6 +21,8 @@ pub enum SettingsRoute {
     Exclusions,
     #[at("/settings/custom-filters")]
     CustomFilters,
+    #[at("/settings/userscripts")]
+    Userscripts,
     #[at("/settings/pac")]
     Pac,
     #[at("/settings/account")]
@@ -89,6 +92,11 @@ pub fn switch_settings(route: SettingsRoute) -> Html {
 
             html! {<SettingsTextarea h1="Custom Filters" {description} input_name="custom_filters" {textarea_description} {resource_url} />}
         }
+        SettingsRoute::Userscripts => {
+            set_title("Settings - Userscripts");
+
+            html! { <UserScriptsPage /> }
+        }
         SettingsRoute::Pac => {
             set_title("Settings - PAC");
 
@@ -112,6 +120,7 @@ pub fn switch_settings(route: SettingsRoute) -> Html {
         <Link<SettingsRoute> classes={get_classes(route, SettingsRoute::Filters)} to={SettingsRoute::Filters}> <span class="truncate">{ "Filters" }</span></Link<SettingsRoute>>
         <Link<SettingsRoute> classes={get_classes(route, SettingsRoute::Exclusions)} to={SettingsRoute::Exclusions}> <span class="truncate">{ "Exclusions" }</span></Link<SettingsRoute>>
         <Link<SettingsRoute> classes={get_classes(route, SettingsRoute::CustomFilters)} to={SettingsRoute::CustomFilters}> <span class="truncate">{ "Custom filters" }</span></Link<SettingsRoute>>
+        <Link<SettingsRoute> classes={get_classes(route, SettingsRoute::Userscripts)} to={SettingsRoute::Userscripts}> <span class="truncate">{ "Userscripts" }</span></Link<SettingsRoute>>
         <Link<SettingsRoute> classes={get_classes(route, SettingsRoute::Pac)} to={SettingsRoute::Pac}> <span class="truncate">{ "PAC" }</span></Link<SettingsRoute>>
         <Link<SettingsRoute> classes={get_classes(route, SettingsRoute::Account)} to={SettingsRoute::Account}> <span class="truncate">{ "Account" }</span></Link<SettingsRoute>>
         <Link<SettingsRoute> classes={get_classes(route, SettingsRoute::Debug)} to={SettingsRoute::Debug}> <span class="truncate">{ "Debug" }</span></Link<SettingsRoute>>

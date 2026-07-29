@@ -1,5 +1,6 @@
 use super::serve::UpgradeClient;
 use super::tls_failures::TlsFailureStore;
+use super::userscripts::UserScriptContext;
 use super::{empty_body, exclusions::LocalExclusionStore, serve::serve, ProxyBody};
 use crate::{
     blocker::AdblockRequester, cert::CertCache, configuration::DohConfig, statistics::Statistics,
@@ -35,6 +36,7 @@ pub(crate) async fn serve_mitm_session(
     scriptlet_debug_logging: bool,
     tls_failure_store: TlsFailureStore,
     gui_base_url: Option<String>,
+    user_scripts: UserScriptContext,
 ) -> Result<Response<ProxyBody>, hyper::Error> {
     let raw_authority = match req.uri().authority().cloned() {
         Some(authority) => authority,
@@ -125,6 +127,7 @@ pub(crate) async fn serve_mitm_session(
                                             doh_config.clone(),
                                             scriptlet_debug_logging,
                                             gui_base_url.clone(),
+                                            user_scripts.clone(),
                                         )
                                     }),
                                 )
@@ -208,6 +211,7 @@ pub(crate) async fn serve_mitm_session(
             doh_config,
             scriptlet_debug_logging,
             gui_base_url,
+            user_scripts,
         )
         .await
     }

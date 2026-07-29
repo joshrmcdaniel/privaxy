@@ -3,8 +3,10 @@ pub(crate) mod mitm;
 pub(crate) mod serve;
 pub(crate) use mitm::serve_mitm_session;
 pub(crate) mod exclusions;
+pub(crate) mod gm;
 pub(crate) mod html_rewriter;
 pub(crate) mod tls_failures;
+pub(crate) mod userscripts;
 
 use bytes::Bytes;
 use http_body_util::{combinators::BoxBody, BodyExt, Empty, Full, StreamBody};

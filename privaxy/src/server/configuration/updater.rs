@@ -1,5 +1,6 @@
 use super::FilterFailureStore;
 use crate::blocker::AdblockRequester;
+use crate::proxy::userscripts::{reload_userscripts, UserScriptStore};
 use futures::future::{AbortHandle, Abortable};
 
 use tokio::sync::mpsc::Receiver;
@@ -12,6 +13,9 @@ pub struct ConfigurationUpdater {
     http_client: reqwest::Client,
     adblock_requester: AdblockRequester,
     filter_failure_store: FilterFailureStore,
+    /// Refreshed on the same timer as the filter lists, so a userscript
+    /// installed from a URL actually picks up upstream changes.
+    user_script_store: UserScriptStore,
 }
 
 impl ConfigurationUpdater {
@@ -20,6 +24,7 @@ impl ConfigurationUpdater {
         http_client: reqwest::Client,
         adblock_requester: AdblockRequester,
         filter_failure_store: FilterFailureStore,
+        user_script_store: UserScriptStore,
         tx_rx: Option<(
             sync::mpsc::Sender<super::Configuration>,
             sync::mpsc::Receiver<super::Configuration>,
@@ -35,6 +40,7 @@ impl ConfigurationUpdater {
         let http_client_clone = http_client.clone();
         let adblock_requester_clone = adblock_requester.clone();
         let filter_failure_store_clone = filter_failure_store.clone();
+        let user_script_store_clone = user_script_store.clone();
 
         let filters_updater = Abortable::new(
             async move {
@@ -43,6 +49,7 @@ impl ConfigurationUpdater {
                     adblock_requester_clone,
                     http_client_clone.clone(),
                     filter_failure_store_clone,
+                    user_script_store_clone,
                 )
                 .await
             },
@@ -58,6 +65,7 @@ impl ConfigurationUpdater {
             http_client,
             adblock_requester,
             filter_failure_store,
+            user_script_store,
         }
     }
 
@@ -86,6 +94,7 @@ impl ConfigurationUpdater {
                 let adblock_requester_clone = self.adblock_requester.clone();
                 let http_client_clone = self.http_client.clone();
                 let filter_failure_store_clone = self.filter_failure_store.clone();
+                let user_script_store_clone = self.user_script_store.clone();
 
                 let (abort_handle, abort_registration) = AbortHandle::new_pair();
                 self.filters_updater_abort_handle = abort_handle;
@@ -97,6 +106,7 @@ impl ConfigurationUpdater {
                             adblock_requester_clone,
                             http_client_clone,
                             filter_failure_store_clone,
+                            user_script_store_clone,
                         )
                         .await;
                     },
@@ -113,6 +123,7 @@ impl ConfigurationUpdater {
         adblock_requester: AdblockRequester,
         http_client: reqwest::Client,
         filter_failure_store: FilterFailureStore,
+        user_script_store: UserScriptStore,
     ) {
         loop {
             tokio::time::sleep(super::FILTERS_UPDATE_AFTER).await;
@@ -131,7 +142,30 @@ impl ConfigurationUpdater {
             .await;
             adblock_requester.replace_engine(filters).await;
 
-            log::info!("Updated filters");
+            // Userscripts installed from a URL are refreshed on the same timer,
+            // then recompiled so the new bodies are actually injected.
+            //
+            // Read from disk rather than using this task's `configuration`: the
+            // userscript API deliberately does not push through the updater
+            // channel (that would rebuild the adblock engine for a change which
+            // has nothing to do with filters), so this copy is stale with respect
+            // to userscripts — recompiling the store from it would wipe every
+            // script installed since startup. `Configuration::save` renames a
+            // fully-written temporary file into place, so a concurrent write is
+            // observed either wholly or not at all even without the save lock.
+            //
+            // Only on-disk bodies are refreshed: this task holds no save lock, so
+            // it must not write the configuration file, and a changed `@name` is
+            // picked up the next time the API touches that script.
+            match super::Configuration::read_from_home().await {
+                Ok(mut current) => {
+                    current.update_userscripts(&http_client).await;
+                    reload_userscripts(&user_script_store, &current, &http_client).await;
+                }
+                Err(err) => log::warn!("Skipping the userscript refresh: {err}"),
+            }
+
+            log::info!("Updated filters and userscripts");
         }
     }
 }

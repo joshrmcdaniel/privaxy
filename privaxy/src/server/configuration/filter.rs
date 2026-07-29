@@ -253,7 +253,7 @@ impl DefaultFilters {
     }
 }
 
-fn calculate_sha256_hex(input: &str) -> String {
+pub(crate) fn calculate_sha256_hex(input: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(input);
     hex::encode(hasher.finalize())
