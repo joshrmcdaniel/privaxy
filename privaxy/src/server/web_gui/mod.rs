@@ -1,7 +1,9 @@
 use crate::configuration::FilterFailureStore;
 use crate::logging::LogHandle;
 use crate::proxy::exclusions::LocalExclusionStore;
+use crate::proxy::gm::storage::GmStorageStore;
 use crate::proxy::tls_failures::TlsFailureStore;
+use crate::proxy::userscripts::{PrivateNetworkAccess, UserScriptStore};
 use crate::statistics::Statistics;
 use crate::WEBAPP_FRONTEND_DIR;
 use crate::{blocker::BlockingDisabledStore, configuration::Configuration};
@@ -26,6 +28,7 @@ mod pac;
 pub(crate) mod settings;
 pub(crate) mod statistics;
 pub(crate) mod tls_failures;
+pub(crate) mod userscripts;
 
 #[derive(Debug, Serialize)]
 pub(crate) struct ApiError {
@@ -41,6 +44,9 @@ pub(crate) fn get_frontend(
     local_exclusions_store: &LocalExclusionStore,
     tls_failure_store: &TlsFailureStore,
     filter_failure_store: &FilterFailureStore,
+    user_script_store: &UserScriptStore,
+    gm_storage: &GmStorageStore,
+    private_network_access: &PrivateNetworkAccess,
     notify_reload: Arc<Notify>,
     log_handle: LogHandle,
 ) -> BoxedFilter<(impl warp::Reply,)> {
@@ -66,6 +72,9 @@ pub(crate) fn get_frontend(
         local_exclusions_store,
         tls_failure_store,
         filter_failure_store,
+        user_script_store,
+        gm_storage,
+        private_network_access,
         http_client,
         notify_reload,
         log_handle,
@@ -119,6 +128,9 @@ fn create_api_routes(
     local_exclusions_store: &LocalExclusionStore,
     tls_failure_store: &TlsFailureStore,
     filter_failure_store: &FilterFailureStore,
+    user_script_store: &UserScriptStore,
+    gm_storage: &GmStorageStore,
+    private_network_access: &PrivateNetworkAccess,
     http_client: reqwest::Client,
     notify_reload: Arc<Notify>,
     log_handle: LogHandle,
@@ -217,6 +229,17 @@ fn create_api_routes(
         .and(require_auth.clone())
         .and(filterlists::create_routes());
 
+    let userscripts_route =
+        warp::path("userscripts")
+            .and(require_auth.clone())
+            .and(userscripts::create_routes(
+                configuration_save_lock.clone(),
+                http_client.clone(),
+                user_script_store.clone(),
+                gm_storage.clone(),
+                private_network_access.clone(),
+            ));
+
     // Note: `.recover` is attached to the inner combinator, NOT to the
     // outer `api_path.and(...)`. If we attached it to the outer filter,
     // recover would also fire when `api_path` itself didn't match (e.g.
@@ -234,6 +257,7 @@ fn create_api_routes(
         .or(settings_route)
         .or(options_route)
         .or(filterlists_route)
+        .or(userscripts_route)
         .recover(handle_rejection);
 
     api_path.and(api_inner).with(def_headers).boxed()

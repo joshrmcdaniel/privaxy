@@ -26,6 +26,8 @@ mod settings;
 mod settings_textarea;
 mod submit_banner;
 mod tls_failures;
+mod userscript_edit;
+mod userscripts;
 
 #[derive(Debug, Deserialize, Clone)]
 pub(crate) struct ApiError {

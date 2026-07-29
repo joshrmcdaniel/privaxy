@@ -70,7 +70,14 @@ tokio-util = { version = "0.7.4", features = ["full"] }
 tokio-stream = "0.1"
 bytes = "1"
 socket2 = "0.5"
-adblock = { version = "0.12.5" }
+# default-features = false only to drop `single-thread`: the multi-thread
+# engine is Send + Sync, which lets requests share one engine directly instead
+# of funneling through a dedicated blocker thread. The other two features are
+# adblock defaults, restated because default-features is all-or-nothing.
+adblock = { version = "0.12.5", default-features = false, features = [
+  "embedded-domain-resolver",
+  "full-regex-handling",
+] }
 openssl = { version = "0.10.43", features = ["vendored"] }
 include_dir = "0.7.3"
 chrono = { version = "0.4.23", features = ["serde"] }
@@ -100,10 +107,10 @@ hyper-rustls = { version = "0.27", default-features = false, features = [
 log = "0.4.17"
 env_logger = "0.11.10"
 uluru = "3.1.0"
+portable-atomic = "1"
 regex = "1.7.0"
 lazy_static = "1.4.0"
 lol_html = "1.2.1"
-crossbeam-channel = "0.5.6"
 thiserror = "2"
 url = "2.3.1"
 futures = "0.3.25"

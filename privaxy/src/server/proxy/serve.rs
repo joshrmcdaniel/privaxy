@@ -1,5 +1,7 @@
 use super::doh::{self, DohAction};
+use super::gm::endpoint as gm_endpoint;
 use super::html_rewriter::Rewriter;
+use super::userscripts::UserScriptContext;
 use super::{body_channel, boxed_incoming, empty_body, full_body, BodySender, ProxyBody};
 use crate::blocker::AdblockRequester;
 use crate::configuration::DohConfig;
@@ -11,7 +13,7 @@ use bytes::Bytes;
 use futures::TryStreamExt;
 use http::uri::{Authority, Scheme};
 use http::{HeaderMap, HeaderValue, Request, Response, StatusCode, Uri};
-use http_body_util::BodyStream;
+use http_body_util::{BodyExt, BodyStream, Limited};
 use hyper::body::{Frame, Incoming};
 use hyper_rustls::HttpsConnector;
 use hyper_util::client::legacy::connect::HttpConnector;
@@ -19,6 +21,7 @@ use hyper_util::client::legacy::Client as HyperClient;
 use hyper_util::rt::TokioIo;
 use std::net::IpAddr;
 use tokio::sync::broadcast;
+use url::Url;
 
 /// Type of the hyper client used for upgrade tunneling (websockets, etc.).
 pub(crate) type UpgradeClient = HyperClient<HttpsConnector<HttpConnector>, ProxyBody>;
@@ -44,6 +47,10 @@ const CSP_HEADERS: [&str; 3] = [
     "x-content-security-policy",
     "x-webkit-csp",
 ];
+
+/// Cap on a buffered request body for the reserved endpoints. Generous for a
+/// batch of `GM_setValue` writes and far below anything worth buffering.
+const MAX_RESERVED_ENDPOINT_BODY_BYTES: usize = 256 * 1024;
 
 /// 16 random bytes → 22 chars of url-safe base64. Plenty of entropy and
 /// avoids `=` padding that some CSP parsers historically choked on.
@@ -277,6 +284,7 @@ pub(crate) async fn serve(
     doh_config: DohConfig,
     scriptlet_debug_logging: bool,
     gui_base_url: Option<String>,
+    user_scripts: UserScriptContext,
 ) -> Result<Response<ProxyBody>, hyper::Error> {
     let scheme_string = scheme.to_string();
 
@@ -299,6 +307,25 @@ pub(crate) async fn serve(
         return Ok(perform_two_ends_upgrade(request, uri, hyper_client).await);
     }
 
+    // Requests to the reserved path are answered by the proxy on the page's own
+    // origin and never forwarded upstream, which is what lets a userscript
+    // running in the page's main world reach Privaxy without CORS. Handled
+    // before any statistics counting: these are not proxied traffic.
+    if gm_endpoint::is_reserved(uri.path()) {
+        let (parts, body) = request.into_parts();
+        // Bounded so a hostile page cannot make the proxy buffer an unbounded
+        // body; an oversized request simply fails to parse below.
+        let collected = Limited::new(body, MAX_RESERVED_ENDPOINT_BODY_BYTES)
+            .collect()
+            .await
+            .map(|collected| collected.to_bytes())
+            .unwrap_or_default();
+
+        return Ok(
+            gm_endpoint::handle(&uri, &parts.method, &collected, &user_scripts, &client).await,
+        );
+    }
+
     let (mut parts, body) = request.into_parts();
     parts.uri = uri.clone();
 
@@ -310,7 +337,7 @@ pub(crate) async fn serve(
 
     statistics.increment_top_clients(client_ip_address);
 
-    let request_type = request_type_from_headers(req.headers()).to_string();
+    let request_type = request_type_from_headers(req.headers());
 
     // Canonical URL (default port stripped) for all adblock-engine matching —
     // see `url_for_matching`. The raw `uri` (which may carry `:443`) is still
@@ -322,35 +349,39 @@ pub(crate) async fn serve(
     let doh_action = doh::classify(&doh_config, req.headers(), &uri);
     if let DohAction::Block = &doh_action {
         log::debug!("Refusing DoH request: {}", uri);
-        let _result = broadcast_sender.send(Event {
-            now: chrono::Utc::now(),
-            method: req.method().to_string(),
-            url: req.uri().to_string(),
-            is_request_blocked: true,
-        });
+        // Events only feed the live requests view; when nobody is subscribed,
+        // building one (two Strings and a timestamp) is wasted work.
+        if broadcast_sender.receiver_count() > 0 {
+            let _result = broadcast_sender.send(Event {
+                now: chrono::Utc::now(),
+                method: req.method().to_string(),
+                url: req.uri().to_string(),
+                is_request_blocked: true,
+            });
+        }
         statistics.increment_blocked_requests();
         return Ok(get_empty_response(StatusCode::BAD_GATEWAY));
     }
 
-    let (is_request_blocked, blocker_result) = adblock_requester
-        .is_network_url_blocked(
-            match_url.clone(),
-            match req.headers().get(http::header::REFERER) {
-                Some(referer) => referer.to_str().unwrap().to_string(),
-                // When no referer, we default to `uri` as we otherwise may get many false
-                // positives due to the blocker thinking it's third party requests.
-                None => match_url.clone(),
-            },
-            request_type.clone(),
-        )
-        .await;
+    let (is_request_blocked, blocker_result) = adblock_requester.is_network_url_blocked(
+        &match_url,
+        match req.headers().get(http::header::REFERER) {
+            Some(referer) => referer.to_str().unwrap_or(&match_url),
+            // When no referer, we default to `uri` as we otherwise may get many false
+            // positives due to the blocker thinking it's third party requests.
+            None => &match_url,
+        },
+        request_type,
+    );
 
-    let _result = broadcast_sender.send(Event {
-        now: chrono::Utc::now(),
-        method: req.method().to_string(),
-        url: req.uri().to_string(),
-        is_request_blocked,
-    });
+    if broadcast_sender.receiver_count() > 0 {
+        let _result = broadcast_sender.send(Event {
+            now: chrono::Utc::now(),
+            method: req.method().to_string(),
+            url: req.uri().to_string(),
+            is_request_blocked,
+        });
+    }
 
     if is_request_blocked {
         statistics.increment_blocked_requests();
@@ -477,36 +508,70 @@ pub(crate) async fn serve(
     let new_response = Response::from_parts(parts, new_new_body);
 
     if is_html {
-        let (sender_rewriter, receiver_rewriter) = crossbeam_channel::unbounded::<Bytes>();
+        // Bounded so the whole backpressure chain holds: client ← response body
+        // ← rewriter ← this channel ← upstream. Before, every hop here was
+        // unbounded and the entire document buffered in memory.
+        let (sender_rewriter, receiver_rewriter) = tokio::sync::mpsc::channel::<Bytes>(32);
 
         // Resolve the URL-scoped payloads up-front so the rewriter can prepend
         // them inside <head> before any page scripts execute: the uBO scriptlet
         // and the procedural cosmetic filters (both URL-specific, not dependent
-        // on collected IDs/classes). The end-of-body cosmetic lookup still runs
-        // for hide/style selectors, which do depend on collected IDs/classes.
+        // on collected IDs/classes). This is the single `url_cosmetic_resources`
+        // lookup for the page — the end-of-body pass only resolves the generic
+        // class/id-indexed selectors on top of it, using the exception set
+        // carried in this result.
         let head_cosmetics = adblock_requester
-            .get_cosmetic_response(match_url.clone(), Vec::new(), Vec::new())
+            .get_cosmetic_response(match_url.clone())
             .await;
 
+        // Userscripts are matched against the same canonical URL the adblock
+        // engine uses. The store is consulted per request rather than captured
+        // once per proxy start, so scripts added or toggled in the web UI apply
+        // to the very next page load without a reload.
+        let matched_user_scripts = if user_scripts.store.is_empty() {
+            Vec::new()
+        } else {
+            match Url::parse(&match_url) {
+                Ok(url) => user_scripts.store.matching(&url),
+                Err(err) => {
+                    log::debug!("Not matching userscripts against {match_url}: {err}");
+                    Vec::new()
+                }
+            }
+        };
+
+        // Minted per page and handed to the in-page runtime so it can persist
+        // GM values. Bound to this origin; see `userscript_token`.
+        let endpoint_token = gm_endpoint::origin_of(&uri)
+            .map(|origin| super::gm::token::mint(&origin, &user_scripts.endpoint_signing_key));
+
         let rewriter = Rewriter::new(
-            match_url.clone(),
             adblock_requester,
             receiver_rewriter,
             sender,
             statistics,
             csp_nonce.expect("csp_nonce is Some whenever is_html"),
-            head_cosmetics.injected_script,
-            head_cosmetics.procedural_filters,
+            head_cosmetics,
             scriptlet_debug_logging,
+            matched_user_scripts,
+            user_scripts.gm_storage.clone(),
+            endpoint_token,
         );
 
         tokio::task::spawn_blocking(|| rewriter.rewrite());
 
-        while let Ok(Some(chunk)) = response.chunk().await {
-            if let Err(_err) = sender_rewriter.send(chunk) {
-                break;
+        // Drain the upstream body on its own task so the response (headers plus
+        // the streaming rewritten body) is returned to the client immediately.
+        // Holding the response until the whole document had been downloaded
+        // meant the browser could not start parsing — or prefetching
+        // subresources — until the very last upstream byte had arrived.
+        tokio::spawn(async move {
+            while let Ok(Some(chunk)) = response.chunk().await {
+                if sender_rewriter.send(chunk).await.is_err() {
+                    break;
+                }
             }
-        }
+        });
 
         return Ok(new_response);
     }
@@ -645,7 +710,11 @@ async fn perform_two_ends_upgrade(
     uri: Uri,
     hyper_client: UpgradeClient,
 ) -> Response<ProxyBody> {
-    let (mut duplex_client, mut duplex_server) = tokio::io::duplex(32);
+    // The duplex buffer caps how many bytes can be in flight between the two
+    // `copy_bidirectional` tasks bridging client and upstream. A tiny buffer
+    // forces the tunnel to ping-pong wakeups every few bytes, throttling
+    // WebSocket throughput; 64 KiB matches a typical socket buffer.
+    let (mut duplex_client, mut duplex_server) = tokio::io::duplex(64 * 1024);
 
     // Captured for log context; `uri` is moved into `new_request` below.
     let request_uri = uri.to_string();
