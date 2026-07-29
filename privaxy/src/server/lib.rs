@@ -19,7 +19,6 @@ use std::net::IpAddr;
 use std::net::SocketAddr;
 use std::str::FromStr;
 use std::sync::Arc;
-use std::thread;
 use std::time::Duration;
 use tokio::net::TcpListener;
 use tokio::signal::unix::{signal, SignalKind};
@@ -165,6 +164,11 @@ pub async fn start_privaxy() -> PrivaxyServer {
         // additionally fails fast on unreachable hosts.
         .connect_timeout(Duration::from_secs(10))
         .pool_idle_timeout(Duration::from_secs(30))
+        // Bounds a stalled read mid-response: a peer that stops sending without
+        // closing would otherwise hang the proxied request forever. Generous
+        // enough (5 minutes between reads) not to kill long-polls or quiet SSE
+        // streams, which routinely idle for a minute or two between events.
+        .read_timeout(Duration::from_secs(300))
         // h2-heavy origins multiplex every subresource over a
         // single connection whose flow-control window defaults to a small,
         // shared 64 KB. When we drain one stream's body slowly (the browser
@@ -247,10 +251,10 @@ pub async fn start_privaxy() -> PrivaxyServer {
         blocker::BlockingDisabledStore(Arc::new(std::sync::RwLock::new(false)));
     let blocking_disabled_store_clone = blocking_disabled_store.clone();
 
-    let (crossbeam_sender, crossbeam_receiver) = crossbeam_channel::unbounded();
-    let blocker_sender = crossbeam_sender.clone();
-
-    let blocker_requester = AdblockRequester::new(blocker_sender);
+    // The adblock engine is shared directly with every request task (adblock's
+    // `Engine` is Send + Sync); filter updates build a replacement engine on
+    // the blocking pool and swap it in atomically.
+    let blocker_requester = AdblockRequester::new(blocking_disabled_store.clone());
 
     let configuration_updater = configuration::ConfigurationUpdater::new(
         configuration.clone(),
@@ -309,14 +313,6 @@ pub async fn start_privaxy() -> PrivaxyServer {
             notify_reload_frontend.notified().await;
             log::info!("Stopping Privaxy frontend");
         }
-    });
-
-    let disabled_store_ref = blocking_disabled_store_clone.clone();
-    thread::spawn(move || {
-        let blocker =
-            blocker::Blocker::new(crossbeam_sender, crossbeam_receiver, disabled_store_ref);
-
-        blocker.handle_requests()
     });
 
     let notify_reload_clone = notify_reload.clone();

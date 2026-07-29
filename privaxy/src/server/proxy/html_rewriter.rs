@@ -1,61 +1,47 @@
 use super::gm::storage::GmStorageStore;
 use super::BodySender;
 use crate::configuration::CompiledUserScript;
-use crate::{blocker::AdblockRequester, statistics::Statistics};
+use crate::{
+    blocker::{AdblockRequester, CosmeticBlockerResult},
+    statistics::Statistics,
+};
 use bytes::Bytes;
-use crossbeam_channel::Receiver;
 use hyper::body::Frame;
 use lol_html::html_content::ContentType;
 use lol_html::{element, HtmlRewriter, Settings};
-use regex::Regex;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex};
+use std::rc::Rc;
+use std::sync::Arc;
 use tokio::sync::mpsc;
 
+/// Capacity of the rewriter-to-body channel. Bounded so a slow client
+/// backpressures the rewriter thread (via `blocking_send`) instead of the
+/// whole document buffering in memory.
+const INTERNAL_BODY_CHANNEL_CAPACITY: usize = 32;
+
 type InternalBodyChannel = (
-    mpsc::UnboundedSender<(Bytes, Option<AdblockProperties>)>,
-    mpsc::UnboundedReceiver<(Bytes, Option<AdblockProperties>)>,
+    mpsc::Sender<(Bytes, Option<AdblockProperties>)>,
+    mpsc::Receiver<(Bytes, Option<AdblockProperties>)>,
 );
 
 struct AdblockProperties {
-    url: String,
     ids: HashSet<String>,
     classes: HashSet<String>,
 }
 
 pub struct Rewriter {
-    url: String,
     adblock_requester: AdblockRequester,
-    receiver: Receiver<Bytes>,
+    receiver: mpsc::Receiver<Bytes>,
     body_sender: BodySender,
     statistics: Statistics,
     internal_body_channel: InternalBodyChannel,
     csp_nonce: String,
-    // Scriptlets (uBO `##+js(...)`) need to run before page scripts get a
-    // reference to the globals they hook (setTimeout, eval, etc.), so this is
-    // injected early into `<head>` rather than appended at end-of-body.
-    injected_script: Option<String>,
-    // Procedural cosmetic filters (`:has-text`, `:upward`, `:xpath`, …) that
-    // can't be reduced to plain CSS. Each entry is one JSON-encoded
-    // `ProceduralOrActionFilter`; they're handed to the in-page shim injected
-    // into `<head>` alongside the scriptlets.
-    procedural_filters: Vec<String>,
-    // Whether this URL is expected to produce plain-CSS cosmetic rules, decided
-    // from the URL-scoped lookup done before the body was parsed.
-    //
-    // The document is styled by the `<style>` block appended at end-of-body, but
-    // that is an *author-origin* stylesheet and so stops at every shadow
-    // boundary. uBO does not have this problem: an extension injects cosmetic CSS
-    // with `insertCSS` at **user** origin, and user-origin sheets do pierce shadow
-    // roots — which is why rules targeting shadow content exist in the lists and
-    // work everywhere else. A proxy has no user-origin privilege, so the shim
-    // adopts the rules into each root itself.
-    //
-    // Only the *fact* that there will be rules travels through here. The rules
-    // themselves are read back out of the emitted block by the shim, so they are
-    // not serialized into the page a second time — on a typical host that would
-    // duplicate ~36 KB of CSS per response.
-    expect_cosmetic_css: bool,
+    // The page's URL-scoped cosmetic lookup, resolved once before the body is
+    // parsed. Scriptlets and procedural filters are injected into <head>; the
+    // hide/style selectors and the exception set travel to the end-of-body
+    // pass, which only adds the generic class/id-indexed selectors on top.
+    head_cosmetics: CosmeticBlockerResult,
     // When set (config `debug.scriptlet_console_logging`), the empty
     // per-scriptlet `catch` emitted by adblock-rust is rewritten to log the
     // caught error to the page console instead of swallowing it.
@@ -166,31 +152,25 @@ fn inline_script_tag(source: &str, csp_nonce: &str) -> String {
 impl Rewriter {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
-        url: String,
         adblock_requester: AdblockRequester,
-        receiver: Receiver<Bytes>,
+        receiver: mpsc::Receiver<Bytes>,
         body_sender: BodySender,
         statistics: Statistics,
         csp_nonce: String,
-        injected_script: Option<String>,
-        procedural_filters: Vec<String>,
-        expect_cosmetic_css: bool,
+        head_cosmetics: CosmeticBlockerResult,
         scriptlet_debug_logging: bool,
         user_scripts: Vec<Arc<CompiledUserScript>>,
         gm_storage: GmStorageStore,
         endpoint_token: Option<String>,
     ) -> Self {
         Self {
-            url,
             body_sender,
             statistics,
             adblock_requester,
             receiver,
-            internal_body_channel: mpsc::unbounded_channel(),
+            internal_body_channel: mpsc::channel(INTERNAL_BODY_CHANNEL_CAPACITY),
             csp_nonce,
-            injected_script,
-            procedural_filters,
-            expect_cosmetic_css,
+            head_cosmetics,
             scriptlet_debug_logging,
             user_scripts,
             gm_storage,
@@ -433,17 +413,44 @@ impl Rewriter {
         }
     }
 
+    /// Runs on a blocking thread (`spawn_blocking`): both channel ends here use
+    /// the blocking variants of send/recv.
     pub(crate) fn rewrite(self) {
-        let (internal_body_sender, internal_body_receiver) = self.internal_body_channel;
-        let body_sender = self.body_sender;
-        let adblock_requester = self.adblock_requester.clone();
-        let statistics = self.statistics.clone();
-        let csp_nonce = self.csp_nonce.clone();
+        let Rewriter {
+            adblock_requester,
+            mut receiver,
+            body_sender,
+            statistics,
+            internal_body_channel: (internal_body_sender, internal_body_receiver),
+            csp_nonce,
+            head_cosmetics,
+            scriptlet_debug_logging,
+            user_scripts,
+            gm_storage,
+            endpoint_token,
+        } = self;
 
-        let internal_body_sender = Arc::new(Mutex::new(internal_body_sender));
+        let CosmeticBlockerResult {
+            hidden_selectors,
+            style_selectors,
+            injected_script,
+            procedural_filters,
+            exceptions,
+            generichide,
+        } = head_cosmetics;
 
-        let classes = Arc::new(Mutex::new(HashSet::new()));
-        let ids = Arc::new(Mutex::new(HashSet::new()));
+        // Whether the end-of-body lookup will produce a non-empty cosmetic
+        // `<style>` block. The shim reads its rules out of that block to adopt
+        // them into shadow roots — author-origin CSS cannot cross a shadow
+        // boundary — but the block only exists after the body has been parsed, so
+        // the decision to inject the shim at all has to be made up-front.
+        //
+        // This is a prediction, and an exact one in practice: the end-of-body
+        // lookup adds the class/id-indexed generic selectors on top of what is
+        // seen here, and those are only collected when `generichide` is off — in
+        // which case the URL-scoped set already carries the generic selectors that
+        // are not class/id-indexable, and is non-empty.
+        let expect_cosmetic_css = !hidden_selectors.is_empty() || !style_selectors.is_empty();
 
         tokio::spawn(Self::write_body(
             internal_body_receiver,
@@ -451,24 +458,37 @@ impl Rewriter {
             adblock_requester,
             statistics.clone(),
             csp_nonce.clone(),
+            hidden_selectors,
+            style_selectors,
+            exceptions,
+            generichide,
         ));
 
-        let re = Regex::new(r"\s+").unwrap();
-        let classes_clone = Arc::clone(&classes);
-        let ids_clone = Arc::clone(&ids);
-        let internal_body_sender_clone = Arc::clone(&internal_body_sender);
+        // The rewriter and all its handlers live on this one thread, so the
+        // shared collections are Rc<RefCell> rather than locks.
+        let ids = Rc::new(RefCell::new(HashSet::new()));
+        let classes = Rc::new(RefCell::new(HashSet::new()));
+        let ids_clone = Rc::clone(&ids);
+        let classes_clone = Rc::clone(&classes);
 
-        // Mutex<Option<_>> + take() = inject at most once even if the document
+        // Set when the body channel is gone (client disconnected), so the input
+        // loop below can stop pulling — and thereby stop the upstream download —
+        // instead of rewriting into the void.
+        let aborted = Rc::new(Cell::new(false));
+        let sink_aborted = Rc::clone(&aborted);
+        let sink_sender = internal_body_sender.clone();
+
+        // RefCell<Option<_>> + take() = inject at most once even if the document
         // somehow contains multiple <head> openings.
-        let pending_script = Arc::new(Mutex::new(Self::build_head_html(
-            self.injected_script,
-            &self.procedural_filters,
-            self.expect_cosmetic_css,
-            self.scriptlet_debug_logging,
-            &self.user_scripts,
+        let pending_script = Rc::new(RefCell::new(Self::build_head_html(
+            injected_script,
+            &procedural_filters,
+            expect_cosmetic_css,
+            scriptlet_debug_logging,
+            &user_scripts,
             &csp_nonce,
-            &self.gm_storage,
-            self.endpoint_token.as_deref(),
+            &gm_storage,
+            endpoint_token.as_deref(),
         )));
         let head_statistics = statistics.clone();
 
@@ -477,18 +497,12 @@ impl Rewriter {
                 element_content_handlers: vec![
                     element!("*", move |element| {
                         if let Some(id) = element.get_attribute("id") {
-                            ids_clone.lock().unwrap().insert(id);
+                            ids_clone.borrow_mut().insert(id);
                         }
-                        Ok(())
-                    }),
-                    element!("*", move |element| {
                         if let Some(class) = element.get_attribute("class") {
-                            let classes_without_duplicate_spaces = re.replace_all(&class, " ");
-                            let class_set: HashSet<_> = classes_without_duplicate_spaces
-                                .split_whitespace()
-                                .map(String::from)
-                                .collect();
-                            classes_clone.lock().unwrap().extend(class_set);
+                            classes_clone
+                                .borrow_mut()
+                                .extend(class.split_whitespace().map(String::from));
                         }
                         Ok(())
                     }),
@@ -525,7 +539,7 @@ impl Rewriter {
                     // its timers, as well as `@run-at document-start`
                     // userscripts.
                     element!("head", move |element| {
-                        if let Some(html) = pending_script.lock().unwrap().take() {
+                        if let Some(html) = pending_script.borrow_mut().take() {
                             element.prepend(&html, ContentType::Html);
                             head_statistics.increment_modified_responses();
                         }
@@ -535,66 +549,81 @@ impl Rewriter {
                 ..Settings::default()
             },
             move |c: &[u8]| {
-                let _ = internal_body_sender_clone
-                    .lock()
-                    .unwrap()
-                    .send((Bytes::copy_from_slice(c), None));
+                if sink_sender
+                    .blocking_send((Bytes::copy_from_slice(c), None))
+                    .is_err()
+                {
+                    sink_aborted.set(true);
+                }
             },
         );
 
-        for message in self.receiver {
+        while let Some(message) = receiver.blocking_recv() {
             rewriter.write(&message).unwrap();
+            if aborted.get() {
+                return;
+            }
         }
         rewriter.end().unwrap();
 
-        let _ = internal_body_sender.lock().unwrap().send((
+        let _ = internal_body_sender.blocking_send((
             Bytes::new(),
             Some(AdblockProperties {
-                ids: ids.lock().unwrap().clone(),
-                classes: classes.lock().unwrap().clone(),
-                url: self.url,
+                ids: ids.take(),
+                classes: classes.take(),
             }),
         ));
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn write_body(
-        mut receiver: mpsc::UnboundedReceiver<(Bytes, Option<AdblockProperties>)>,
+        mut receiver: mpsc::Receiver<(Bytes, Option<AdblockProperties>)>,
         body_sender: BodySender,
         adblock_requester: AdblockRequester,
         statistics: Statistics,
         csp_nonce: String,
+        url_hidden_selectors: Vec<String>,
+        style_selectors: HashMap<String, Vec<String>>,
+        exceptions: HashSet<String>,
+        generichide: bool,
     ) {
+        let mut end_of_body_cosmetics = Some((url_hidden_selectors, style_selectors, exceptions));
+
         while let Some((bytes, adblock_properties)) = receiver.recv().await {
             if let Err(_err) = body_sender.send(Ok(Frame::data(bytes))).await {
                 break;
             }
             if let Some(adblock_properties) = adblock_properties {
-                let blocker_result = adblock_requester
-                    .get_cosmetic_response(
-                        adblock_properties.url,
-                        adblock_properties.ids.into_iter().collect(),
-                        adblock_properties.classes.into_iter().collect(),
-                    )
-                    .await;
+                let Some((mut hidden_selectors, style_selectors, exceptions)) =
+                    end_of_body_cosmetics.take()
+                else {
+                    continue;
+                };
 
-                // This lookup passes the collected IDs and classes, so unlike the
-                // URL-scoped set handed to the shim it also contains the
-                // class/id-indexed generic selectors.
-                let cosmetic_css = build_cosmetic_css(
-                    &blocker_result.hidden_selectors,
-                    &blocker_result.style_selectors,
-                );
+                // The URL-scoped selectors were resolved before the body was
+                // parsed; only the generic class/id-indexed selectors — which
+                // depend on the ids and classes actually collected from the
+                // document — are resolved here, unless a $generichide
+                // exception told us not to.
+                if !generichide {
+                    hidden_selectors.extend(
+                        adblock_requester
+                            .get_generic_class_id_selectors(
+                                adblock_properties.classes.into_iter().collect(),
+                                adblock_properties.ids.into_iter().collect(),
+                                exceptions,
+                            )
+                            .await,
+                    );
+                }
+
+                let cosmetic_css = build_cosmetic_css(&hidden_selectors, &style_selectors);
 
                 // Count the response as modified whenever we inject any cosmetic
                 // rules — hide selectors as well as style selectors. Previously
                 // only style selectors flipped this flag, so pages where we hid
                 // ad elements via `display: none` were undercounted.
                 let response_has_been_modified = !cosmetic_css.trim().is_empty();
-
-                // Scriptlets (`blocker_result.injected_script`) are intentionally
-                // ignored here: they're injected into <head> from the rewriter
-                // path so they run before the page's own scripts.
-                let _ = blocker_result.injected_script;
 
                 // The marker attribute is what lets the in-page shim find this
                 // block and adopt its rules into shadow roots, which

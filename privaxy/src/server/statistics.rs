@@ -2,7 +2,10 @@ use serde::Serialize;
 use std::{
     collections::HashMap,
     net::IpAddr,
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, Mutex,
+    },
 };
 use uluru::LRUCache;
 
@@ -21,9 +24,9 @@ pub struct SerializableStatistics {
 
 #[derive(Debug, Clone)]
 pub struct Statistics {
-    pub proxied_requests: Arc<Mutex<u64>>,
-    pub blocked_requests: Arc<Mutex<u64>>,
-    pub modified_responses: Arc<Mutex<u64>>,
+    pub proxied_requests: Arc<AtomicU64>,
+    pub blocked_requests: Arc<AtomicU64>,
+    pub modified_responses: Arc<AtomicU64>,
     pub top_blocked_paths: Arc<Mutex<LRUCache<(String, u64), 1_000>>>,
     pub top_clients: Arc<Mutex<HashMap<IpAddr, u64>>>,
 }
@@ -37,9 +40,9 @@ impl Default for Statistics {
 impl Statistics {
     pub fn new() -> Self {
         Self {
-            proxied_requests: Arc::new(Mutex::new(0)),
-            blocked_requests: Arc::new(Mutex::new(0)),
-            modified_responses: Arc::new(Mutex::new(0)),
+            proxied_requests: Arc::new(AtomicU64::new(0)),
+            blocked_requests: Arc::new(AtomicU64::new(0)),
+            modified_responses: Arc::new(AtomicU64::new(0)),
             top_blocked_paths: Arc::new(Mutex::new(LRUCache::default())),
             top_clients: Arc::new(Mutex::new(HashMap::new())),
         }
@@ -63,31 +66,22 @@ impl Statistics {
     }
 
     pub fn increment_proxied_requests(&self) -> u64 {
-        let mut proxied_requests = self.proxied_requests.lock().unwrap();
-
-        *proxied_requests += 1;
-        *proxied_requests
+        self.proxied_requests.fetch_add(1, Ordering::Relaxed) + 1
     }
 
     pub fn increment_blocked_requests(&self) -> u64 {
-        let mut blocked_requests = self.blocked_requests.lock().unwrap();
-
-        *blocked_requests += 1;
-        *blocked_requests
+        self.blocked_requests.fetch_add(1, Ordering::Relaxed) + 1
     }
 
     pub fn increment_modified_responses(&self) -> u64 {
-        let mut modified_responses = self.modified_responses.lock().unwrap();
-
-        *modified_responses += 1;
-        *modified_responses
+        self.modified_responses.fetch_add(1, Ordering::Relaxed) + 1
     }
 
     pub fn get_serialized(&self) -> SerializableStatistics {
         SerializableStatistics {
-            proxied_requests: *self.proxied_requests.lock().unwrap(),
-            blocked_requests: *self.blocked_requests.lock().unwrap(),
-            modified_responses: *self.modified_responses.lock().unwrap(),
+            proxied_requests: self.proxied_requests.load(Ordering::Relaxed),
+            blocked_requests: self.blocked_requests.load(Ordering::Relaxed),
+            modified_responses: self.modified_responses.load(Ordering::Relaxed),
             top_blocked_paths: {
                 let top_blocked_paths = self.top_blocked_paths.lock().unwrap();
                 let mut top_blocked_paths_iterator = top_blocked_paths.iter();

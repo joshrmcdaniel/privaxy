@@ -337,7 +337,7 @@ pub(crate) async fn serve(
 
     statistics.increment_top_clients(client_ip_address);
 
-    let request_type = request_type_from_headers(req.headers()).to_string();
+    let request_type = request_type_from_headers(req.headers());
 
     // Canonical URL (default port stripped) for all adblock-engine matching —
     // see `url_for_matching`. The raw `uri` (which may carry `:443`) is still
@@ -349,35 +349,39 @@ pub(crate) async fn serve(
     let doh_action = doh::classify(&doh_config, req.headers(), &uri);
     if let DohAction::Block = &doh_action {
         log::debug!("Refusing DoH request: {}", uri);
-        let _result = broadcast_sender.send(Event {
-            now: chrono::Utc::now(),
-            method: req.method().to_string(),
-            url: req.uri().to_string(),
-            is_request_blocked: true,
-        });
+        // Events only feed the live requests view; when nobody is subscribed,
+        // building one (two Strings and a timestamp) is wasted work.
+        if broadcast_sender.receiver_count() > 0 {
+            let _result = broadcast_sender.send(Event {
+                now: chrono::Utc::now(),
+                method: req.method().to_string(),
+                url: req.uri().to_string(),
+                is_request_blocked: true,
+            });
+        }
         statistics.increment_blocked_requests();
         return Ok(get_empty_response(StatusCode::BAD_GATEWAY));
     }
 
-    let (is_request_blocked, blocker_result) = adblock_requester
-        .is_network_url_blocked(
-            match_url.clone(),
-            match req.headers().get(http::header::REFERER) {
-                Some(referer) => referer.to_str().unwrap().to_string(),
-                // When no referer, we default to `uri` as we otherwise may get many false
-                // positives due to the blocker thinking it's third party requests.
-                None => match_url.clone(),
-            },
-            request_type.clone(),
-        )
-        .await;
+    let (is_request_blocked, blocker_result) = adblock_requester.is_network_url_blocked(
+        &match_url,
+        match req.headers().get(http::header::REFERER) {
+            Some(referer) => referer.to_str().unwrap_or(&match_url),
+            // When no referer, we default to `uri` as we otherwise may get many false
+            // positives due to the blocker thinking it's third party requests.
+            None => &match_url,
+        },
+        request_type,
+    );
 
-    let _result = broadcast_sender.send(Event {
-        now: chrono::Utc::now(),
-        method: req.method().to_string(),
-        url: req.uri().to_string(),
-        is_request_blocked,
-    });
+    if broadcast_sender.receiver_count() > 0 {
+        let _result = broadcast_sender.send(Event {
+            now: chrono::Utc::now(),
+            method: req.method().to_string(),
+            url: req.uri().to_string(),
+            is_request_blocked,
+        });
+    }
 
     if is_request_blocked {
         statistics.increment_blocked_requests();
@@ -504,30 +508,21 @@ pub(crate) async fn serve(
     let new_response = Response::from_parts(parts, new_new_body);
 
     if is_html {
-        let (sender_rewriter, receiver_rewriter) = crossbeam_channel::unbounded::<Bytes>();
+        // Bounded so the whole backpressure chain holds: client ← response body
+        // ← rewriter ← this channel ← upstream. Before, every hop here was
+        // unbounded and the entire document buffered in memory.
+        let (sender_rewriter, receiver_rewriter) = tokio::sync::mpsc::channel::<Bytes>(32);
 
         // Resolve the URL-scoped payloads up-front so the rewriter can prepend
         // them inside <head> before any page scripts execute: the uBO scriptlet
         // and the procedural cosmetic filters (both URL-specific, not dependent
-        // on collected IDs/classes). The end-of-body cosmetic lookup still runs
-        // for hide/style selectors, which do depend on collected IDs/classes.
+        // on collected IDs/classes). This is the single `url_cosmetic_resources`
+        // lookup for the page — the end-of-body pass only resolves the generic
+        // class/id-indexed selectors on top of it, using the exception set
+        // carried in this result.
         let head_cosmetics = adblock_requester
-            .get_cosmetic_response(match_url.clone(), Vec::new(), Vec::new())
+            .get_cosmetic_response(match_url.clone())
             .await;
-
-        // Whether the end-of-body lookup will produce a non-empty cosmetic
-        // `<style>` block. The shim reads its rules out of that block to adopt
-        // them into shadow roots — author-origin CSS cannot cross a shadow
-        // boundary — but the block only exists after the body has been parsed, so
-        // the decision to inject the shim at all has to be made from here.
-        //
-        // This is a prediction, and an exact one in practice: the end-of-body
-        // lookup adds the class/id-indexed generic selectors on top of what is
-        // seen here, and those are only collected when `generichide` is off — in
-        // which case the URL-scoped set already carries the generic selectors that
-        // are not class/id-indexable, and is non-empty.
-        let expect_cosmetic_css = !head_cosmetics.hidden_selectors.is_empty()
-            || !head_cosmetics.style_selectors.is_empty();
 
         // Userscripts are matched against the same canonical URL the adblock
         // engine uses. The store is consulted per request rather than captured
@@ -551,15 +546,12 @@ pub(crate) async fn serve(
             .map(|origin| super::gm::token::mint(&origin, &user_scripts.endpoint_signing_key));
 
         let rewriter = Rewriter::new(
-            match_url.clone(),
             adblock_requester,
             receiver_rewriter,
             sender,
             statistics,
             csp_nonce.expect("csp_nonce is Some whenever is_html"),
-            head_cosmetics.injected_script,
-            head_cosmetics.procedural_filters,
-            expect_cosmetic_css,
+            head_cosmetics,
             scriptlet_debug_logging,
             matched_user_scripts,
             user_scripts.gm_storage.clone(),
@@ -568,11 +560,18 @@ pub(crate) async fn serve(
 
         tokio::task::spawn_blocking(|| rewriter.rewrite());
 
-        while let Ok(Some(chunk)) = response.chunk().await {
-            if let Err(_err) = sender_rewriter.send(chunk) {
-                break;
+        // Drain the upstream body on its own task so the response (headers plus
+        // the streaming rewritten body) is returned to the client immediately.
+        // Holding the response until the whole document had been downloaded
+        // meant the browser could not start parsing — or prefetching
+        // subresources — until the very last upstream byte had arrived.
+        tokio::spawn(async move {
+            while let Ok(Some(chunk)) = response.chunk().await {
+                if sender_rewriter.send(chunk).await.is_err() {
+                    break;
+                }
             }
-        }
+        });
 
         return Ok(new_response);
     }
@@ -711,7 +710,11 @@ async fn perform_two_ends_upgrade(
     uri: Uri,
     hyper_client: UpgradeClient,
 ) -> Response<ProxyBody> {
-    let (mut duplex_client, mut duplex_server) = tokio::io::duplex(32);
+    // The duplex buffer caps how many bytes can be in flight between the two
+    // `copy_bidirectional` tasks bridging client and upstream. A tiny buffer
+    // forces the tunnel to ping-pong wakeups every few bytes, throttling
+    // WebSocket throughput; 64 KiB matches a typical socket buffer.
+    let (mut duplex_client, mut duplex_server) = tokio::io::duplex(64 * 1024);
 
     // Captured for log context; `uri` is moved into `new_request` below.
     let request_uri = uri.to_string();

@@ -167,6 +167,40 @@
       500 ms debounce, so values set immediately before a crash can be lost.
     - *No script ordering or import/export in the UI.* Injection order is
       configuration order, changeable only by editing the file.
+- Proxy performance overhaul:
+  - *HTML responses now stream.* The proxy previously withheld an HTML
+    response — status line, headers and all — until the entire upstream
+    document had been downloaded and fed through the rewriter, so the browser
+    could not start parsing (or prefetching subresources) until the last
+    upstream byte arrived. The rewritten document now streams to the client as
+    it is produced, and the rewriter pipeline is bounded end-to-end, so a slow
+    client backpressures the upstream download instead of the whole document
+    buffering in memory.
+  - *WebSocket tunnels no longer squeeze through a 32-byte buffer.* The duplex
+    buffer bridging the client and upstream halves of an upgraded connection
+    was 32 bytes, forcing a task wakeup roughly every 32 bytes transferred;
+    it is now 64 KiB.
+  - *The adblock engine is shared, not funneled through one thread.* The
+    `single-thread` adblock feature is dropped; the engine (Send + Sync) is
+    now called directly from request tasks, removing a channel round-trip and
+    two cross-thread handoffs from every request. Matching itself still
+    serializes briefly on the engine's internal regex-manager lock — the same
+    one-core ceiling as the old blocker thread, far above proxy request rates
+    — but the per-request overhead around it is gone. Filter-list updates
+    build the replacement engine on the blocking pool and swap it in
+    atomically, so requests keep matching against the old engine during a
+    multi-second list rebuild instead of stalling behind it.
+  - *One cosmetic lookup per page instead of two.* The URL-scoped cosmetic
+    lookup (`url_cosmetic_resources`) ran once for the `<head>` injection and
+    again at end-of-body; the end-of-body pass now reuses the first lookup and
+    only resolves the generic class/id-indexed selectors on top.
+  - Dashboard events are only constructed when a client is actually watching
+    the live requests feed; statistics counters are atomics instead of
+    mutexes; the HTML rewriter no longer compiles a (redundant) regex per
+    response and scans each element once instead of twice.
+  - New 5-minute read timeout on proxied requests bounds a peer that stops
+    sending mid-response without closing (previously such a request hung
+    forever); generous enough not to disturb long-polls or quiet SSE streams.
 - A configuration file that fails to parse no longer takes the server down.
   `read_configuration` unwrapped the parse error, so a hand-edited file with (for
   example) a duplicate TOML key panicked a worker on `SIGHUP` and killed both the
