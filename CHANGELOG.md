@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Fixed the web UI dying at random after a reload (SIGHUP or saving
+  Network/PAC/Debug settings). The restarted web server raced the outgoing one
+  for port bind while the old listener was still draining connections; losing
+  the race left the UI down until the next reload. The frontend now tears down
+  and re-binds sequentially, the same way the proxy loop always has, and a
+  bind failure retries every 5 seconds instead of giving up.
 - Userscript engine: Greasemonkey/Tampermonkey-style scripts injected into
   matching pages, managed at runtime from the web UI.
   - New **Settings → Userscripts** page: install a script by pasting it or by
