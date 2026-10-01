@@ -6,5 +6,9 @@ services:
       - "8200:8200"
     volumes:
       - ./conf:/conf
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     restart: unless-stopped
-      

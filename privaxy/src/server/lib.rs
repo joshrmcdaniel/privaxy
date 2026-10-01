@@ -269,7 +269,7 @@ pub async fn start_privaxy() -> PrivaxyServer {
     let configuration_updater_tx = configuration_updater.tx.clone();
     configuration_updater_tx.send(configuration).await.unwrap();
 
-    configuration_updater.start();
+    let initial_filters_ready = configuration_updater.start();
 
     let configuration_save_lock = Arc::new(tokio::sync::Mutex::new(()));
 
@@ -310,8 +310,6 @@ pub async fn start_privaxy() -> PrivaxyServer {
                 log_handle_ref.clone(),
             )
             .await;
-            notify_reload_frontend.notified().await;
-            log::info!("Stopping Privaxy frontend");
         }
     });
 
@@ -319,6 +317,13 @@ pub async fn start_privaxy() -> PrivaxyServer {
     let configuration_save_lock_ref = configuration_save_lock.clone();
 
     tokio::spawn(async move {
+        // Keep the GUI available during downloads, but do not proxy requests
+        // through the initial empty engine while even one list is still loading.
+        log::info!("Waiting for initial filter loading before starting the proxy");
+        if initial_filters_ready.await.is_err() {
+            log::error!("Initial filter loading failed; the proxy has not started");
+            return;
+        }
         let notify_reload_backend = notify_reload_clone.clone();
         let cfg_lock_backend = configuration_save_lock_ref.clone();
         let mut local_exclusion_store = local_exclusion_store;
@@ -445,7 +450,7 @@ async fn privaxy_frontend(
     };
     let ip = env_or_config_ip(&config.network).await;
     let web_api_server_addr = SocketAddr::from((ip, config.network.web_port));
-    if config.network.tls {
+    let tls_server_config = if config.network.tls {
         let lock = configuration_save_lock.lock().await;
         let ca_certificate = config.ca.get_ca_certificate().await.unwrap();
         let ca_private_key = config.ca.get_ca_private_key().await.unwrap();
@@ -466,26 +471,25 @@ async fn privaxy_frontend(
                 panic!("Failed to read or create TLS key: {err}");
             }
         };
-        let server_config = web_tls_server_config(&tls_cert, &tls_key);
-        tokio::spawn(async move {
-            serve_frontend(
-                frontend,
-                web_api_server_addr,
-                Some(server_config),
-                async move {
-                    notify_reload.clone().notified().await;
-                },
-            )
-            .await;
-        });
+        Some(web_tls_server_config(&tls_cert, &tls_key))
     } else {
-        tokio::spawn(async move {
-            serve_frontend(frontend, web_api_server_addr, None, async move {
-                let _ = notify_reload.clone().notified().await;
-            })
-            .await;
-        });
-    }
+        None
+    };
+
+    // Awaited inline, not spawned: the caller's restart loop must not re-bind
+    // the web port until this generation has drained and dropped its listener,
+    // same sequential pattern as the proxy loop. A spawn here would let the
+    // restarted instance race the old listener for the port on reload.
+    serve_frontend(
+        frontend,
+        web_api_server_addr,
+        tls_server_config,
+        async move {
+            notify_reload.notified().await;
+            log::info!("Stopping Privaxy frontend");
+        },
+    )
+    .await;
 }
 
 /// Build a rustls `ServerConfig` for the web GUI from the OpenSSL-generated
@@ -512,6 +516,11 @@ fn web_tls_server_config(
 /// `tokio-rustls`, and drive each connection with hyper-util's auto builder
 /// (HTTP/1+2, with upgrade support so the WebSocket-based live feeds keep
 /// working).
+///
+/// Returns only once `shutdown` has fired, in-flight connections have drained
+/// and the listener has been dropped: the restart loop in `start_privaxy`
+/// depends on that ordering to re-bind the same port without racing this
+/// generation for it.
 async fn serve_frontend<F, S>(
     frontend: F,
     addr: SocketAddr,
@@ -524,11 +533,22 @@ async fn serve_frontend<F, S>(
 {
     use tokio_rustls::TlsAcceptor;
 
-    let listener = match TcpListener::bind(addr).await {
-        Ok(listener) => listener,
-        Err(err) => {
-            log::error!("Unable to bind web GUI to {}: {}", addr, err);
-            return;
+    tokio::pin!(shutdown);
+
+    // The caller only reaches this after the previous generation has dropped
+    // its listener, so a failed bind means the port is held by another
+    // process. Retry rather than return: returning would leave the web GUI
+    // down until the next reload, with nothing left listening to trigger one.
+    let listener = loop {
+        match TcpListener::bind(addr).await {
+            Ok(listener) => break listener,
+            Err(err) => {
+                log::error!("Unable to bind web GUI to {addr}: {err}; retrying in 5 seconds");
+                tokio::select! {
+                    _ = tokio::time::sleep(Duration::from_secs(5)) => {}
+                    _ = &mut shutdown => return,
+                }
+            }
         }
     };
     let scheme = if tls_config.is_some() {
@@ -542,8 +562,6 @@ async fn serve_frontend<F, S>(
     let tls_acceptor = tls_config.map(|config| TlsAcceptor::from(Arc::new(config)));
     let warp_service = warp::service(frontend);
     let graceful = GracefulShutdown::new();
-
-    tokio::pin!(shutdown);
 
     loop {
         tokio::select! {

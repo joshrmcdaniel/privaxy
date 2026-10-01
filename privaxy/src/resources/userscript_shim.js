@@ -14,8 +14,14 @@
 
 // The element this runtime is executing in, captured before anything can move
 // it. Its text is blanked once startup finishes so later page scripts cannot
-// read PRIVAXY_ENDPOINT_TOKEN out of the DOM.
+// read PRIVAXY_ENDPOINT_TOKENS out of the DOM.
 var privaxyRuntimeElement = document.currentScript;
+
+function privaxyEndpointToken(scriptId) {
+    return Object.prototype.hasOwnProperty.call(PRIVAXY_ENDPOINT_TOKENS, scriptId)
+        ? PRIVAXY_ENDPOINT_TOKENS[scriptId]
+        : null;
+}
 
 // GM storage. Values arrive preloaded in each script's descriptor, because
 // GM_getValue is synchronous in the GM API and cannot wait on a request. Reads
@@ -123,8 +129,8 @@ if (privaxyValueChannel) {
 }
 
 function privaxySchedulePersist(scriptId, key, value) {
-    if (!PRIVAXY_ENDPOINT_TOKEN) {
-        // No token means no derivable page origin; values stay in memory for
+    if (!privaxyEndpointToken(scriptId)) {
+        // No capability means values stay in memory for
         // the life of the page.
         return;
     }
@@ -153,7 +159,7 @@ function privaxySchedulePersist(scriptId, key, value) {
                 // whatever origin the page is on.
                 credentials: 'omit',
                 body: JSON.stringify({
-                    token: PRIVAXY_ENDPOINT_TOKEN,
+                    token: privaxyEndpointToken(id),
                     script: id,
                     values: pending[id]
                 })
@@ -201,14 +207,14 @@ var PRIVAXY_POLL_INTERVAL_MS = 15000;
 /// another device behind the same proxy). BroadcastChannel already covers
 /// same-origin tabs, so this is the fallback rather than the primary path.
 function privaxyStartPolling() {
-    if (privaxyPollTimer !== null || !PRIVAXY_ENDPOINT_TOKEN) {
+    if (privaxyPollTimer !== null || Object.keys(PRIVAXY_ENDPOINT_TOKENS).length === 0) {
         return;
     }
 
     privaxyPollTimer = setInterval(function () {
         Object.keys(privaxyValueListeners).forEach(function (scriptId) {
             var listeners = privaxyValueListeners[scriptId];
-            if (!listeners || Object.keys(listeners).length === 0) {
+            if (!listeners || Object.keys(listeners).length === 0 || !privaxyEndpointToken(scriptId)) {
                 return;
             }
 
@@ -216,7 +222,7 @@ function privaxyStartPolling() {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 credentials: 'omit',
-                body: JSON.stringify({ token: PRIVAXY_ENDPOINT_TOKEN, script: scriptId })
+                body: JSON.stringify({ token: privaxyEndpointToken(scriptId), script: scriptId })
             })
                 .then(function (response) {
                     return response.ok ? response.json() : null;
@@ -452,13 +458,13 @@ function privaxyBuildApi(info) {
     // Served from the reserved path rather than encoded as a data: URI, so a
     // large image costs nothing until the page actually requests it.
     function getResourceUrl(name) {
-        if (!resourceEntry(name) || !PRIVAXY_ENDPOINT_TOKEN) {
+        if (!resourceEntry(name) || !privaxyEndpointToken(info.id)) {
             return null;
         }
 
         return '/__privaxy__/gm/resource?script=' + encodeURIComponent(info.id) +
             '&name=' + encodeURIComponent(name) +
-            '&token=' + encodeURIComponent(PRIVAXY_ENDPOINT_TOKEN);
+            '&token=' + encodeURIComponent(privaxyEndpointToken(info.id));
     }
 
     // GM_xmlhttpRequest is relayed through the proxy, which performs the
@@ -469,7 +475,7 @@ function privaxyBuildApi(info) {
         if (!details || !details.url) {
             throw new Error('GM_xmlhttpRequest requires a url');
         }
-        if (!PRIVAXY_ENDPOINT_TOKEN) {
+        if (!privaxyEndpointToken(info.id)) {
             var unavailable = new Error(
                 'GM_xmlhttpRequest is unavailable: no Privaxy endpoint token for this page'
             );
@@ -487,7 +493,7 @@ function privaxyBuildApi(info) {
             headers: { 'Content-Type': 'application/json' },
             credentials: 'omit',
             body: JSON.stringify({
-                token: PRIVAXY_ENDPOINT_TOKEN,
+                token: privaxyEndpointToken(info.id),
                 script: info.id,
                 method: details.method || 'GET',
                 // Resolved against the page so scripts may pass a relative URL,
@@ -853,7 +859,7 @@ window.__privaxyRunUserScript = privaxyRunUserScript;
 
 // Startup is complete, so drop this element's source from the DOM. The runtime
 // is already compiled and running; what remains in `textContent` is only of use
-// to a page script wanting to read PRIVAXY_ENDPOINT_TOKEN. Being injected at the
+// to a page script wanting to read PRIVAXY_ENDPOINT_TOKENS. Being injected at the
 // top of the document head, this executes before any of the page's own scripts
 // get a chance to look.
 if (privaxyRuntimeElement) {

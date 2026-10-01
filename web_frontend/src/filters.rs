@@ -1,4 +1,4 @@
-use crate::button::ButtonState;
+use crate::button::{ButtonColor, ButtonState, PrivaxyButton};
 use crate::filter_edit::FilterEditModal;
 use crate::filter_failures::FilterFailuresPanel;
 use crate::filterlists::SearchFilterList;
@@ -377,6 +377,12 @@ impl FilterStatusChangeRequest {
 
 pub type FilterConfiguration = Vec<Filter>;
 
+#[derive(Debug, Deserialize)]
+pub struct FilterRefreshResult {
+    updated: usize,
+    failed: usize,
+}
+
 pub enum Message {
     Load,
     Display(FilterConfiguration),
@@ -387,6 +393,8 @@ pub enum Message {
     OpenEdit(Filter),
     CloseEdit,
     EditCompleted,
+    RefreshLists,
+    RefreshCompleted(Result<FilterRefreshResult, String>),
 }
 
 pub struct Filters {
@@ -394,6 +402,9 @@ pub struct Filters {
     filter_configuration_before_changes: Option<FilterConfiguration>,
     changes_saved: bool,
     editing_filter: Option<Filter>,
+    refreshing: bool,
+    refresh_result: Option<Result<FilterRefreshResult, String>>,
+    refresh_generation: u64,
 }
 
 impl Filters {
@@ -427,6 +438,9 @@ impl Component for Filters {
             filter_configuration_before_changes: None,
             changes_saved: false,
             editing_filter: None,
+            refreshing: false,
+            refresh_result: None,
+            refresh_generation: 0,
         }
     }
 
@@ -519,6 +533,37 @@ impl Component for Filters {
             Message::EditCompleted => {
                 self.editing_filter = None;
                 ctx.link().send_message(Message::Load);
+            }
+            Message::RefreshLists => {
+                if self.refreshing || self.configuration_has_changed() {
+                    return false;
+                }
+                self.refreshing = true;
+                self.refresh_result = None;
+                let link = ctx.link().clone();
+                spawn_local(async move {
+                    let result = match Request::post("/api/filters/refresh").send().await {
+                        Ok(response) if response.ok() => response
+                            .json::<FilterRefreshResult>()
+                            .await
+                            .map_err(|err| err.to_string()),
+                        Ok(response) => {
+                            let status = response.status();
+                            Err(response
+                                .json::<ApiError>()
+                                .await
+                                .map(|err| err.error)
+                                .unwrap_or_else(|_| format!("HTTP {status}")))
+                        }
+                        Err(err) => Err(err.to_string()),
+                    };
+                    link.send_message(Message::RefreshCompleted(result));
+                });
+            }
+            Message::RefreshCompleted(result) => {
+                self.refreshing = false;
+                self.refresh_result = Some(result);
+                self.refresh_generation += 1;
             }
         };
 
@@ -636,6 +681,34 @@ impl Component for Filters {
             </div>
         };
 
+        let refresh_state = if self.refreshing {
+            ButtonState::Loading
+        } else if self.configuration_has_changed()
+            || !self
+                .filter_configuration
+                .as_ref()
+                .is_some_and(|filters| filters.iter().any(|filter| filter.enabled))
+        {
+            ButtonState::Disabled
+        } else {
+            ButtonState::Enabled
+        };
+        let refresh_message = if self.refreshing {
+            Some(("text-gray-600", "Downloading enabled lists…".to_string()))
+        } else {
+            match &self.refresh_result {
+                Some(Ok(result)) if result.failed > 0 => Some(("text-amber-700", format!(
+                    "Downloaded {} lists; {} failed. Existing valid copies were kept. See filter failures for details.",
+                    result.updated, result.failed
+                ))),
+                Some(Ok(result)) => Some(("text-green-700", format!(
+                    "Downloaded {} lists. Filtering is updating.", result.updated
+                ))),
+                Some(Err(error)) => Some(("text-red-600", format!("Refresh failed: {error}"))),
+                None => None,
+            }
+        };
+
         let edit_modal = match &self.editing_filter {
             Some(filter) => html! {
                 <FilterEditModal
@@ -654,14 +727,26 @@ impl Component for Filters {
                 html! {
                         <>
                             { title }
-                            <FilterFailuresPanel on_changed={ctx.link().callback(|_| Message::Load)} />
+                            <FilterFailuresPanel on_changed={ctx.link().callback(|_| Message::Load)}
+                                refresh_trigger={self.refresh_generation} />
                             {success_banner}
                             { edit_modal }
-                            <div class="mb-5 flex space-x-4">
+                            <div class="mb-5 flex flex-wrap items-center gap-x-4">
                                 <AddFilterComponent state={save_button::SaveButtonState::Enabled}/>
                                 <SearchFilterList filter_configuration={filter_configuration.clone()}/>
                                 {save_button!(save_callback, save_button_state)}
+                                <div class="mt-5">
+                                    <PrivaxyButton state={refresh_state} color={ButtonColor::Blue}
+                                        button_text={"Refresh enabled lists"}
+                                        onclick={ctx.link().callback(|_| Message::RefreshLists)} />
+                                </div>
                             </div>
+                            if self.configuration_has_changed() {
+                                <p class="mb-4 text-sm text-gray-600">{"Save selection changes before refreshing."}</p>
+                            }
+                            if let Some((color, message)) = refresh_message {
+                                <p role="status" aria-live="polite" class={classes!("mb-4", "text-sm", color)}>{message}</p>
+                            }
                             { render_category(FilterGroup::Default, filter_configuration) }
                             { render_category(FilterGroup::Ads, filter_configuration) }
                             { render_category(FilterGroup::Privacy, filter_configuration) }

@@ -43,9 +43,9 @@ pub enum ConfigurationError {
     SerializeError(#[from] toml::ser::Error),
     #[error("this directory was not found")]
     DirectoryNotFound,
-    #[error("file system error")]
+    #[error("file system error: {0}")]
     FileSystemError(#[from] std::io::Error),
-    #[error("data store disconnected")]
+    #[error("HTTP request failed: {0}")]
     UnableToRetrieveDefaultFilters(#[from] reqwest::Error),
     #[error("unable to decode filter bytes, bad utf8 data")]
     UnableToDecodeFilterbytes(#[from] std::str::Utf8Error),
@@ -100,6 +100,12 @@ pub struct DebugConfig {
     /// logs remain governed by `RUST_LOG`. Defaults to `info`.
     #[serde(default)]
     pub log_level: crate::logging::LogLevel,
+}
+
+#[derive(Debug, Default, Serialize)]
+pub struct FilterRefreshResult {
+    pub updated: usize,
+    pub failed: usize,
 }
 
 #[derive(Error, Debug)]
@@ -285,8 +291,9 @@ impl Configuration {
         &mut self,
         http_client: reqwest::Client,
         filter_failure_store: &FilterFailureStore,
-    ) {
+    ) -> FilterRefreshResult {
         log::debug!("Updating filters");
+        let mut summary = FilterRefreshResult::default();
 
         let futures = self
             .filters
@@ -302,13 +309,18 @@ impl Configuration {
 
         for (filter, result) in join_all(futures).await {
             match result {
-                Ok(_) => filter_failure_store.clear(&filter.file_name),
+                Ok(_) => {
+                    summary.updated += 1;
+                    filter_failure_store.clear(&filter.file_name);
+                }
                 Err(err) => {
+                    summary.failed += 1;
                     log::error!("Failed to update filter '{}': {err}", filter.title);
                     filter_failure_store.record(filter, &err.to_string());
                 }
             }
         }
+        summary
     }
 
     pub async fn add_filter(

@@ -107,6 +107,7 @@ Download and install the deb/rpm/binary with mips in the name
 
 ```sh
 docker run -d --name privaxy --restart unless-stopped \
+  --log-driver json-file --log-opt max-size=10m --log-opt max-file=3 \
   -p 8100:8100 -p 8200:8200 \
   -v /path/to/conf:/conf \
   ghcr.io/joshrmcdaniel/privaxy:<tag>
@@ -151,6 +152,11 @@ services:
     volumes:
       - path/to/conf:/conf
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 ```
 
 Tags:
