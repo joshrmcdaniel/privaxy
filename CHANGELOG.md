@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+- Add a Refresh enabled lists action to the Filters page, with progress and
+  download results, backed by authenticated `POST /api/filters/refresh`.
+- Bound Docker log growth in the Compose configuration and documented Docker
+  commands to three 10 MB files per container.
+- Validate cached filter lists instead of accepting empty files as successfully
+  loaded. Recover a missing or invalid `<hash>.txt` from a valid sibling `<hash>`
+  when available, otherwise download it again and report failures. Filter cache
+  updates now replace files atomically to avoid truncating a working list.
+- Wait for the initial filter load before accepting proxy traffic. Previously,
+  a slow list download left network and cosmetic filtering inactive while the
+  proxy already appeared ready. The web UI remains available during loading,
+  and logs now identify loaded and failed lists.
+- Fixed proxy filtering and forwarding: upgrade requests now pass adblock and
+  DoH policy checks; the MMTLS tunnel no longer intercepts WebSocket handshakes;
+  truncated upstream bodies abort downstream responses; replacement resources
+  are decoded with their MIME types; IPv6 interception certificates carry IP
+  SANs; and CSP element directives receive the injection nonce.
+- Userscript endpoints now require tokens bound to the script and its matched
+  page, preventing access to another script's storage or fetch permissions and
+  allowing path-scoped scripts to poll values and load resources. Disabling a
+  script or changing its rules so it no longer matches revokes access. Reload
+  open pages after upgrading to obtain the new tokens.
+- Fixed the web UI dying at random after a reload (SIGHUP or saving
+  Network/PAC/Debug settings). The restarted web server raced the outgoing one
+  for port bind while the old listener was still draining connections; losing
+  the race left the UI down until the next reload. The frontend now tears down
+  and re-binds sequentially, the same way the proxy loop always has, and a
+  bind failure retries every 5 seconds instead of giving up.
 - Userscript engine: Greasemonkey/Tampermonkey-style scripts injected into
   matching pages, managed at runtime from the web UI.
   - New **Settings → Userscripts** page: install a script by pasting it or by
@@ -50,7 +78,7 @@
     request. Uninstalling a script drops its values.
   - `GM_xmlhttpRequest` is relayed server-side, so it has no CORS restrictions
     — the one capability a real content script cannot have. Three independent
-    controls gate it: the origin-bound token, the requesting script's own
+    controls gate it: a token bound to the script and page, the requesting script's own
     `@connect` declarations (as Tampermonkey requires, so compatibility is
     unaffected), and a filter rejecting loopback, RFC1918, carrier-grade NAT,
     link-local (including the cloud metadata address) and IPv4-mapped

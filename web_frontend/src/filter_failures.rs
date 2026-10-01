@@ -38,6 +38,9 @@ pub struct Props {
     /// Emitted after a successful edit, removal or disable, so the
     /// surrounding page can reload its filter list.
     pub on_changed: Callback<()>,
+    /// Reload after a manual list refresh without discarding an open editor.
+    #[prop_or_default]
+    pub refresh_trigger: u64,
 }
 
 pub enum Message {
@@ -69,6 +72,14 @@ pub struct FilterFailuresPanel {
 impl Component for FilterFailuresPanel {
     type Message = Message;
     type Properties = Props;
+
+    fn changed(&mut self, ctx: &Context<Self>, old_props: &Props) -> bool {
+        if ctx.props().refresh_trigger != old_props.refresh_trigger {
+            self.refresh_generation += 1;
+            ctx.link().send_message(Message::Refresh);
+        }
+        false
+    }
 
     fn create(ctx: &Context<Self>) -> Self {
         ctx.link().send_message(Message::Refresh);

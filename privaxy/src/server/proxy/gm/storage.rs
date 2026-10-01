@@ -51,6 +51,15 @@ pub struct GmStorageStore {
 }
 
 impl GmStorageStore {
+    #[cfg(test)]
+    pub(crate) fn in_memory() -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(Inner::default())),
+            flush_requested: Arc::new(Notify::new()),
+            path: None,
+        }
+    }
+
     /// Load the store from disk, falling back to empty when the file is absent
     /// or unreadable. A corrupt file is logged and ignored rather than fatal:
     /// losing script settings must not stop the proxy from starting.
@@ -234,11 +243,7 @@ mod tests {
     /// A store with no configuration directory still works in memory, which is
     /// also what makes this testable without touching disk.
     fn in_memory_store() -> GmStorageStore {
-        GmStorageStore {
-            inner: Arc::new(Mutex::new(Inner::default())),
-            flush_requested: Arc::new(Notify::new()),
-            path: None,
-        }
+        GmStorageStore::in_memory()
     }
 
     fn changes(pairs: Vec<(&str, Option<Value>)>) -> BTreeMap<String, Option<Value>> {

@@ -14,7 +14,7 @@ use http::{HeaderMap, Method, Uri};
 /// Well-known DoH endpoint hostnames. Used as a secondary signal (alongside the
 /// RFC 8484 `application/dns-message` content type) to catch JSON DoH and
 /// clients that omit the canonical media type.
-const KNOWN_DOH_HOSTS: [&str; 12] = [
+const KNOWN_DOH_HOSTS: [&str; 16] = [
     "cloudflare-dns.com",
     "mozilla.cloudflare-dns.com",
     "dns.google",
@@ -27,6 +27,10 @@ const KNOWN_DOH_HOSTS: [&str; 12] = [
     "dns.adguard-dns.com",
     "doh.dns.sb",
     "dns.controld.com",
+    "1.0.0.1",
+    "1.1.1.1",
+    "8.8.8.8",
+    "8.8.4.4",
 ];
 
 const DOH_MEDIA_TYPES: [&str; 2] = ["application/dns-message", "application/dns-json"];
