@@ -301,6 +301,9 @@ impl Component for PacSettingsPage {
                     <span class="font-mono bg-gray-100">{"/proxy.pac"}</span>
                     {". Point your browser or system at that URL to route traffic through Privaxy, with the optional bypass rules below."}
                 </p>
+                <p class="mt-2">
+                    {"Inclusion-only mode under Inclusions & exclusions also applies here: unlisted and excluded hosts go directly. These bypass rules take precedence over inclusions."}
+                </p>
             </div>
         };
 

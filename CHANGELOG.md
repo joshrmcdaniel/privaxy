@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Add inclusion-only filtering under Settings → Inclusions & exclusions, with
+  a separate hostname/wildcard list. Exclusions retain precedence; an empty
+  inclusion list bypasses all hosts. The mode applies to HTTP, HTTPS, and PAC
+  generation, updates live through authenticated `GET`/`PUT /api/inclusions`,
+  and reloads from configuration on SIGHUP. Existing configurations keep their
+  previous default mode. Ordinary excluded HTTP requests now also bypass
+  filtering and HTML rewriting.
 - Add a Refresh enabled lists action to the Filters page, with progress and
   download results, backed by authenticated `POST /api/filters/refresh`.
 - Bound Docker log growth in the Compose configuration and documented Docker

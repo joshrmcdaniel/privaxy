@@ -19,12 +19,12 @@ async fn get_tls_failures(
     local_exclusions_store: LocalExclusionStore,
 ) -> Result<Box<dyn warp::Reply>, Infallible> {
     // The store already omits ignored hosts; additionally omit hosts the
-    // exclusion list now covers (their failures predate the exclusion, or the
+    // interception policy now bypasses (their failures predate the change, or the
     // client re-dialed before the exclusion took effect).
     let entries: Vec<TlsFailureEntry> = tls_failure_store
         .entries()
         .into_iter()
-        .filter(|entry| !local_exclusions_store.contains(&entry.host))
+        .filter(|entry| local_exclusions_store.should_intercept(&entry.host, &entry.host))
         .collect();
 
     Ok(Box::new(warp::reply::json(&entries)))

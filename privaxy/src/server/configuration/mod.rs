@@ -66,6 +66,12 @@ pub enum ConfigurationError {
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 pub struct Configuration {
     pub exclusions: BTreeSet<String>,
+    /// Intercept only hosts matching `inclusions`. Existing configurations
+    /// retain the default of intercepting everything except exclusions.
+    #[serde(default)]
+    pub include_only: bool,
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub inclusions: BTreeSet<String>,
     /// Hosts the operator chose to hide from the TLS-failure report in the
     /// web UI. Absent from configuration files written before this feature
     /// existed, hence the serde default.
@@ -231,13 +237,13 @@ impl Configuration {
     pub async fn set_exclusions(
         &mut self,
         exclusions: &str,
-        mut local_exclusion_store: crate::exclusions::LocalExclusionStore,
+        local_exclusion_store: crate::exclusions::LocalExclusionStore,
     ) -> ConfigurationResult<()> {
         self.exclusions = Self::deserialize_lines(exclusions);
 
         self.save().await?;
 
-        local_exclusion_store.replace_exclusions(Vec::from_iter(self.exclusions.clone()));
+        local_exclusion_store.replace_configuration(self);
 
         Ok(())
     }
@@ -576,6 +582,8 @@ impl Configuration {
                     .iter()
                     .map(|entry| entry.to_string()),
             ),
+            include_only: false,
+            inclusions: BTreeSet::new(),
             ignored_tls_failures: BTreeSet::new(),
             custom_filters: Vec::new(),
             auth: Auth::new_initialized(),
@@ -604,6 +612,42 @@ fn get_base_directory() -> ConfigurationResult<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::proxy::exclusions::LocalExclusionStore;
+
+    #[tokio::test]
+    async fn replacing_policy_updates_existing_handles_without_losing_exclusions() {
+        let mut cfg = crate::configuration::Configuration::new_default()
+            .await
+            .unwrap();
+        cfg.exclusions = ["excluded.test".to_string()].into();
+        let store = LocalExclusionStore::from_configuration(&cfg);
+        let existing_handle = store.clone();
+        cfg.include_only = true;
+        cfg.inclusions = ["included.test".to_string(), "excluded.test".to_string()].into();
+        store.replace_configuration(&cfg);
+        assert!(existing_handle.should_intercept("included.test", "included.test"));
+        assert!(!existing_handle.should_intercept("other.test", "other.test"));
+        assert!(!existing_handle.should_intercept("excluded.test", "excluded.test"));
+    }
+
+    #[tokio::test]
+    async fn inclusion_settings_default_off_and_round_trip() {
+        let mut configuration = Configuration::new_default().await.unwrap();
+        let old = toml::to_string_pretty(&configuration)
+            .unwrap()
+            .replace("include_only = false\n", "");
+        let legacy: Configuration = toml::from_str(&old).unwrap();
+        assert!(!legacy.include_only);
+        assert!(legacy.inclusions.is_empty());
+
+        configuration.include_only = true;
+        configuration.inclusions = ["example.com".to_string(), "*.example.com".to_string()].into();
+        let saved = toml::to_string_pretty(&configuration).unwrap();
+        assert_eq!(
+            toml::from_str::<Configuration>(&saved).unwrap(),
+            configuration
+        );
+    }
 
     /// A freshly generated default configuration must survive a
     /// `to_string_pretty` -> `from_str` round-trip unchanged. This guards the

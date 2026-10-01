@@ -30,51 +30,51 @@ impl WildMatchCollection {
     }
 }
 
-lazy_static! {
-    static ref DEFAULT_EXCLUSIONS: WildMatchCollection = {
-        // Apple service exclusions, as defined in : https://support.apple.com/en-us/HT210060
-        // > Apple services will fail any connection that uses
-        // > HTTPS Interception (SSL Inspection). If the HTTPS traffic
-        // > traverses a web proxy, disable HTTPS Interception for the hosts
-        // > listed in this article.
-        let exclusions = vec![
-            String::from("*.apple.com"),
-            String::from("static.ips.apple.com"),
-            String::from("*.push.apple.com"),
-            String::from("setup.icloud.com"),
-            String::from("*.business.apple.com"),
-            String::from("*.school.apple.com"),
-            String::from("upload.appleschoolcontent.com"),
-            String::from("ws-ee-maidsvc.icloud.com"),
-            String::from("itunes.com"),
-            String::from("appldnld.apple.com.edgesuite.net"),
-            String::from("*.itunes.apple.com"),
-            String::from("updates-http.cdn-apple.com"),
-            String::from("updates.cdn-apple.com"),
-            String::from("*.apps.apple.com"),
-            String::from("*.mzstatic.com"),
-            String::from("*.appattest.apple.com"),
-            String::from("doh.dns.apple.com"),
-            String::from("appleid.cdn-apple.com"),
-            String::from("*.apple-cloudkit.com"),
-            String::from("*.apple-livephotoskit.com"),
-            String::from("*.apzones.com"),
-            String::from("*.cdn-apple.com"),
-            String::from("*.gc.apple.com"),
-            String::from("*.icloud.com"),
-            String::from("*.icloud.com.cn"),
-            String::from("*.icloud.apple.com"),
-            String::from("*.icloud-content.com"),
-            String::from("*.iwork.apple.com"),
-            String::from("mask.icloud.com"),
-            String::from("mask-h2.icloud.com"),
-            String::from("mask-api.icloud.com"),
-            String::from("devimages-cdn.apple.com"),
-            String::from("download.developer.apple.com"),
-        ];
+// Apple service exclusions, as defined in https://support.apple.com/en-us/HT210060.
+// Shared with PAC generation so inclusion mode keeps the same precedence there.
+pub(crate) const DEFAULT_EXCLUSION_PATTERNS: &[&str] = &[
+    "*.apple.com",
+    "static.ips.apple.com",
+    "*.push.apple.com",
+    "setup.icloud.com",
+    "*.business.apple.com",
+    "*.school.apple.com",
+    "upload.appleschoolcontent.com",
+    "ws-ee-maidsvc.icloud.com",
+    "itunes.com",
+    "appldnld.apple.com.edgesuite.net",
+    "*.itunes.apple.com",
+    "updates-http.cdn-apple.com",
+    "updates.cdn-apple.com",
+    "*.apps.apple.com",
+    "*.mzstatic.com",
+    "*.appattest.apple.com",
+    "doh.dns.apple.com",
+    "appleid.cdn-apple.com",
+    "*.apple-cloudkit.com",
+    "*.apple-livephotoskit.com",
+    "*.apzones.com",
+    "*.cdn-apple.com",
+    "*.gc.apple.com",
+    "*.icloud.com",
+    "*.icloud.com.cn",
+    "*.icloud.apple.com",
+    "*.icloud-content.com",
+    "*.iwork.apple.com",
+    "mask.icloud.com",
+    "mask-h2.icloud.com",
+    "mask-api.icloud.com",
+    "devimages-cdn.apple.com",
+    "download.developer.apple.com",
+];
 
-        WildMatchCollection::new(exclusions)
-    };
+lazy_static! {
+    static ref DEFAULT_EXCLUSIONS: WildMatchCollection = WildMatchCollection::new(
+        DEFAULT_EXCLUSION_PATTERNS
+            .iter()
+            .map(|host| host.to_string())
+            .collect()
+    );
 }
 
 /// Hosts the maintainer has observed to use certificate pinning, HSTS preload
@@ -272,26 +272,125 @@ pub fn recommended_exclusions() -> &'static [&'static str] {
     ]
 }
 
+/// One atomic snapshot keeps the mode and both lists consistent for a request.
 #[derive(Debug, Clone)]
-pub struct LocalExclusionStore(Arc<RwLock<WildMatchCollection>>);
+struct InterceptionRules {
+    exclusions: WildMatchCollection,
+    inclusions: WildMatchCollection,
+    include_only: bool,
+}
+
+impl From<&crate::configuration::Configuration> for InterceptionRules {
+    fn from(configuration: &crate::configuration::Configuration) -> Self {
+        Self {
+            exclusions: WildMatchCollection::new(
+                configuration.exclusions.iter().cloned().collect(),
+            ),
+            inclusions: WildMatchCollection::new(
+                configuration.inclusions.iter().cloned().collect(),
+            ),
+            include_only: configuration.include_only,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct LocalExclusionStore(Arc<RwLock<InterceptionRules>>);
 
 impl LocalExclusionStore {
+    #[cfg(test)]
     pub fn new(exclusions: Vec<String>) -> Self {
-        let collection = WildMatchCollection::new(exclusions);
-        Self(Arc::new(RwLock::new(collection)))
+        Self(Arc::new(RwLock::new(InterceptionRules {
+            exclusions: WildMatchCollection::new(exclusions),
+            inclusions: WildMatchCollection::new(Vec::new()),
+            include_only: false,
+        })))
     }
 
-    pub fn replace_exclusions(&mut self, exclusions: Vec<String>) {
-        let new_exclusion_store = LocalExclusionStore::new(exclusions);
-
-        *self.0.write().unwrap() = new_exclusion_store.0.read().unwrap().clone();
+    pub fn from_configuration(configuration: &crate::configuration::Configuration) -> Self {
+        Self(Arc::new(RwLock::new(configuration.into())))
     }
 
-    pub fn contains(&self, element: &str) -> bool {
-        if DEFAULT_EXCLUSIONS.is_match(element) {
-            true
-        } else {
-            self.0.read().unwrap().is_match(element)
+    pub fn replace_configuration(&self, configuration: &crate::configuration::Configuration) {
+        *self.0.write().unwrap() = configuration.into();
+    }
+
+    /// Match both forms of a CONNECT hostname (e.g. rbm.goog(smsft) and
+    /// rbm.goog) before applying the mode. Negating each match independently
+    /// would incorrectly bypass a host whose inclusion matches just one form.
+    pub fn should_intercept(&self, host: &str, raw_host: &str) -> bool {
+        let rules = self.0.read().unwrap();
+        let matches = |list: &WildMatchCollection| {
+            list.is_match(host) || (raw_host != host && list.is_match(raw_host))
+        };
+        !matches(&DEFAULT_EXCLUSIONS)
+            && !matches(&rules.exclusions)
+            && (!rules.include_only || matches(&rules.inclusions))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn policy(include_only: bool, inclusions: &[&str], exclusions: &[&str]) -> LocalExclusionStore {
+        LocalExclusionStore(Arc::new(RwLock::new(InterceptionRules {
+            include_only,
+            inclusions: WildMatchCollection::new(
+                inclusions.iter().map(|s| s.to_string()).collect(),
+            ),
+            exclusions: WildMatchCollection::new(
+                exclusions.iter().map(|s| s.to_string()).collect(),
+            ),
+        })))
+    }
+
+    #[test]
+    fn normal_mode_preserves_exclusions_and_ignores_inclusions() {
+        let store = policy(false, &["included.test"], &["excluded.test"]);
+        assert!(store.should_intercept("other.test", "other.test"));
+        assert!(!store.should_intercept("excluded.test", "excluded.test"));
+        assert!(!store.should_intercept("setup.icloud.com", "setup.icloud.com"));
+    }
+
+    #[test]
+    fn inclusion_mode_matches_exact_and_wildcard_hosts_case_insensitively() {
+        let store = policy(
+            true,
+            &["EXAMPLE.com", "*.example.net", "192.0.2.*", "[::1]"],
+            &[],
+        );
+        for host in ["example.com", "Sub.Example.NET", "192.0.2.42", "[::1]"] {
+            assert!(store.should_intercept(host, host), "{host}");
+        }
+        for host in [
+            "sub.example.com",
+            "example.net",
+            "example.com.evil.test",
+            "other.test",
+        ] {
+            assert!(!store.should_intercept(host, host), "{host}");
+        }
+        assert!(!policy(true, &[], &[]).should_intercept("example.com", "example.com"));
+    }
+
+    #[test]
+    fn exclusions_always_win_even_when_everything_is_included() {
+        let store = policy(true, &["*"], &["*.example.com"]);
+        assert!(store.should_intercept("other.test", "other.test"));
+        assert!(!store.should_intercept("sub.example.com", "sub.example.com"));
+        assert!(!store.should_intercept("setup.icloud.com", "setup.icloud.com"));
+    }
+
+    #[test]
+    fn service_selector_aliases_are_matched_before_applying_the_mode() {
+        for included in ["rbm.goog", "rbm.goog(smsft)"] {
+            let store = policy(true, &[included], &[]);
+            assert!(store.should_intercept("rbm.goog", "rbm.goog(smsft)"));
+            for excluded in ["rbm.goog", "rbm.goog(smsft)"] {
+                assert!(!policy(true, &[included], &[excluded])
+                    .should_intercept("rbm.goog", "rbm.goog(smsft)"));
+            }
         }
     }
 }

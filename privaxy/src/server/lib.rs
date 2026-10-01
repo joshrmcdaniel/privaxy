@@ -197,8 +197,7 @@ pub async fn start_privaxy() -> PrivaxyServer {
     // available; the web UI can change it on the fly afterwards.
     log_handle.set_level(configuration.debug.log_level.to_level_filter());
 
-    let local_exclusion_store =
-        LocalExclusionStore::new(Vec::from_iter(configuration.exclusions.clone()));
+    let local_exclusion_store = LocalExclusionStore::from_configuration(&configuration);
     let local_exclusion_store_clone = local_exclusion_store.clone();
 
     let ca_certificate = match configuration.ca.get_ca_certificate().await {
@@ -326,7 +325,6 @@ pub async fn start_privaxy() -> PrivaxyServer {
         }
         let notify_reload_backend = notify_reload_clone.clone();
         let cfg_lock_backend = configuration_save_lock_ref.clone();
-        let mut local_exclusion_store = local_exclusion_store;
         let mut rt_cert_cache =
             cert::CertCache::new(ca_certificate.clone(), ca_private_key.clone());
         let mut rt_ca_certificate = ca_certificate;
@@ -360,10 +358,9 @@ pub async fn start_privaxy() -> PrivaxyServer {
                     continue;
                 }
             };
-            // The exclusion store is only otherwise mutated by the web UI
-            // route; without this refresh, exclusions edited in the
-            // configuration file never take effect on SIGHUP reload.
-            local_exclusion_store.replace_exclusions(Vec::from_iter(cfg.exclusions.clone()));
+            // The UI updates this store live; SIGHUP must also pick up file
+            // edits to the mode and both inclusion/exclusion lists.
+            local_exclusion_store.replace_configuration(&cfg);
             // Same for the TLS-failure ignore set: pick up hand-edited
             // `ignored_tls_failures` entries on SIGHUP reload.
             tls_failure_store.set_ignored(cfg.ignored_tls_failures.clone());
