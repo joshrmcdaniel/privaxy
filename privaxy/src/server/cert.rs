@@ -144,16 +144,21 @@ impl SignedWithCaCert {
             )
             .unwrap();
 
-        let subject_alternative_name = match std::net::IpAddr::from_str(authority.host()) {
+        let host = authority.host();
+        let san_host = host
+            .strip_prefix('[')
+            .and_then(|host| host.strip_suffix(']'))
+            .unwrap_or(host);
+        let subject_alternative_name = match std::net::IpAddr::from_str(san_host) {
             Ok(_ip_addr) => {
                 let mut san = SubjectAlternativeName::new();
-                san.ip(authority.host());
+                san.ip(san_host);
 
                 san
             }
             Err(_err) => {
                 let mut san = SubjectAlternativeName::new();
-                san.dns(authority.host());
+                san.dns(san_host);
                 san
             }
         }
@@ -247,6 +252,27 @@ impl CertCache {
 mod tests {
     use super::*;
     use openssl::rsa::Rsa;
+
+    #[test]
+    fn ip_literals_have_ip_subject_alternative_names() {
+        let (ca_certificate, ca_private_key) = crate::ca::make_ca_certificate();
+        let leaf_key = PKey::from_rsa(Rsa::generate(2048).unwrap()).unwrap();
+        for (authority, ip) in [("127.0.0.1:443", "127.0.0.1"), ("[::1]:443", "::1")] {
+            let authority = authority.parse().unwrap();
+            let cert = SignedWithCaCert::build_ca_signed_cert(
+                &ca_certificate,
+                &ca_private_key,
+                &authority,
+                &leaf_key,
+            );
+            let names = cert.subject_alt_names().unwrap();
+            let expected: Vec<u8> = match ip.parse::<std::net::IpAddr>().unwrap() {
+                std::net::IpAddr::V4(ip) => ip.octets().to_vec(),
+                std::net::IpAddr::V6(ip) => ip.octets().to_vec(),
+            };
+            assert_eq!(names[0].ipaddress(), Some(expected.as_slice()));
+        }
+    }
 
     /// Building a leaf certificate signed by the CA and assembling its rustls
     /// `ServerConfig` must succeed without panicking. Post-upgrade to rustls

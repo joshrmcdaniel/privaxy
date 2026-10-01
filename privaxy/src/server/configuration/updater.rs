@@ -4,7 +4,7 @@ use crate::proxy::userscripts::{reload_userscripts, UserScriptStore};
 use futures::future::{AbortHandle, Abortable};
 
 use tokio::sync::mpsc::Receiver;
-use tokio::sync::{self, mpsc::Sender};
+use tokio::sync::{self, mpsc::Sender, oneshot};
 
 pub struct ConfigurationUpdater {
     filters_updater_abort_handle: AbortHandle,
@@ -69,8 +69,12 @@ impl ConfigurationUpdater {
         }
     }
 
-    pub(crate) fn start(mut self) {
+    /// The proxy must wait for this signal before accepting traffic. The web
+    /// UI can start immediately so filter-loading failures remain observable.
+    pub(crate) fn start(mut self) -> oneshot::Receiver<()> {
+        let (ready_sender, ready_receiver) = oneshot::channel();
         tokio::spawn(async move {
+            let mut ready_sender = Some(ready_sender);
             loop {
                 let mut configuration = self.rx.recv().await.unwrap();
                 // Abort the previously-spawned filters_updater so it doesn't
@@ -90,6 +94,10 @@ impl ConfigurationUpdater {
                 )
                 .await;
                 self.adblock_requester.replace_engine(filters).await;
+
+                if let Some(ready_sender) = ready_sender.take() {
+                    let _ = ready_sender.send(());
+                }
 
                 let adblock_requester_clone = self.adblock_requester.clone();
                 let http_client_clone = self.http_client.clone();
@@ -116,6 +124,7 @@ impl ConfigurationUpdater {
                 log::info!("Applied new configuration");
             }
         });
+        ready_receiver
     }
 
     async fn filters_updater(

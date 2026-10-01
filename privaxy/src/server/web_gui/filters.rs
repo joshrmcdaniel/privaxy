@@ -402,19 +402,98 @@ async fn get_filter_failures(
     Ok(warp::reply::json(&failures))
 }
 
+async fn refresh_filters(
+    http_client: reqwest::Client,
+    configuration_updater_sender: Sender<Configuration>,
+    configuration_save_lock: Arc<tokio::sync::Mutex<()>>,
+    filter_failure_store: FilterFailureStore,
+    refresh_lock: Arc<tokio::sync::Mutex<()>>,
+) -> Result<impl warp::Reply, Infallible> {
+    let Ok(refresh_guard) = refresh_lock.try_lock_owned() else {
+        return Ok(Response::builder()
+            .status(http::StatusCode::CONFLICT)
+            .header(http::header::CONTENT_TYPE, "application/json")
+            .body(
+                serde_json::to_string(&ApiError {
+                    error: "A filter refresh is already running".into(),
+                })
+                .unwrap(),
+            )
+            .unwrap());
+    };
+
+    // Finish the refresh even if the browser leaves this page. Keep downloads
+    // outside the configuration lock so other authenticated UI requests work.
+    let task = tokio::spawn(async move {
+        let _refresh_guard = refresh_guard;
+        let mut configuration = {
+            let _guard = configuration_save_lock.lock().await;
+            Configuration::read_from_home().await?
+        };
+        log::info!("Manually refreshing enabled filter lists");
+        let summary = configuration
+            .update_filters(http_client, &filter_failure_store)
+            .await;
+
+        // Apply the current selection, including edits made while downloading.
+        // Never save the older snapshot over the user's newer configuration.
+        let _guard = configuration_save_lock.lock().await;
+        let current = Configuration::read_from_home().await?;
+        filter_failure_store.sync_with_filters(&current.filters);
+        configuration_updater_sender
+            .send(current)
+            .await
+            .map_err(|_| {
+                ConfigurationError::FilterError("The filter updater is unavailable".into())
+            })?;
+        log::info!(
+            "Manual filter refresh downloaded {} lists; {} failed",
+            summary.updated,
+            summary.failed
+        );
+        Ok::<_, ConfigurationError>(summary)
+    });
+
+    match task.await {
+        Ok(Ok(summary)) => Ok(Response::builder()
+            .status(http::StatusCode::ACCEPTED)
+            .header(http::header::CONTENT_TYPE, "application/json")
+            .body(serde_json::to_string(&summary).unwrap())
+            .unwrap()),
+        Ok(Err(err)) => Ok(get_error_response(err)),
+        Err(err) => Ok(get_error_response(err)),
+    }
+}
+
 pub(super) fn create_routes(
     configuration_updater_sender: Sender<Configuration>,
     configuration_save_lock: Arc<tokio::sync::Mutex<()>>,
     http_client: reqwest::Client,
     filter_failure_store: FilterFailureStore,
 ) -> BoxedFilter<(impl warp::Reply,)> {
+    // Authentication is applied to every child of /api/filters by mod.rs.
+    let refresh_route = warp::path("refresh")
+        .and(warp::path::end())
+        .and(warp::post())
+        .and(super::with_http_client(http_client.clone()))
+        .and(super::with_configuration_updater_sender(
+            configuration_updater_sender.clone(),
+        ))
+        .and(super::with_configuration_save_lock(
+            configuration_save_lock.clone(),
+        ))
+        .and(super::with_arc(filter_failure_store.clone()))
+        .and(super::with_arc(Arc::new(tokio::sync::Mutex::new(()))))
+        .and_then(self::refresh_filters);
+
     let failures_route = warp::path("failures")
         .and(warp::path::end())
         .and(warp::get())
         .and(super::with_arc(filter_failure_store.clone()))
         .and_then(self::get_filter_failures);
 
-    failures_route
+    refresh_route
+        .or(failures_route)
         .or(warp::path::end()
             .and(warp::get())
             .and_then(self::get_filters_configuration))

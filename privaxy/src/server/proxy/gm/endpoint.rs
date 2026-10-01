@@ -10,12 +10,13 @@
 use super::super::userscripts::UserScriptContext;
 use super::super::{full_body, ProxyBody};
 use super::fetch::{self, FetchError, FetchRequest};
-use super::storage::GmStorageStore;
 use super::token;
+use crate::configuration::CompiledUserScript;
 use http::{Response, StatusCode, Uri};
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 /// Path prefix the proxy answers itself. Deliberately unlikely to collide with
 /// a real site route; a site that does use it loses that route while Privaxy is
@@ -25,7 +26,7 @@ pub(crate) const RESERVED_PATH_PREFIX: &str = "/__privaxy__/";
 /// Body of `POST /__privaxy__/gm/values`.
 #[derive(Debug, Deserialize)]
 struct ValuesRequest {
-    /// Token minted for this page's origin.
+    /// Capability minted for this script on its matching page.
     token: String,
     /// File name of the script whose values are being written.
     script: String,
@@ -46,20 +47,8 @@ pub(crate) fn is_reserved(path: &str) -> bool {
 /// carry an explicit `:443` inherited from CONNECT) and verification (from the
 /// script's later fetch) cannot disagree over the same origin.
 pub(crate) fn origin_of(uri: &Uri) -> Option<String> {
-    let scheme = uri.scheme_str()?;
-    let authority = uri.authority()?;
-    let host = authority.host();
-
-    let default_port = match scheme {
-        "https" => Some(443),
-        "http" => Some(80),
-        _ => None,
-    };
-
-    match authority.port_u16() {
-        Some(port) if Some(port) != default_port => Some(format!("{scheme}://{host}:{port}")),
-        _ => Some(format!("{scheme}://{host}")),
-    }
+    let url = url::Url::parse(&uri.to_string()).ok()?;
+    matches!(url.scheme(), "http" | "https").then(|| url.origin().ascii_serialization())
 }
 
 fn json_response(status: StatusCode, body: &str) -> Response<ProxyBody> {
@@ -110,16 +99,11 @@ pub(crate) async fn handle(
         },
         "/__privaxy__/gm/values" => match require_method(method, http::Method::POST) {
             Some(response) => response,
-            None => handle_values(
-                body,
-                &origin,
-                &user_scripts.gm_storage,
-                &user_scripts.endpoint_signing_key,
-            ),
+            None => handle_values(body, &origin, user_scripts),
         },
         "/__privaxy__/gm/read" => match require_method(method, http::Method::POST) {
             Some(response) => response,
-            None => handle_read(body, uri, &origin, user_scripts),
+            None => handle_read(body, &origin, user_scripts),
         },
         "/__privaxy__/gm/fetch" => match require_method(method, http::Method::POST) {
             Some(response) => response,
@@ -155,11 +139,38 @@ fn query_parameters(uri: &Uri) -> BTreeMap<String, String> {
         .collect()
 }
 
+/// Every endpoint uses the same capability checks. Matching applies to the
+/// authenticated page URL, so path-scoped scripts can use the reserved routes
+/// while disabling a script or changing its matching rules revokes access.
+fn authorize_script(
+    token: &str,
+    script_id: &str,
+    origin: &str,
+    user_scripts: &UserScriptContext,
+) -> Result<Arc<CompiledUserScript>, (StatusCode, &'static str)> {
+    let Some(page_url) =
+        token::verify(token, origin, script_id, &user_scripts.endpoint_signing_key)
+    else {
+        log::warn!("Rejected a userscript request for {origin} with an invalid token");
+        return Err((StatusCode::FORBIDDEN, "invalid token"));
+    };
+    let Some(script) = user_scripts.store.find(script_id) else {
+        return Err((StatusCode::NOT_FOUND, "no such active userscript"));
+    };
+    if !script.matches(&page_url) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "this script no longer matches the authorized page",
+        ));
+    }
+    Ok(script)
+}
+
 /// Serve one `@resource` payload as its original bytes and content type.
 ///
 /// The token travels in the query string here rather than a header, because the
 /// whole point is a URL a script can assign to `img.src`, where headers cannot
-/// be set. It is the same origin-bound token used elsewhere and grants no more
+/// be set. It is the same script-bound token used elsewhere and grants no more
 /// than the descriptor already contains for a matching page.
 fn serve_resource(
     uri: &Uri,
@@ -169,11 +180,6 @@ fn serve_resource(
     let parameters = query_parameters(uri);
     let token = parameters.get("token").map(String::as_str).unwrap_or("");
 
-    if !token::verify(token, origin, &user_scripts.endpoint_signing_key) {
-        log::warn!("Rejected a userscript resource read for {origin} with an invalid token");
-        return error_response(StatusCode::FORBIDDEN, "invalid token");
-    }
-
     let Some(script_id) = parameters.get("script") else {
         return error_response(StatusCode::BAD_REQUEST, "missing script");
     };
@@ -181,31 +187,10 @@ fn serve_resource(
         return error_response(StatusCode::BAD_REQUEST, "missing name");
     };
 
-    // Only a currently-active script's resources are reachable, so a disabled or
-    // uninstalled script stops serving them immediately.
-    let Some(script) = user_scripts.store.find(script_id) else {
-        return error_response(StatusCode::NOT_FOUND, "no such active userscript");
+    let script = match authorize_script(token, script_id, origin, user_scripts) {
+        Ok(script) => script,
+        Err((status, message)) => return error_response(status, message),
     };
-
-    // Same origin scoping as `handle_read`: the token proves the caller is an
-    // origin Privaxy injects into, not that this script runs there. Without this
-    // an origin could read the resources of a script that only runs elsewhere.
-    match url::Url::parse(&uri.to_string()) {
-        Ok(requesting_url) if script.matches(&requesting_url) => {}
-        Ok(_) => {
-            log::warn!(
-                "Refused a resource read from {origin} for '{}', which does not match that origin",
-                script.title
-            );
-            return error_response(
-                StatusCode::FORBIDDEN,
-                "this script does not run on this origin",
-            );
-        }
-        Err(_) => {
-            return error_response(StatusCode::BAD_REQUEST, "unable to parse the request URL")
-        }
-    }
 
     let Some(asset) = script.resource(name) else {
         return error_response(StatusCode::NOT_FOUND, "no such @resource");
@@ -235,8 +220,7 @@ fn serve_resource(
 fn handle_values(
     body: &[u8],
     origin: &str,
-    gm_storage: &GmStorageStore,
-    session_signing_key: &str,
+    user_scripts: &UserScriptContext,
 ) -> Response<ProxyBody> {
     let request: ValuesRequest = match serde_json::from_slice(body) {
         Ok(request) => request,
@@ -245,12 +229,16 @@ fn handle_values(
         }
     };
 
-    if !token::verify(&request.token, origin, session_signing_key) {
-        log::warn!("Rejected a userscript storage write for {origin} with an invalid token");
-        return error_response(StatusCode::FORBIDDEN, "invalid token");
+    if let Err((status, message)) =
+        authorize_script(&request.token, &request.script, origin, user_scripts)
+    {
+        return error_response(status, message);
     }
 
-    match gm_storage.apply(&request.script, request.values) {
+    match user_scripts
+        .gm_storage
+        .apply(&request.script, request.values)
+    {
         Ok(()) => json_response(StatusCode::OK, r#"{"ok":true}"#),
         Err(message) => error_response(StatusCode::UNPROCESSABLE_ENTITY, &message),
     }
@@ -261,19 +249,9 @@ fn handle_values(
 /// another device. Same-origin tabs are covered by `BroadcastChannel` and never
 /// reach this.
 ///
-/// The origin token alone is not sufficient authorization here: it proves the
-/// caller is *an* origin Privaxy injects into, not that the script being asked
-/// about runs there. Without the extra check, page A could read the stored
-/// values of a script that only ever runs on page B. So the requesting URL must
-/// also satisfy the script's own `@match`/`@include` — the same test that decides
-/// whether the script would have been injected in the first place, which means
-/// this endpoint never reveals more than the page's own descriptor already did.
-fn handle_read(
-    body: &[u8],
-    uri: &Uri,
-    origin: &str,
-    user_scripts: &UserScriptContext,
-) -> Response<ProxyBody> {
+/// The capability proves which script matched the page. The reserved endpoint
+/// path itself need not match that script's `@match`/`@include` patterns.
+fn handle_read(body: &[u8], origin: &str, user_scripts: &UserScriptContext) -> Response<ProxyBody> {
     #[derive(Deserialize)]
     struct ReadRequest {
         token: String,
@@ -287,31 +265,10 @@ fn handle_read(
         }
     };
 
-    if !token::verify(&request.token, origin, &user_scripts.endpoint_signing_key) {
-        log::warn!("Rejected a userscript value read for {origin} with an invalid token");
-        return error_response(StatusCode::FORBIDDEN, "invalid token");
-    }
-
-    let Some(script) = user_scripts.store.find(&request.script) else {
-        return error_response(StatusCode::NOT_FOUND, "no such active userscript");
-    };
-
-    let requesting_url = match url::Url::parse(&uri.to_string()) {
-        Ok(url) => url,
-        Err(_) => {
-            return error_response(StatusCode::BAD_REQUEST, "unable to parse the request URL")
-        }
-    };
-
-    if !script.matches(&requesting_url) {
-        log::warn!(
-            "Refused a value read from {origin} for '{}', which does not match that origin",
-            script.title
-        );
-        return error_response(
-            StatusCode::FORBIDDEN,
-            "this script does not run on this origin",
-        );
+    if let Err((status, message)) =
+        authorize_script(&request.token, &request.script, origin, user_scripts)
+    {
+        return error_response(status, message);
     }
 
     let values = user_scripts.gm_storage.snapshot(&request.script);
@@ -339,9 +296,10 @@ async fn handle_fetch(
         }
     };
 
-    if !token::verify(&request.token, origin, &user_scripts.endpoint_signing_key) {
-        log::warn!("Rejected a userscript fetch for {origin} with an invalid token");
-        return error_response(StatusCode::FORBIDDEN, "invalid token");
+    if let Err((status, message)) =
+        authorize_script(&request.token, &request.script, origin, user_scripts)
+    {
+        return error_response(status, message);
     }
 
     let target = request.url.clone();
@@ -378,6 +336,134 @@ async fn handle_fetch(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::configuration::{UserScript, UserScriptAsset};
+    use crate::proxy::gm::storage::GmStorageStore;
+    use crate::proxy::userscripts::{PrivateNetworkAccess, UserScriptStore};
+    use http_body_util::BodyExt;
+
+    const KEY: &str = "endpoint-regression-test-key";
+    const SCRIPT: &str = "scoped.user.js";
+
+    fn compiled(file_name: &str, pattern: &str) -> CompiledUserScript {
+        let script = UserScript {
+            enabled: true,
+            title: file_name.to_string(),
+            file_name: file_name.to_string(),
+            url: None,
+        };
+        let body = format!(
+            "// ==UserScript==\n// @name Fixture\n// @match {pattern}\n// @connect *\n// ==/UserScript==\nvoid 0;"
+        );
+        let mut compiled = CompiledUserScript::new(&script, body).unwrap();
+        compiled.resources.push((
+            "icon".to_string(),
+            UserScriptAsset {
+                bytes: vec![0, 255, 1],
+                content_type: "image/png".to_string(),
+            },
+        ));
+        compiled
+    }
+
+    fn context() -> UserScriptContext {
+        UserScriptContext {
+            store: UserScriptStore::new(vec![
+                compiled(SCRIPT, "https://example.com/watch*"),
+                compiled("other.user.js", "https://other.test/*"),
+            ]),
+            gm_storage: GmStorageStore::in_memory(),
+            endpoint_signing_key: KEY.to_string(),
+            allow_private_network_requests: PrivateNetworkAccess::default(),
+        }
+    }
+
+    fn client() -> reqwest::Client {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        reqwest::Client::builder().no_proxy().build().unwrap()
+    }
+
+    #[tokio::test]
+    async fn every_endpoint_rejects_another_scripts_capability() {
+        let context = context();
+        let client = client();
+        let page = url::Url::parse("https://example.com/watch?id=1").unwrap();
+        let capability = token::mint(&page, SCRIPT, KEY);
+        let payload = serde_json::to_vec(&serde_json::json!({
+            "token": capability,
+            "script": "other.user.js",
+            "values": {"injected": true},
+            "url": "http://127.0.0.1/",
+        }))
+        .unwrap();
+
+        for endpoint in ["values", "read", "fetch"] {
+            let uri = format!("https://example.com/__privaxy__/gm/{endpoint}")
+                .parse()
+                .unwrap();
+            let response = handle(&uri, &http::Method::POST, &payload, &context, &client).await;
+            assert_eq!(response.status(), StatusCode::FORBIDDEN, "{endpoint}");
+        }
+        let uri = format!(
+            "https://example.com/__privaxy__/gm/resource?script=other.user.js&name=icon&token={capability}"
+        ).parse().unwrap();
+        let response = handle(&uri, &http::Method::GET, &[], &context, &client).await;
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        assert!(context.gm_storage.snapshot("other.user.js").is_empty());
+    }
+
+    #[tokio::test]
+    async fn path_scoped_scripts_can_write_poll_and_read_resources() {
+        let context = context();
+        let client = client();
+        let page = url::Url::parse("https://example.com/watch?id=1").unwrap();
+        let capability = token::mint(&page, SCRIPT, KEY);
+        let payload = serde_json::to_vec(&serde_json::json!({
+            "token": capability,
+            "script": SCRIPT,
+            "values": {"theme": "dark"},
+        }))
+        .unwrap();
+        for endpoint in ["values", "read"] {
+            let uri = format!("https://example.com/__privaxy__/gm/{endpoint}")
+                .parse()
+                .unwrap();
+            let response = handle(&uri, &http::Method::POST, &payload, &context, &client).await;
+            assert_eq!(response.status(), StatusCode::OK, "{endpoint}");
+            if endpoint == "read" {
+                let body = response.into_body().collect().await.unwrap().to_bytes();
+                let values: Value = serde_json::from_slice(&body).unwrap();
+                assert_eq!(values["values"]["theme"], "dark");
+            }
+        }
+        let uri = format!(
+            "https://example.com/__privaxy__/gm/resource?script={SCRIPT}&name=icon&token={capability}"
+        ).parse().unwrap();
+        let response = handle(&uri, &http::Method::GET, &[], &context, &client).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()[http::header::CONTENT_TYPE], "image/png");
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(body.as_ref(), &[0, 255, 1]);
+    }
+
+    #[test]
+    fn disabling_or_changing_matches_revokes_existing_capabilities() {
+        let context = context();
+        let page = url::Url::parse("https://example.com/watch?id=1").unwrap();
+        let capability = token::mint(&page, SCRIPT, KEY);
+        assert!(authorize_script(&capability, SCRIPT, "https://example.com", &context).is_ok());
+
+        context
+            .store
+            .replace(vec![compiled(SCRIPT, "https://example.com/elsewhere*")]);
+        let response =
+            authorize_script(&capability, SCRIPT, "https://example.com", &context).unwrap_err();
+        assert_eq!(response.0, StatusCode::FORBIDDEN);
+
+        context.store.replace(Vec::new());
+        let response =
+            authorize_script(&capability, SCRIPT, "https://example.com", &context).unwrap_err();
+        assert_eq!(response.0, StatusCode::NOT_FOUND);
+    }
 
     #[test]
     fn reserved_prefix_matching() {

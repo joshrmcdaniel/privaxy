@@ -269,7 +269,7 @@ pub async fn start_privaxy() -> PrivaxyServer {
     let configuration_updater_tx = configuration_updater.tx.clone();
     configuration_updater_tx.send(configuration).await.unwrap();
 
-    configuration_updater.start();
+    let initial_filters_ready = configuration_updater.start();
 
     let configuration_save_lock = Arc::new(tokio::sync::Mutex::new(()));
 
@@ -317,6 +317,13 @@ pub async fn start_privaxy() -> PrivaxyServer {
     let configuration_save_lock_ref = configuration_save_lock.clone();
 
     tokio::spawn(async move {
+        // Keep the GUI available during downloads, but do not proxy requests
+        // through the initial empty engine while even one list is still loading.
+        log::info!("Waiting for initial filter loading before starting the proxy");
+        if initial_filters_ready.await.is_err() {
+            log::error!("Initial filter loading failed; the proxy has not started");
+            return;
+        }
         let notify_reload_backend = notify_reload_clone.clone();
         let cfg_lock_backend = configuration_save_lock_ref.clone();
         let mut local_exclusion_store = local_exclusion_store;

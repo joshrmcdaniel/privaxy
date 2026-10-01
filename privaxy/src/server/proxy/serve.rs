@@ -9,7 +9,6 @@ use crate::statistics::Statistics;
 use crate::web_gui::events::Event;
 use adblock::blocker::BlockerResult;
 use base64::Engine;
-use bytes::Bytes;
 use futures::TryStreamExt;
 use http::uri::{Authority, Scheme};
 use http::{HeaderMap, HeaderValue, Request, Response, StatusCode, Uri};
@@ -163,7 +162,9 @@ fn augment_csp_value(value: &str, nonce: &str) -> String {
         }
     }
 
-    let script_target = if has(&directives, "script-src") {
+    let script_target = if has(&directives, "script-src-elem") {
+        Some("script-src-elem")
+    } else if has(&directives, "script-src") {
         Some("script-src")
     } else if has(&directives, "default-src") {
         Some("default-src")
@@ -180,7 +181,9 @@ fn augment_csp_value(value: &str, nonce: &str) -> String {
         }
     }
 
-    let style_target = if has(&directives, "style-src") {
+    let style_target = if has(&directives, "style-src-elem") {
+        Some("style-src-elem")
+    } else if has(&directives, "style-src") {
         Some("style-src")
     } else if has(&directives, "default-src") {
         Some("default-src")
@@ -219,6 +222,18 @@ fn augment_csp_value(value: &str, nonce: &str) -> String {
 /// Modern browsers send `Sec-Fetch-Dest`, which maps cleanly onto these types.
 /// When it's absent we fall back to sniffing `Accept`, and finally to `other`.
 fn request_type_from_headers(headers: &HeaderMap) -> &'static str {
+    if headers
+        .get(http::header::UPGRADE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| {
+            value
+                .split(',')
+                .any(|protocol| protocol.trim().eq_ignore_ascii_case("websocket"))
+        })
+    {
+        return "websocket";
+    }
+
     if let Some(dest) = headers.get("sec-fetch-dest").and_then(|v| v.to_str().ok()) {
         return match dest {
             "document" => "document",
@@ -303,10 +318,6 @@ pub(crate) async fn serve(
         }
     };
 
-    if request.headers().contains_key(http::header::UPGRADE) {
-        return Ok(perform_two_ends_upgrade(request, uri, hyper_client).await);
-    }
-
     // Requests to the reserved path are answered by the proxy on the page's own
     // origin and never forwarded upstream, which is what lets a userscript
     // running in the page's main world reach Privaxy without CORS. Handled
@@ -328,8 +339,6 @@ pub(crate) async fn serve(
 
     let (mut parts, body) = request.into_parts();
     parts.uri = uri.clone();
-
-    let (sender, new_body) = body_channel();
 
     let req = Request::from_parts(parts, body);
 
@@ -410,6 +419,25 @@ pub(crate) async fn serve(
         return Ok(get_blocked_by_privaxy_response(blocker_result));
     }
 
+    // Upgrades still have an HTTP request whose URL and headers must pass the
+    // same policy checks as ordinary traffic, even if the origin declines it.
+    let outbound_url = match &doh_action {
+        DohAction::Redirect(upstream) => {
+            log::debug!("Redirecting DoH request to {}: {}", upstream, uri);
+            doh::redirect_url(upstream, req.method(), &uri)
+        }
+        _ => req.uri().to_string(),
+    };
+    if req.headers().contains_key(http::header::UPGRADE) {
+        let Ok(outbound_uri) = outbound_url.parse() else {
+            return Ok(get_empty_response(StatusCode::BAD_GATEWAY));
+        };
+        let response = perform_two_ends_upgrade(req, outbound_uri, hyper_client).await;
+        statistics.increment_proxied_requests();
+        return Ok(response);
+    }
+
+    let (sender, new_body) = body_channel();
     let mut new_response = Response::new(new_body);
 
     let mut request_headers = req.headers().clone();
@@ -439,17 +467,6 @@ pub(crate) async fn serve(
             }
         }
     }
-    // In redirect mode the query is forwarded to the configured upstream
-    // resolver instead of the endpoint the client chose; otherwise the original
-    // URL is used unchanged.
-    let outbound_url = match &doh_action {
-        DohAction::Redirect(upstream) => {
-            log::debug!("Redirecting DoH request to {}: {}", upstream, uri);
-            doh::redirect_url(upstream, req.method(), &uri)
-        }
-        _ => req.uri().to_string(),
-    };
-
     let mut response = match client
         .request(req.method().clone(), outbound_url)
         .headers(request_headers)
@@ -511,7 +528,7 @@ pub(crate) async fn serve(
         // Bounded so the whole backpressure chain holds: client ← response body
         // ← rewriter ← this channel ← upstream. Before, every hop here was
         // unbounded and the entire document buffered in memory.
-        let (sender_rewriter, receiver_rewriter) = tokio::sync::mpsc::channel::<Bytes>(32);
+        let (sender_rewriter, receiver_rewriter) = tokio::sync::mpsc::channel(32);
 
         // Resolve the URL-scoped payloads up-front so the rewriter can prepend
         // them inside <head> before any page scripts execute: the uBO scriptlet
@@ -528,22 +545,37 @@ pub(crate) async fn serve(
         // engine uses. The store is consulted per request rather than captured
         // once per proxy start, so scripts added or toggled in the web UI apply
         // to the very next page load without a reload.
+        let page_url = Url::parse(&match_url).ok();
         let matched_user_scripts = if user_scripts.store.is_empty() {
             Vec::new()
         } else {
-            match Url::parse(&match_url) {
-                Ok(url) => user_scripts.store.matching(&url),
-                Err(err) => {
-                    log::debug!("Not matching userscripts against {match_url}: {err}");
+            match &page_url {
+                Some(url) => user_scripts.store.matching(url),
+                None => {
+                    log::debug!("Not matching userscripts against invalid URL {match_url}");
                     Vec::new()
                 }
             }
         };
 
-        // Minted per page and handed to the in-page runtime so it can persist
-        // GM values. Bound to this origin; see `userscript_token`.
-        let endpoint_token = gm_endpoint::origin_of(&uri)
-            .map(|origin| super::gm::token::mint(&origin, &user_scripts.endpoint_signing_key));
+        // Only scripts matched on this page receive capabilities. The signed
+        // page URL lets endpoints recheck matching without confusing their own
+        // reserved path with the page that requested injection.
+        let endpoint_tokens = matched_user_scripts
+            .iter()
+            .filter_map(|script| {
+                page_url.as_ref().map(|url| {
+                    (
+                        script.file_name.clone(),
+                        super::gm::token::mint(
+                            url,
+                            &script.file_name,
+                            &user_scripts.endpoint_signing_key,
+                        ),
+                    )
+                })
+            })
+            .collect();
 
         let rewriter = Rewriter::new(
             adblock_requester,
@@ -555,7 +587,7 @@ pub(crate) async fn serve(
             scriptlet_debug_logging,
             matched_user_scripts,
             user_scripts.gm_storage.clone(),
-            endpoint_token,
+            endpoint_tokens,
         );
 
         tokio::task::spawn_blocking(|| rewriter.rewrite());
@@ -566,9 +598,20 @@ pub(crate) async fn serve(
         // meant the browser could not start parsing — or prefetching
         // subresources — until the very last upstream byte had arrived.
         tokio::spawn(async move {
-            while let Ok(Some(chunk)) = response.chunk().await {
-                if sender_rewriter.send(chunk).await.is_err() {
-                    break;
+            loop {
+                match response.chunk().await {
+                    Ok(Some(chunk)) => {
+                        if sender_rewriter.send(Ok(chunk)).await.is_err() {
+                            break;
+                        }
+                    }
+                    Ok(None) => break,
+                    Err(error) => {
+                        let _ = sender_rewriter
+                            .send(Err(std::io::Error::other(error)))
+                            .await;
+                        break;
+                    }
                 }
             }
         });
@@ -667,9 +710,26 @@ fn get_informative_error_response(
 fn get_blocked_by_privaxy_response(blocker_result: BlockerResult) -> Response<ProxyBody> {
     // We don't redirect to network urls due to security concerns.
     if let Some(resource) = blocker_result.redirect {
-        let response = Response::new(full_body(resource));
-
-        return response;
+        // adblock-rust supplies a base64 data URL, including for binary stubs.
+        // Serve its bytes locally rather than sending the URL as response text.
+        if let Some((metadata, encoded)) = resource
+            .strip_prefix("data:")
+            .and_then(|data| data.split_once(','))
+        {
+            if let Some(content_type) = metadata.strip_suffix(";base64") {
+                if let (Ok(content_type), Ok(bytes)) = (
+                    HeaderValue::from_str(content_type),
+                    base64::engine::general_purpose::STANDARD.decode(encoded),
+                ) {
+                    let mut response = Response::new(full_body(bytes));
+                    response
+                        .headers_mut()
+                        .insert(http::header::CONTENT_TYPE, content_type);
+                    return response;
+                }
+            }
+        }
+        log::warn!("Unable to decode an adblock replacement resource");
     }
 
     let filter_information = match blocker_result.filter {
@@ -695,10 +755,18 @@ fn get_empty_response(status_code: http::StatusCode) -> Response<ProxyBody> {
 }
 
 async fn write_proxied_body(mut response: reqwest::Response, sender: BodySender) {
-    while let Ok(Some(chunk)) = response.chunk().await {
-        // The other end is broken, let's abort immediately.
-        if let Err(_err) = sender.send(Ok(Frame::data(chunk))).await {
-            break;
+    loop {
+        match response.chunk().await {
+            Ok(Some(chunk)) => {
+                if sender.send(Ok(Frame::data(chunk))).await.is_err() {
+                    break;
+                }
+            }
+            Ok(None) => break,
+            Err(error) => {
+                let _ = sender.send(Err(std::io::Error::other(error))).await;
+                break;
+            }
         }
     }
 }
@@ -706,7 +774,7 @@ async fn write_proxied_body(mut response: reqwest::Response, sender: BodySender)
 /// When we receive a request to perform an upgrade, we need to initiate a bidirectional tunnel.
 /// We upgrade the request towards the target server, towards the proxy end and we connect both through a duplex stream.
 async fn perform_two_ends_upgrade(
-    request: Request<Incoming>,
+    mut request: Request<Incoming>,
     uri: Uri,
     hyper_client: UpgradeClient,
 ) -> Response<ProxyBody> {
@@ -719,13 +787,17 @@ async fn perform_two_ends_upgrade(
     // Captured for log context; `uri` is moved into `new_request` below.
     let request_uri = uri.to_string();
 
-    let mut new_request = Request::new(empty_body());
-    *new_request.headers_mut() = request.headers().clone();
-    *new_request.uri_mut() = uri;
+    let client_upgrade = hyper::upgrade::on(&mut request);
+    let (mut parts, body) = request.into_parts();
+    parts.uri = uri;
+    // Let the client build Host from the destination, including when DoH
+    // policy redirects an upgrade attempt to a different resolver.
+    parts.headers.remove(http::header::HOST);
+    let new_request = Request::from_parts(parts, boxed_incoming(body));
 
     let client_uri = request_uri.clone();
     tokio::spawn(async move {
-        match hyper::upgrade::on(request).await {
+        match client_upgrade.await {
             Ok(upgraded_client) => {
                 // hyper 1.0's `Upgraded` speaks hyper's own IO traits, so wrap
                 // it in `TokioIo` to bridge to tokio's `AsyncRead`/`AsyncWrite`.
@@ -804,6 +876,51 @@ mod tests {
             map.insert(header_name, HeaderValue::from_str(value).unwrap());
         }
         map
+    }
+
+    #[test]
+    fn websocket_upgrade_takes_precedence_over_fetch_destination() {
+        let headers = headers(&[("upgrade", "WebSocket"), ("sec-fetch-dest", "empty")]);
+        assert_eq!(request_type_from_headers(&headers), "websocket");
+    }
+
+    #[test]
+    fn csp_augments_element_directives_without_changing_their_fallbacks() {
+        let policy =
+            "script-src 'self'; script-src-elem 'none'; style-src 'self'; style-src-elem 'none'";
+        assert_eq!(
+            augment_csp_value(policy, "abc"),
+            "script-src 'self'; script-src-elem 'none' 'nonce-abc'; style-src 'self'; style-src-elem 'none' 'nonce-abc'"
+        );
+        assert_eq!(
+            augment_csp_value("default-src 'self'; script-src-elem 'unsafe-inline'", "abc"),
+            "default-src 'self' 'nonce-abc'; script-src-elem 'unsafe-inline'"
+        );
+    }
+
+    #[tokio::test]
+    async fn replacement_resources_serve_decoded_bytes_and_mime_types() {
+        for (mime, bytes) in [
+            ("application/javascript", b"void 0;".as_slice()),
+            ("image/png", &[0, 255, 16][..]),
+        ] {
+            let result = BlockerResult {
+                matched: true,
+                important: false,
+                redirect: Some(format!(
+                    "data:{mime};base64,{}",
+                    base64::engine::general_purpose::STANDARD.encode(bytes)
+                )),
+                exception: None,
+                filter: None,
+                rewritten_url: None,
+            };
+            let response = get_blocked_by_privaxy_response(result);
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(response.headers()[http::header::CONTENT_TYPE], mime);
+            let body = response.into_body().collect().await.unwrap().to_bytes();
+            assert_eq!(body.as_ref(), bytes);
+        }
     }
 
     #[test]

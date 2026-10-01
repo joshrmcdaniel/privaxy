@@ -170,7 +170,7 @@ pub(crate) async fn serve_mitm_session(
 
         Ok(Response::new(empty_body()))
     } else if is_authority_excluded(&local_exclusion_store, &authority, &raw_authority)
-        && req.headers().contains_key(http::header::UPGRADE)
+        && is_opaque_upgrade(req.headers())
     {
         // An excluded host performing a protocol upgrade over plain HTTP — e.g.
         // WeChat's MMTLS long-link (`http://dns.weixin.qq.com/mmtls/...`), which
@@ -178,7 +178,8 @@ pub(crate) async fn serve_mitm_session(
         // bridge in `serve` can't carry that (the upstream never returns a clean
         // `101`, so the upgrade "expected but not completed"). Blind-tunnel the
         // bytes at the TCP level instead, the same way excluded CONNECT hosts
-        // are tunneled.
+        // are tunneled. WebSockets need the origin's handshake headers, so they
+        // use the ordinary upgrade bridge instead of this fabricated response.
         tunnel_http_upgrade(req, authority).await
     } else {
         // The request is not of method `CONNECT`. Therefore,

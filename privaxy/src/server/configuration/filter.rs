@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use std::env;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tokio::fs;
 use url::Url;
 
@@ -268,17 +268,25 @@ impl Filter {
         &mut self,
         http_client: &reqwest::Client,
     ) -> super::ConfigurationResult<String> {
+        self.update_in_directory(http_client, &get_filter_directory())
+            .await
+    }
+
+    async fn update_in_directory(
+        &mut self,
+        http_client: &reqwest::Client,
+        filters_directory: &Path,
+    ) -> super::ConfigurationResult<String> {
         log::debug!("Updating filter: {}", self.title);
 
-        let filters_directory = get_filter_directory();
-        fs::create_dir_all(&filters_directory).await?;
+        fs::create_dir_all(filters_directory).await?;
 
         // `get_filter` rejects responses that are not served as a filter list (see its
         // Content-Type check), so an invalid URL never reaches disk.
         let filter = get_filter(self, http_client).await?;
 
         let filter_path = filters_directory.join(&self.file_name);
-        fs::write(&filter_path, &filter).await?;
+        write_filter_cache(&filter_path, &filter).await?;
 
         Ok(filter)
     }
@@ -287,18 +295,87 @@ impl Filter {
         &mut self,
         http_client: &reqwest::Client,
     ) -> super::ConfigurationResult<String> {
-        let filter_path = get_filter_directory().join(&self.file_name);
-        match fs::read(&filter_path).await {
-            Err(err) => {
-                if err.kind() == std::io::ErrorKind::NotFound {
-                    self.update(http_client).await
-                } else {
-                    Err(super::ConfigurationError::FileSystemError(err))
+        self.get_contents_in_directory(http_client, &get_filter_directory())
+            .await
+    }
+
+    async fn get_contents_in_directory(
+        &mut self,
+        http_client: &reqwest::Client,
+        filters_directory: &Path,
+    ) -> super::ConfigurationResult<String> {
+        let filter_path = filters_directory.join(&self.file_name);
+        if let Some(contents) = self.read_valid_cache(&filter_path).await? {
+            return Ok(contents);
+        }
+
+        // Recover installations with an empty/missing <hash>.txt alongside a
+        // populated <hash>. Only consider the exact hash-named sibling, and
+        // preserve it while repairing the configured cache filename.
+        if let Some(hash) = self
+            .file_name
+            .strip_suffix(".txt")
+            .filter(|hash| hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        {
+            let alternate_path = filters_directory.join(hash);
+            if let Some(contents) = self.read_valid_cache(&alternate_path).await? {
+                log::warn!(
+                    "Recovering filter '{}' from {}",
+                    self.title,
+                    alternate_path.display()
+                );
+                // A read-only cache must not stop us using the recovered rules.
+                if let Err(err) = write_filter_cache(&filter_path, &contents).await {
+                    log::warn!(
+                        "Unable to repair filter cache {}: {err}",
+                        filter_path.display()
+                    );
                 }
+                return Ok(contents);
             }
-            Ok(filter) => Ok(std::str::from_utf8(&filter)?.to_string()),
+        }
+
+        self.update_in_directory(http_client, filters_directory)
+            .await
+    }
+
+    async fn read_valid_cache(&self, path: &Path) -> super::ConfigurationResult<Option<String>> {
+        let bytes = match fs::read(path).await {
+            Ok(bytes) => bytes,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(err) => return Err(err.into()),
+        };
+        let contents = std::str::from_utf8(&bytes)
+            .map_err(super::ConfigurationError::from)
+            .and_then(|contents| {
+                validate_filter_rules(self, contents)?;
+                Ok(contents.to_owned())
+            });
+        match contents {
+            Ok(contents) => Ok(Some(contents)),
+            Err(err) => {
+                log::warn!("Ignoring invalid filter cache {}: {err}", path.display());
+                Ok(None)
+            }
         }
     }
+}
+
+/// Never truncate the live cache during an update. A reader sees either the
+/// previous complete list or the new one, even if an update is interrupted.
+async fn write_filter_cache(path: &Path, contents: &str) -> std::io::Result<()> {
+    let mut temporary_name = path.as_os_str().to_owned();
+    temporary_name.push(format!(".{}.tmp", super::generate_random_hex(8)));
+    let temporary_path = PathBuf::from(temporary_name);
+    if let Err(err) = fs::write(&temporary_path, contents).await {
+        let _ = fs::remove_file(&temporary_path).await;
+        return Err(err);
+    }
+    if let Err(err) = fs::rename(&temporary_path, path).await {
+        let _ = fs::remove_file(&temporary_path).await;
+        return Err(err);
+    }
+    Ok(())
 }
 
 impl std::fmt::Display for Filter {
@@ -383,15 +460,14 @@ fn validate_filter_content_type(
 
 /// Verifies at least one rule is present.
 fn validate_filter_rules(filter: &Filter, contents: &str) -> super::ConfigurationResult<()> {
-    let (network_filters, cosmetic_filters) = adblock::lists::parse_filters(
-        contents.lines(),
-        false,
-        adblock::lists::ParseOptions::default(),
-    );
-
-    if network_filters.is_empty() && cosmetic_filters.is_empty() {
+    // Validation also runs on cache hits. Stop at the first usable rule rather
+    // than parsing every list twice before building the blocking engine.
+    let has_rule = contents.lines().any(|line| {
+        adblock::lists::parse_filter(line, false, adblock::lists::ParseOptions::default()).is_ok()
+    });
+    if !has_rule {
         return Err(super::ConfigurationError::FilterValidationError(format!(
-            "The URL for '{}' returned no parseable filter rules",
+            "Filter '{}' contains no parseable filter rules",
             filter.title
         )));
     }
@@ -438,6 +514,12 @@ pub(crate) async fn get_filters_content(
     filter_failure_store: &super::FilterFailureStore,
 ) -> Vec<String> {
     let mut filters = Vec::new();
+    let enabled_count = configuration
+        .filters
+        .iter()
+        .filter(|filter| filter.enabled)
+        .count();
+    log::info!("Loading {enabled_count} enabled filter lists");
 
     let futures = configuration.get_enabled_filters().map(|filter| {
         let http_client = http_client.clone();
@@ -450,17 +532,33 @@ pub(crate) async fn get_filters_content(
     let results = futures::future::join_all(futures).await;
     for (filter, result) in results {
         match result {
-            Ok(filter_content) => filters.push(filter_content),
+            Ok(filter_content) => {
+                log::debug!(
+                    "Loaded filter '{}': {} bytes",
+                    filter.title,
+                    filter_content.len()
+                );
+                filters.push(filter_content);
+            }
             // A fetch failure here includes a filter whose URL has stopped serving a
             // `text/plain` list (see `validate_filter_content_type`); we record it for the
             // web UI and drop it from the engine rather than aborting the whole rebuild.
             // No entry is cleared on success: a filter can load fine from its on-disk
             // copy while its URL is still failing to update.
             Err(err) => {
-                log::warn!("Dropping filter that could not be loaded: {err:?}");
+                log::warn!("Unable to load filter '{}': {err}", filter.title);
                 filter_failure_store.record(filter, &err.to_string());
             }
         }
+    }
+
+    log::info!(
+        "Loaded {} of {enabled_count} enabled filter lists; {} custom rules",
+        filters.len(),
+        configuration.custom_filters.len()
+    );
+    if enabled_count > 0 && filters.is_empty() {
+        log::error!("No enabled filter lists could be loaded; only custom rules are available");
     }
 
     filters.extend(configuration.custom_filters.iter().cloned());
@@ -473,6 +571,126 @@ pub(crate) async fn get_filters_content(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct TestCache(PathBuf);
+
+    impl TestCache {
+        fn new() -> Self {
+            let directory = std::env::temp_dir().join(format!(
+                "privaxy-filter-cache-{}",
+                super::super::generate_random_hex(8)
+            ));
+            std::fs::create_dir(&directory).unwrap();
+            Self(directory)
+        }
+    }
+
+    impl Drop for TestCache {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn cached_filter() -> Filter {
+        // An unsupported download scheme makes unintended network fallbacks
+        // fail immediately, without a listener or a process-global env override.
+        let url = Url::parse("file:///filter-cache-test.txt").unwrap();
+        Filter {
+            enabled: true,
+            title: "Cache fixture".into(),
+            group: FilterGroup::Ads,
+            file_name: calc_filter_filename(url.as_str()),
+            url,
+        }
+    }
+
+    #[tokio::test]
+    async fn missing_or_invalid_cache_recovers_matching_extensionless_rules() {
+        let cache = TestCache::new();
+        let mut filter = cached_filter();
+        let path = cache.0.join(&filter.file_name);
+        let alternate = path.with_extension("");
+        let rules = "||ads.example.com^\nexample.com##.banner\n";
+        fs::write(&alternate, rules).await.unwrap();
+        let client = reqwest::Client::new();
+
+        for invalid in [
+            None,
+            Some(b"".as_slice()),
+            Some(b" \r\n\t".as_slice()),
+            Some(b"[Adblock Plus 2.0]\n! No rules\n".as_slice()),
+            Some(b"\xff\xfe".as_slice()),
+        ] {
+            if let Some(bytes) = invalid {
+                fs::write(&path, bytes).await.unwrap();
+            }
+            let contents = filter
+                .get_contents_in_directory(&client, &cache.0)
+                .await
+                .unwrap();
+            assert_eq!(contents, rules);
+            assert_eq!(fs::read_to_string(&path).await.unwrap(), rules);
+            assert_eq!(fs::read_to_string(&alternate).await.unwrap(), rules);
+        }
+    }
+
+    #[tokio::test]
+    async fn valid_configured_cache_takes_precedence_over_extensionless_copy() {
+        let cache = TestCache::new();
+        let mut filter = cached_filter();
+        let path = cache.0.join(&filter.file_name);
+        let rules = "||current.example.com^\n";
+        fs::write(&path, rules).await.unwrap();
+        fs::write(path.with_extension(""), "||old.example.com^\n")
+            .await
+            .unwrap();
+        assert_eq!(
+            filter
+                .get_contents_in_directory(&reqwest::Client::new(), &cache.0)
+                .await
+                .unwrap(),
+            rules
+        );
+    }
+
+    #[tokio::test]
+    async fn unusable_caches_trigger_download_and_surface_its_failure() {
+        let cache = TestCache::new();
+        let mut filter = cached_filter();
+        let path = cache.0.join(&filter.file_name);
+        fs::write(&path, "").await.unwrap();
+        fs::write(path.with_extension(""), "! Also has no rules\n")
+            .await
+            .unwrap();
+        let error = filter
+            .get_contents_in_directory(&reqwest::Client::new(), &cache.0)
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            super::super::ConfigurationError::UnableToRetrieveDefaultFilters(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn cache_replacement_preserves_the_complete_file_for_existing_readers() {
+        use std::io::Read;
+
+        let cache = TestCache::new();
+        let path = cache.0.join("filter.txt");
+        let old_rules = "||old.example.com^\n";
+        let new_rules = "||new.example.com^\n";
+        fs::write(&path, old_rules).await.unwrap();
+        let mut reader = std::fs::File::open(&path).unwrap();
+
+        write_filter_cache(&path, new_rules).await.unwrap();
+
+        let mut contents = String::new();
+        reader.read_to_string(&mut contents).unwrap();
+        assert_eq!(contents, old_rules);
+        assert_eq!(fs::read_to_string(&path).await.unwrap(), new_rules);
+        assert_eq!(std::fs::read_dir(&cache.0).unwrap().count(), 1);
+    }
 
     /// The `is_default` API check identifies built-in lists by file name, so
     /// every default filter's file name must stay derived from its URL and

@@ -20,10 +20,8 @@ use tokio::sync::mpsc;
 /// whole document buffering in memory.
 const INTERNAL_BODY_CHANNEL_CAPACITY: usize = 32;
 
-type InternalBodyChannel = (
-    mpsc::Sender<(Bytes, Option<AdblockProperties>)>,
-    mpsc::Receiver<(Bytes, Option<AdblockProperties>)>,
-);
+type RewrittenChunk = Result<(Bytes, Option<AdblockProperties>), std::io::Error>;
+type InternalBodyChannel = (mpsc::Sender<RewrittenChunk>, mpsc::Receiver<RewrittenChunk>);
 
 struct AdblockProperties {
     ids: HashSet<String>,
@@ -32,7 +30,7 @@ struct AdblockProperties {
 
 pub struct Rewriter {
     adblock_requester: AdblockRequester,
-    receiver: mpsc::Receiver<Bytes>,
+    receiver: mpsc::Receiver<Result<Bytes, std::io::Error>>,
     body_sender: BodySender,
     statistics: Statistics,
     internal_body_channel: InternalBodyChannel,
@@ -53,10 +51,9 @@ pub struct Rewriter {
     // so each script's values are preloaded into its descriptor rather than
     // fetched in-page.
     gm_storage: GmStorageStore,
-    // Token authorizing this page's writes back to the reserved endpoint.
-    // `None` when the request URI had no derivable origin, in which case
-    // persistence is unavailable and the runtime falls back to memory.
-    endpoint_token: Option<String>,
+    // Capabilities for the scripts matched on this page. Each token is bound
+    // to its script and the page URL, so it cannot authorize another script.
+    endpoint_tokens: HashMap<String, String>,
 }
 
 /// In-page evaluator for procedural cosmetic filters, and the only path by which
@@ -153,7 +150,7 @@ impl Rewriter {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         adblock_requester: AdblockRequester,
-        receiver: mpsc::Receiver<Bytes>,
+        receiver: mpsc::Receiver<Result<Bytes, std::io::Error>>,
         body_sender: BodySender,
         statistics: Statistics,
         csp_nonce: String,
@@ -161,7 +158,7 @@ impl Rewriter {
         scriptlet_debug_logging: bool,
         user_scripts: Vec<Arc<CompiledUserScript>>,
         gm_storage: GmStorageStore,
-        endpoint_token: Option<String>,
+        endpoint_tokens: HashMap<String, String>,
     ) -> Self {
         Self {
             body_sender,
@@ -174,7 +171,7 @@ impl Rewriter {
             scriptlet_debug_logging,
             user_scripts,
             gm_storage,
-            endpoint_token,
+            endpoint_tokens,
         }
     }
 
@@ -258,19 +255,19 @@ impl Rewriter {
         user_scripts: &[Arc<CompiledUserScript>],
         csp_nonce: &str,
         gm_storage: &GmStorageStore,
-        endpoint_token: Option<&str>,
+        endpoint_tokens: &HashMap<String, String>,
     ) -> Option<String> {
         if user_scripts.is_empty() {
             return None;
         }
 
-        // The nonce and the endpoint token are passed as IIFE arguments so
+        // The nonce and the endpoint tokens are passed as IIFE arguments so
         // they stay in the runtime's closure rather than on `window`.
         let runtime = format!(
-            "(function(PRIVAXY_NONCE, PRIVAXY_ENDPOINT_TOKEN){{\n{}\n}})({}, {});",
+            "(function(PRIVAXY_NONCE, PRIVAXY_ENDPOINT_TOKENS){{\n{}\n}})({}, {});",
             USERSCRIPT_SHIM,
             serde_json::to_string(csp_nonce).unwrap(),
-            serde_json::to_string(&endpoint_token).unwrap()
+            serde_json::to_string(endpoint_tokens).unwrap()
         );
         let mut tags = inline_script_tag(&runtime, csp_nonce);
 
@@ -390,7 +387,7 @@ impl Rewriter {
         user_scripts: &[Arc<CompiledUserScript>],
         csp_nonce: &str,
         gm_storage: &GmStorageStore,
-        endpoint_token: Option<&str>,
+        endpoint_tokens: &HashMap<String, String>,
     ) -> Option<String> {
         let blocking_payload = Self::build_head_script(
             injected_script,
@@ -401,7 +398,7 @@ impl Rewriter {
         .map(|payload| inline_script_tag(&payload, csp_nonce));
 
         let userscript_tags =
-            Self::build_userscript_tags(user_scripts, csp_nonce, gm_storage, endpoint_token);
+            Self::build_userscript_tags(user_scripts, csp_nonce, gm_storage, endpoint_tokens);
 
         match (blocking_payload, userscript_tags) {
             (None, None) => None,
@@ -427,7 +424,7 @@ impl Rewriter {
             scriptlet_debug_logging,
             user_scripts,
             gm_storage,
-            endpoint_token,
+            endpoint_tokens,
         } = self;
 
         let CosmeticBlockerResult {
@@ -488,7 +485,7 @@ impl Rewriter {
             &user_scripts,
             &csp_nonce,
             &gm_storage,
-            endpoint_token.as_deref(),
+            &endpoint_tokens,
         )));
         let head_statistics = statistics.clone();
 
@@ -550,7 +547,7 @@ impl Rewriter {
             },
             move |c: &[u8]| {
                 if sink_sender
-                    .blocking_send((Bytes::copy_from_slice(c), None))
+                    .blocking_send(Ok((Bytes::copy_from_slice(c), None)))
                     .is_err()
                 {
                     sink_aborted.set(true);
@@ -559,25 +556,40 @@ impl Rewriter {
         );
 
         while let Some(message) = receiver.blocking_recv() {
-            rewriter.write(&message).unwrap();
+            let message = match message {
+                Ok(message) => message,
+                Err(error) => {
+                    let _ = internal_body_sender.blocking_send(Err(error));
+                    return;
+                }
+            };
+            if let Err(error) = rewriter.write(&message) {
+                let _ = internal_body_sender
+                    .blocking_send(Err(std::io::Error::other(error.to_string())));
+                return;
+            }
             if aborted.get() {
                 return;
             }
         }
-        rewriter.end().unwrap();
+        if let Err(error) = rewriter.end() {
+            let _ =
+                internal_body_sender.blocking_send(Err(std::io::Error::other(error.to_string())));
+            return;
+        }
 
-        let _ = internal_body_sender.blocking_send((
+        let _ = internal_body_sender.blocking_send(Ok((
             Bytes::new(),
             Some(AdblockProperties {
                 ids: ids.take(),
                 classes: classes.take(),
             }),
-        ));
+        )));
     }
 
     #[allow(clippy::too_many_arguments)]
     async fn write_body(
-        mut receiver: mpsc::Receiver<(Bytes, Option<AdblockProperties>)>,
+        mut receiver: mpsc::Receiver<RewrittenChunk>,
         body_sender: BodySender,
         adblock_requester: AdblockRequester,
         statistics: Statistics,
@@ -589,7 +601,14 @@ impl Rewriter {
     ) {
         let mut end_of_body_cosmetics = Some((url_hidden_selectors, style_selectors, exceptions));
 
-        while let Some((bytes, adblock_properties)) = receiver.recv().await {
+        while let Some(message) = receiver.recv().await {
+            let (bytes, adblock_properties) = match message {
+                Ok(message) => message,
+                Err(error) => {
+                    let _ = body_sender.send(Err(error)).await;
+                    break;
+                }
+            };
             if let Err(_err) = body_sender.send(Ok(Frame::data(bytes))).await {
                 break;
             }
@@ -650,6 +669,75 @@ impl Rewriter {
                     break;
                 }
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::blocker::BlockingDisabledStore;
+    use crate::proxy::body_channel;
+    use http_body_util::BodyExt;
+    use std::sync::RwLock;
+
+    #[tokio::test]
+    async fn upstream_errors_abort_html_without_appending_a_completed_document() {
+        for fails in [false, true] {
+            let requester =
+                AdblockRequester::new(BlockingDisabledStore(Arc::new(RwLock::new(false))));
+            let cosmetics = requester
+                .get_cosmetic_response("https://example.com/".into())
+                .await;
+            let (input, receiver) = mpsc::channel(2);
+            let (sender, mut body) = body_channel();
+            let rewriter = Rewriter::new(
+                requester,
+                receiver,
+                sender,
+                Statistics::new(),
+                "abc".into(),
+                cosmetics,
+                false,
+                Vec::new(),
+                GmStorageStore::in_memory(),
+                HashMap::new(),
+            );
+            input
+                .send(Ok(Bytes::from_static(b"<html><head></head><body>partial")))
+                .await
+                .unwrap();
+            if fails {
+                input
+                    .send(Err(std::io::Error::new(
+                        std::io::ErrorKind::UnexpectedEof,
+                        "origin disconnected",
+                    )))
+                    .await
+                    .unwrap();
+            }
+            drop(input);
+            let task = tokio::task::spawn_blocking(move || rewriter.rewrite());
+            let mut data = Vec::new();
+            let mut failure = None;
+            while let Some(frame) = body.frame().await {
+                match frame {
+                    Ok(frame) => {
+                        if let Ok(chunk) = frame.into_data() {
+                            data.extend_from_slice(&chunk);
+                        }
+                    }
+                    Err(error) => {
+                        failure = Some(error.kind());
+                        break;
+                    }
+                }
+            }
+            task.await.unwrap();
+            assert_eq!(failure, fails.then_some(std::io::ErrorKind::UnexpectedEof));
+            let html = String::from_utf8(data).unwrap();
+            assert_eq!(html.ends_with("</body></html>"), !fails);
+            assert_eq!(html.contains(COSMETIC_STYLE_MARKER), !fails);
         }
     }
 }
