@@ -31,6 +31,7 @@ features, dependency updates, an improved UI, and server-friendly configuration 
   - [Install the root CA on your client devices](#2-install-the-root-ca-on-your-client-devices)
   - [Point clients at the proxy](#3-point-clients-at-the-proxy)
   - [Cert-pinned hosts (exclusions)](#4-cert-pinned-hosts-exclusions)
+  - [Filter only selected hosts (inclusions)](#5-filter-only-selected-hosts-inclusions)
 - [Screenshots](#screenshots)
 - [Acknowledgements](#acknowledgements)
 
@@ -230,16 +231,44 @@ intercepted. Privaxy handles this two ways:
   and not user-editable.
 - A **list** of commonly cert-pinned hosts that is
   pre-populated into your editable exclusions on first config creation.
-  Settings → Exclusions shows the list; the **Reset to defaults** button
+  Settings → Inclusions & exclusions shows the list; the **Reset to defaults** button
   re-applies the default list. [Source](privaxy/src/server/proxy/exclusions.rs)
 
 Excluded hosts are still CONNECT-tunneled through the proxy, they're just
 not decrypted. Filter rules **do not** apply to their traffic.
 
 If you find a site that breaks under MITM, add its hostname (wildcards
-like `*.example.com` are supported) to Settings → Exclusions and click
+like `*.example.com` are supported) to Settings → Inclusions & exclusions and click
 Save. If it's something common, please open an issue so it can be added
 to the recommended list.
+
+### 5. Filter only selected hosts (inclusions)
+
+Under **Settings → Inclusions & exclusions**, enable **Only filter included
+hosts**, enter one hostname or wildcard pattern per line, and save. Use both
+`example.com` and `*.example.com` to cover a domain and its subdomains. Matching
+is case-insensitive and uses the destination hostname without its port.
+
+In this mode, only included hosts are filtered. Everything else passes through
+without ad blocking, HTML/userscript injection, or HTTPS decryption. Explicit
+exclusions and the built-in Apple exclusions always take precedence. An empty
+inclusion list filters nothing. Turning the mode off retains the list and
+restores filtering of all non-excluded hosts.
+
+The generated PAC file uses the same inclusion list and returns `DIRECT` for
+unlisted or excluded hosts; existing PAC bypass rules still take precedence.
+Clients configured with a manual proxy continue forwarding through Privaxy,
+which tunnels unselected HTTPS hosts and forwards unselected HTTP unchanged.
+Clients may need to refresh their PAC file and reopen connections after changes;
+an established HTTPS tunnel keeps its original interception decision.
+
+Inclusions select destination hosts, not entire browsing sessions. Third-party
+ad and resource hosts used by an included site must be included separately if
+you want their requests filtered too.
+
+The equivalent top-level configuration fields are `include_only = true` and
+`inclusions = ["example.com", "*.example.com"]`. Existing configurations default
+to `include_only = false`. File edits take effect on SIGHUP or restart.
 
 > **Recovering access**: if you lose the web-UI password, delete the
 > `password_hash` value from the config file and restart. The web UI will

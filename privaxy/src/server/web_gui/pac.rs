@@ -1,4 +1,5 @@
 use crate::configuration::Configuration;
+use crate::proxy::exclusions::DEFAULT_EXCLUSION_PATTERNS;
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -17,6 +18,9 @@ struct PacContext<'a> {
     ips: &'a [String],
     cidrs: &'a BTreeMap<String, String>,
     fqdns: &'a [String],
+    include_only: bool,
+    inclusions: Vec<String>,
+    exclusions: Vec<String>,
 }
 
 pub(crate) fn create_routes(configuration_save_lock: Arc<Mutex<()>>) -> BoxedFilter<(impl Reply,)> {
@@ -69,6 +73,22 @@ async fn render_pac(
         ips: &cfg.network.pac_direct_ips,
         cidrs: &cidrs,
         fqdns: &cfg.network.pac_direct_fqdns,
+        include_only: cfg.include_only,
+        inclusions: cfg
+            .inclusions
+            .iter()
+            .map(|host| host.to_lowercase())
+            .collect(),
+        exclusions: cfg
+            .exclusions
+            .iter()
+            .map(|host| host.to_lowercase())
+            .chain(
+                DEFAULT_EXCLUSION_PATTERNS
+                    .iter()
+                    .map(|host| host.to_string()),
+            )
+            .collect(),
     };
 
     let ctx = Context::from_serialize(&ctx_data).map_err(|err| {

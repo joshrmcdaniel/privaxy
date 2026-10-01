@@ -23,6 +23,7 @@ pub(crate) mod events;
 pub(crate) mod exclusions;
 mod filterlists;
 pub(crate) mod filters;
+mod inclusions;
 pub(crate) mod logs;
 mod pac;
 pub(crate) mod settings;
@@ -198,6 +199,14 @@ fn create_api_routes(
                 local_exclusions_store.clone(),
             ));
 
+    let inclusions_route =
+        warp::path("inclusions")
+            .and(require_auth.clone())
+            .and(inclusions::create_routes(
+                configuration_save_lock.clone(),
+                local_exclusions_store.clone(),
+            ));
+
     let settings_route =
         warp::path("settings")
             .and(require_auth.clone())
@@ -252,6 +261,7 @@ fn create_api_routes(
         .or(filters_route)
         .or(custom_filters_route)
         .or(exclusions_route)
+        .or(inclusions_route)
         .or(blocking_enabled_route)
         .or(tls_failures_route)
         .or(settings_route)

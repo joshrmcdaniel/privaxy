@@ -73,7 +73,7 @@ pub(crate) async fn serve_mitm_session(
         // cert, so minting one would only delay the CONNECT response (cert
         // signing is expensive on low-powered machines).
         let server_configuration =
-            if is_authority_excluded(&local_exclusion_store, &authority, &raw_authority) {
+            if !should_intercept_authority(&local_exclusion_store, &authority, &raw_authority) {
                 None
             } else {
                 Some(Arc::new(
@@ -128,6 +128,11 @@ pub(crate) async fn serve_mitm_session(
                                             scriptlet_debug_logging,
                                             gui_base_url.clone(),
                                             user_scripts.clone(),
+                                            should_intercept_authority(
+                                                &local_exclusion_store,
+                                                &authority,
+                                                &raw_authority,
+                                            ),
                                         )
                                     }),
                                 )
@@ -169,7 +174,7 @@ pub(crate) async fn serve_mitm_session(
         });
 
         Ok(Response::new(empty_body()))
-    } else if is_authority_excluded(&local_exclusion_store, &authority, &raw_authority)
+    } else if !should_intercept_authority(&local_exclusion_store, &authority, &raw_authority)
         && is_opaque_upgrade(req.headers())
     {
         // An excluded host performing a protocol upgrade over plain HTTP — e.g.
@@ -199,6 +204,8 @@ pub(crate) async fn serve_mitm_session(
             );
         }
 
+        let intercept =
+            should_intercept_authority(&local_exclusion_store, &authority, &raw_authority);
         serve(
             adblock_requester,
             req,
@@ -213,6 +220,7 @@ pub(crate) async fn serve_mitm_session(
             scriptlet_debug_logging,
             gui_base_url,
             user_scripts,
+            intercept,
         )
         .await
     }
@@ -431,16 +439,13 @@ fn sanitize_authority(authority: &Authority) -> Authority {
     candidate.parse().unwrap_or_else(|_| authority.clone())
 }
 
-/// An authority is excluded when its sanitized host matches the exclusion
-/// list, or — for authorities that carried a service selector — when the raw
-/// client-sent host matches a literal exclusion entry.
-fn is_authority_excluded(
+/// Apply one interception decision to the sanitized and original hostnames.
+fn should_intercept_authority(
     exclusions: &LocalExclusionStore,
     authority: &Authority,
     raw_authority: &Authority,
 ) -> bool {
-    exclusions.contains(authority.host())
-        || (raw_authority.host() != authority.host() && exclusions.contains(raw_authority.host()))
+    exclusions.should_intercept(authority.host(), raw_authority.host())
 }
 
 /// Pipe two duplex streams in both directions until either side closes.
@@ -542,16 +547,16 @@ mod tests {
         let sanitized = sanitize_authority(&raw);
 
         let exact = LocalExclusionStore::new(vec![String::from("rbm.goog")]);
-        assert!(is_authority_excluded(&exact, &sanitized, &raw));
+        assert!(!should_intercept_authority(&exact, &sanitized, &raw));
 
         let wildcard = LocalExclusionStore::new(vec![String::from("*.goog")]);
-        assert!(is_authority_excluded(&wildcard, &sanitized, &raw));
+        assert!(!should_intercept_authority(&wildcard, &sanitized, &raw));
 
         // An entry matching the literal client-sent host keeps working.
         let literal = LocalExclusionStore::new(vec![String::from("rbm.goog(smsft)")]);
-        assert!(is_authority_excluded(&literal, &sanitized, &raw));
+        assert!(!should_intercept_authority(&literal, &sanitized, &raw));
 
         let unrelated = LocalExclusionStore::new(vec![String::from("example.com")]);
-        assert!(!is_authority_excluded(&unrelated, &sanitized, &raw));
+        assert!(should_intercept_authority(&unrelated, &sanitized, &raw));
     }
 }

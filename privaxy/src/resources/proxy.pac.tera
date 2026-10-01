@@ -33,5 +33,21 @@ function FindProxyForURL(url, host) {
         }
     }
 {%- endif %}
+{%- if include_only %}
+    // Exclusions take precedence over inclusions, including built-in bypasses.
+    var exclusions = {{ exclusions | json_encode() | safe }};
+    for (var i = 0; i < exclusions.length; i++) {
+        if (shExpMatch(host, exclusions[i])) return "DIRECT";
+    }
+    var inclusions = {{ inclusions | json_encode() | safe }};
+    var included = false;
+    for (var i = 0; i < inclusions.length; i++) {
+        if (shExpMatch(host, inclusions[i])) {
+            included = true;
+            break;
+        }
+    }
+    if (!included) return "DIRECT";
+{%- endif %}
     return "PROXY {{ proxy_host }}";
 }

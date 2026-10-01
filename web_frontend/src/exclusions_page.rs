@@ -1,3 +1,4 @@
+use crate::inclusions::Inclusions;
 use crate::settings_textarea::SettingsTextarea;
 use crate::tls_failures::TlsFailuresPanel;
 use yew::{html, Component, Context, Html};
@@ -41,8 +42,7 @@ impl Component for ExclusionsPage {
 
         let description = html! {<div class="text-gray-600">
                 <p>
-                    {"Exclusions are hosts or domains that are not passed through the MITM pipeline. "}
-                    {"Excluded entries will be transparently tunneled."}
+                    {"Excluded hosts pass through without filtering or HTTPS interception. "}
                 </p>
                 <p class="mt-2">
                     {"Use "}<span class="font-medium">{"Reset to defaults"}</span>
@@ -55,7 +55,10 @@ impl Component for ExclusionsPage {
 
         html! {
             <>
-                <TlsFailuresPanel {on_excluded} />
+                <Inclusions />
+                <div class="mt-8">
+                    <TlsFailuresPanel {on_excluded} />
+                </div>
                 <div class="mt-8">
                     <SettingsTextarea h1="Exclusions" {description} input_name="exclusions" {textarea_description} {resource_url} {defaults_url} merge_lines={self.excluded_hosts.clone()} />
                 </div>

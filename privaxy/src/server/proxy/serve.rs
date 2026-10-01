@@ -300,6 +300,7 @@ pub(crate) async fn serve(
     scriptlet_debug_logging: bool,
     gui_base_url: Option<String>,
     user_scripts: UserScriptContext,
+    intercept: bool,
 ) -> Result<Response<ProxyBody>, hyper::Error> {
     let scheme_string = scheme.to_string();
 
@@ -323,6 +324,11 @@ pub(crate) async fn serve(
     // running in the page's main world reach Privaxy without CORS. Handled
     // before any statistics counting: these are not proxied traffic.
     if gm_endpoint::is_reserved(uri.path()) {
+        // A page opened before a policy change may still call its injected
+        // endpoints. Revoke them without leaking tokens/storage upstream.
+        if !intercept {
+            return Ok(get_empty_response(StatusCode::NOT_FOUND));
+        }
         let (parts, body) = request.into_parts();
         // Bounded so a hostile page cannot make the proxy buffer an unbounded
         // body; an oversized request simply fails to parse below.
@@ -345,6 +351,43 @@ pub(crate) async fn serve(
     log::debug!("{} {}", req.method(), req.uri());
 
     statistics.increment_top_clients(client_ip_address);
+
+    if !intercept {
+        let mut req = req;
+        req.headers_mut().remove(http::header::PROXY_AUTHORIZATION);
+        req.headers_mut().remove("proxy-connection");
+        if broadcast_sender.receiver_count() > 0 {
+            let _ = broadcast_sender.send(Event {
+                now: chrono::Utc::now(),
+                method: req.method().to_string(),
+                url: uri.to_string(),
+                is_request_blocked: false,
+            });
+        }
+        // Forward with hyper so bodies, compression and CSP remain untouched.
+        // This path skips adblock, DoH policy and all HTML/userscript injection.
+        let response = if req.headers().contains_key(http::header::UPGRADE) {
+            perform_two_ends_upgrade(req, uri, hyper_client).await
+        } else {
+            let (mut parts, body) = req.into_parts();
+            parts.headers.remove(http::header::HOST);
+            // This client speaks HTTP/1 upstream, including for a request
+            // arriving over an existing intercepted HTTP/2 connection.
+            parts.version = http::Version::HTTP_11;
+            match hyper_client
+                .request(Request::from_parts(parts, boxed_incoming(body)))
+                .await
+            {
+                Ok(response) => response.map(boxed_incoming),
+                Err(error) => {
+                    log::warn!("Unable to forward unfiltered request to {uri}: {error}");
+                    return Ok(get_empty_response(StatusCode::BAD_GATEWAY));
+                }
+            }
+        };
+        statistics.increment_proxied_requests();
+        return Ok(response);
+    }
 
     let request_type = request_type_from_headers(req.headers());
 

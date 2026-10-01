@@ -73,7 +73,7 @@ pub fn switch_settings(route: SettingsRoute) -> Html {
             html! { <Filters />}
         }
         SettingsRoute::Exclusions => {
-            set_title("Settings - Exclusions");
+            set_title("Settings - Inclusions & exclusions");
 
             html! { <ExclusionsPage /> }
         }
@@ -118,7 +118,7 @@ pub fn switch_settings(route: SettingsRoute) -> Html {
     <nav class="space-y-1 mt-4 lg:col-span-1 sm:col-span-2" aria-label="Sidebar">
         <Link<SettingsRoute> classes={get_classes(route, SettingsRoute::General)} to={SettingsRoute::General}> <span class="truncate">{ "General" }</span></Link<SettingsRoute>>
         <Link<SettingsRoute> classes={get_classes(route, SettingsRoute::Filters)} to={SettingsRoute::Filters}> <span class="truncate">{ "Filters" }</span></Link<SettingsRoute>>
-        <Link<SettingsRoute> classes={get_classes(route, SettingsRoute::Exclusions)} to={SettingsRoute::Exclusions}> <span class="truncate">{ "Exclusions" }</span></Link<SettingsRoute>>
+        <Link<SettingsRoute> classes={get_classes(route, SettingsRoute::Exclusions)} to={SettingsRoute::Exclusions}> <span class="whitespace-normal">{ "Inclusions & exclusions" }</span></Link<SettingsRoute>>
         <Link<SettingsRoute> classes={get_classes(route, SettingsRoute::CustomFilters)} to={SettingsRoute::CustomFilters}> <span class="truncate">{ "Custom filters" }</span></Link<SettingsRoute>>
         <Link<SettingsRoute> classes={get_classes(route, SettingsRoute::Userscripts)} to={SettingsRoute::Userscripts}> <span class="truncate">{ "Userscripts" }</span></Link<SettingsRoute>>
         <Link<SettingsRoute> classes={get_classes(route, SettingsRoute::Pac)} to={SettingsRoute::Pac}> <span class="truncate">{ "PAC" }</span></Link<SettingsRoute>>
