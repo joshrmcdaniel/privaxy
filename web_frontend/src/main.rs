@@ -18,6 +18,7 @@ mod filter_failures;
 mod filterlists;
 mod filters;
 mod general;
+mod inclusions;
 mod logs;
 mod pac;
 mod requests;
