@@ -1,4 +1,4 @@
-use crate::logs::LogStream;
+use crate::{api, logs::LogStream};
 use gloo_net::http::Request;
 use serde::{Deserialize, Serialize};
 use wasm_bindgen_futures::spawn_local;
@@ -33,6 +33,7 @@ impl Default for DebugConfig {
 }
 
 pub enum Message {
+    Load,
     Loaded(DebugConfig),
     ToggleScriptletLogging(bool),
     SetLogLevel(String),
@@ -42,6 +43,7 @@ pub enum Message {
 
 pub struct DebugSettingsPage {
     config: DebugConfig,
+    remote: DebugConfig,
     loaded: bool,
     saving: bool,
     saved: bool,
@@ -53,20 +55,11 @@ impl Component for DebugSettingsPage {
     type Properties = ();
 
     fn create(ctx: &Context<Self>) -> Self {
-        let link = ctx.link().clone();
-        spawn_local(async move {
-            match Request::get("/api/settings/debug").send().await {
-                Ok(response) if response.ok() => {
-                    if let Ok(config) = response.json::<DebugConfig>().await {
-                        link.send_message(Message::Loaded(config));
-                    }
-                }
-                _ => log::error!("Failed to load debug settings"),
-            }
-        });
+        ctx.link().send_message(Message::Load);
 
         Self {
             config: DebugConfig::default(),
+            remote: DebugConfig::default(),
             loaded: false,
             saving: false,
             saved: false,
@@ -76,12 +69,29 @@ impl Component for DebugSettingsPage {
 
     fn update(&mut self, ctx: &Context<Self>, msg: Self::Message) -> bool {
         match msg {
+            Message::Load => {
+                self.error = None;
+                let link = ctx.link().clone();
+                spawn_local(async move {
+                    link.send_message(match api::get_json("/api/settings/debug").await {
+                        Ok(config) => Message::Loaded(config),
+                        Err(error) => {
+                            Message::SaveFailed(format!("Could not load debug settings: {error}"))
+                        }
+                    });
+                });
+                true
+            }
             Message::Loaded(config) => {
+                self.remote = config.clone();
                 self.config = config;
                 self.loaded = true;
                 true
             }
             Message::ToggleScriptletLogging(value) => {
+                if self.saving || !self.loaded {
+                    return false;
+                }
                 // Optimistically reflect the new value, then persist. The PUT
                 // triggers a backend reload, so it takes effect on newly served
                 // pages.
@@ -90,6 +100,9 @@ impl Component for DebugSettingsPage {
                 true
             }
             Message::SetLogLevel(level) => {
+                if self.saving || !self.loaded {
+                    return false;
+                }
                 // The backend applies the level live (no reload needed) on the
                 // PUT; we persist it so it survives restarts.
                 self.config.log_level = level;
@@ -97,6 +110,7 @@ impl Component for DebugSettingsPage {
                 true
             }
             Message::SaveSucceeded(config) => {
+                self.remote = config.clone();
                 self.config = config;
                 self.saving = false;
                 self.saved = true;
@@ -104,6 +118,7 @@ impl Component for DebugSettingsPage {
                 true
             }
             Message::SaveFailed(message) => {
+                self.config = self.remote.clone();
                 self.saving = false;
                 self.saved = false;
                 self.error = Some(message);
@@ -114,7 +129,12 @@ impl Component for DebugSettingsPage {
 
     fn view(&self, ctx: &Context<Self>) -> Html {
         if !self.loaded {
-            return html! { <div>{"Loading..."}</div> };
+            return html! {
+                if let Some(error) = &self.error {
+                    <p role="alert" class="text-sm text-red-700">{error}</p>
+                    <button type="button" class="mt-2 text-blue-600 underline" onclick={ctx.link().callback(|_| Message::Load)}>{"Retry loading debug settings"}</button>
+                } else { <p role="status">{"Loading..."}</p> }
+            };
         }
 
         let on_toggle = ctx.link().callback(|e: MouseEvent| {
@@ -142,17 +162,18 @@ impl Component for DebugSettingsPage {
                     <h1 class="text-2xl font-bold text-gray-900">{ "Debug" }</h1>
                 </div>
 
+                if let Some(error) = &self.error { <p role="alert" class="mb-4 text-sm text-red-700">{error}</p> }
                 <fieldset class="mb-8" style="width: 100%;">
                     <legend class="text-lg font-medium text-gray-900">{ "Scriptlet diagnostics" }</legend>
                     <div class="mt-4 border-t border-b border-gray-200 divide-y divide-gray-200">
-                        <div class="mb-4" style="display: flex; flex-direction: column; width: 100%; padding: 2px 0;">
-                            <div style="display: flex; align-items: center; width: 100%;">
-                                <div class="text-gray-500" style="width: 260px; text-align: left; padding-right: 4px;">
+                        <div class="settings-field">
+                            <div class="settings-field-row">
+                                <div class="settings-field-label">
                                     { "Log scriptlet errors to console" }
                                 </div>
-                                <div style="flex-grow: 1;">
+                                <div class="settings-field-control">
                                     <input
-                                        checked={self.config.scriptlet_console_logging}
+                                        aria-label="Log scriptlet errors to console" checked={self.config.scriptlet_console_logging}
                                         onclick={on_toggle}
                                         disabled={self.saving}
                                         type="checkbox"
@@ -161,15 +182,12 @@ impl Component for DebugSettingsPage {
                                     { status.clone() }
                                 </div>
                             </div>
-                            <div style="margin-left: 260px;">
+                            <div class="settings-field-help">
                                 <p class="text-gray-400 text-sm">
                                     { "Surface errors thrown by injected uBO scriptlets in the page's developer console as " }
                                     <span class="font-mono bg-gray-100 px-1">{ "[privaxy scriptlet]" }</span>
                                     { " entries, instead of silently swallowing them. Noisy and reveals that Privaxy is intercepting the page \u{2014} leave off unless troubleshooting." }
                                 </p>
-                                if let Some(error) = &self.error {
-                                    <p class="text-red-500 text-xs italic">{ error.clone() }</p>
-                                }
                             </div>
                         </div>
                     </div>
@@ -178,14 +196,14 @@ impl Component for DebugSettingsPage {
                 <fieldset class="mb-8" style="width: 100%;">
                     <legend class="text-lg font-medium text-gray-900">{ "Logging" }</legend>
                     <div class="mt-4 border-t border-b border-gray-200 divide-y divide-gray-200">
-                        <div class="mb-4" style="display: flex; flex-direction: column; width: 100%; padding: 2px 0;">
-                            <div style="display: flex; align-items: center; width: 100%;">
-                                <div class="text-gray-500" style="width: 260px; text-align: left; padding-right: 4px;">
+                        <div class="settings-field">
+                            <div class="settings-field-row">
+                                <div class="settings-field-label">
                                     { "Log level" }
                                 </div>
-                                <div style="flex-grow: 1;">
+                                <div class="settings-field-control">
                                     <select
-                                        onchange={on_level_change}
+                                        aria-label="Log level" onchange={on_level_change}
                                         disabled={self.saving}
                                         class="block pl-3 pr-8 py-1.5 text-sm border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500">
                                         { for LOG_LEVELS.iter().map(|level| html! {
@@ -197,7 +215,7 @@ impl Component for DebugSettingsPage {
                                     { status }
                                 </div>
                             </div>
-                            <div style="margin-left: 260px;">
+                            <div class="settings-field-help">
                                 <p class="text-gray-400 text-sm">
                                     { "Verbosity of Privaxy's own logs, applied immediately and persisted. Dependency logs stay governed by the " }
                                     <span class="font-mono bg-gray-100 px-1">{ "RUST_LOG" }</span>

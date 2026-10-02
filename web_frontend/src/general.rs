@@ -2,8 +2,7 @@ use crate::button::ButtonState;
 use crate::button::{get_css, ButtonColor};
 use crate::failure_banner;
 use crate::success_banner;
-use crate::{save_button, ApiError};
-use gloo_net::http::Request;
+use crate::{api, save_button, ApiError};
 use gloo_utils::format::JsValueSerdeExt;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -24,6 +23,7 @@ pub enum Message {
     Load,
     Save,
     NetworkLoadSuccess(NetworkConfig),
+    LoadFailed(String),
     UpdateProxyPort(String),
     UpdateBindAddr(String),
     UpdateWebPort(String),
@@ -223,7 +223,9 @@ impl NetworkSettings {
                     Ok(())
                 } else {
                     log::error!("Failed to save network config");
-                    return Err(resp.json::<ApiError>().await.unwrap());
+                    Err(ApiError {
+                        error: api::response_error(resp).await,
+                    })
                 }
             }
             Err(err) => {
@@ -249,6 +251,8 @@ pub(crate) struct GeneralSettings {
     network_settings: Option<NetworkSettings>,
     ca_config: CaConfig,
     loading: bool,
+    saving: bool,
+    load_error: Option<String>,
     #[allow(dead_code)]
     save_callback: Callback<()>,
     show_error: bool,
@@ -305,6 +309,8 @@ impl Component for GeneralSettings {
             },
             network_settings: None,
             loading: true,
+            saving: false,
+            load_error: None,
             save_callback: Callback::noop(),
             show_success: false,
             show_error: false,
@@ -315,31 +321,27 @@ impl Component for GeneralSettings {
     fn update(&mut self, ctx: &Context<Self>, msg: Self::Message) -> bool {
         match msg {
             Message::Load => {
+                self.loading = true;
+                self.load_error = None;
                 let link = ctx.link().clone();
                 spawn_local(async move {
-                    let request = Request::get("/api/settings/network");
-                    match request.send().await {
-                        Ok(response) => {
-                            if response.ok() {
-                                if let Ok(network_config) = response.json::<NetworkConfig>().await {
-                                    link.send_message(Message::NetworkLoadSuccess(network_config));
-                                }
-                            } else {
-                                log::error!(
-                                    "Failed to load network config: {:?}",
-                                    response.status()
-                                );
-                            }
-                        }
-                        Err(err) => {
-                            log::error!("Request error: {:?}", err);
-                        }
-                    }
+                    link.send_message(match api::get_json("/api/settings/network").await {
+                        Ok(config) => Message::NetworkLoadSuccess(config),
+                        Err(error) => Message::LoadFailed(error),
+                    });
                 });
+            }
+            Message::LoadFailed(error) => {
                 self.loading = false;
-                self.changes_saved = true;
+                self.load_error = Some(error);
             }
             Message::Save => {
+                if self.loading || self.saving || !self.config_has_changed() || !self.validate() {
+                    return false;
+                }
+                self.saving = true;
+                self.show_error = false;
+                self.show_success = false;
                 let link = ctx.link().clone();
                 let network_settings = self.network_settings.clone();
                 let ca_config = self.ca_config.clone();
@@ -383,6 +385,7 @@ impl Component for GeneralSettings {
                 });
             }
             Message::SaveFailed(err) => {
+                self.saving = false;
                 let error_msg = err.clone().error.to_string();
                 self.changes_saved = false;
                 self.show_success = false;
@@ -390,6 +393,7 @@ impl Component for GeneralSettings {
                 self.err_msg = error_msg;
             }
             Message::SaveSuccess => {
+                self.saving = false;
                 self.changes_saved = true;
                 self.show_success = true;
                 self.show_error = false;
@@ -579,14 +583,14 @@ impl Component for GeneralSettings {
                               error: Option<&String>,
                               description: &str| {
             html! {
-                <div class="mb-4" style="display: flex; flex-direction: column; width: 100%; padding: 2px 0;">
-                    <div style="display: flex; align-items: center; width: 100%;">
-                        <div class="text-gray-500" style="width: 200px; text-align: left; padding-right: 4px;">{ setting_name }</div>
-                        <div style="flex-grow: 1;">
-                            <input value={setting_value} class="shadow appearance-none border rounded w-80 py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline" type="text" oninput={oninput} />
+                <div class="settings-field">
+                    <div class="settings-field-row">
+                        <div class="settings-field-label">{ setting_name }</div>
+                        <div class="settings-field-control">
+                            <input aria-label={setting_name.to_string()} value={setting_value} class="shadow appearance-none border rounded w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline" type="text" oninput={oninput} />
                         </div>
                     </div>
-                    <div style="margin-left: 200px;">
+                    <div class="settings-field-help">
                         <p class="text-gray-400 text-sm">{description}</p>
                         if let Some(error_msg) = error {
                             <p class="text-red-500 text-xs italic">{error_msg}</p>
@@ -601,14 +605,14 @@ impl Component for GeneralSettings {
                                       oninput: Callback<MouseEvent>,
                                       description: &str| {
             html! {
-                <div class="mb-4" style="display: flex; flex-direction: column; width: 100%; padding: 2px 0;">
-                    <div style="display: flex; align-items: center; width: 100%;">
-                        <div class="text-gray-500" style="width: 200px; text-align: left; padding-right: 4px;">{ setting_name }</div>
-                        <div style="flex-grow: 1;">
-                            <input checked={setting_value} onclick={oninput} type="checkbox" class="focus:ring-blue-500 h-4 w-4 text-blue-600 border-gray-300 rounded" />
+                <div class="settings-field">
+                    <div class="settings-field-row">
+                        <div class="settings-field-label">{ setting_name }</div>
+                        <div class="settings-field-control">
+                            <input aria-label={setting_name.to_string()} checked={setting_value} onclick={oninput} type="checkbox" class="focus:ring-blue-500 h-4 w-4 text-blue-600 border-gray-300 rounded" />
                         </div>
                     </div>
-                    <div style="margin-left: 200px;">
+                    <div class="settings-field-help">
                         <p class="text-gray-400 text-sm">{description}</p>
                     </div>
                 </div>
@@ -748,7 +752,9 @@ impl Component for GeneralSettings {
                 </fieldset>
             }
         };
-        let save_button_state = if self.config_has_changed() && self.validate() {
+        let save_button_state = if self.saving {
+            ButtonState::Loading
+        } else if !self.loading && self.config_has_changed() && self.validate() {
             ButtonState::Enabled
         } else {
             ButtonState::Disabled
@@ -779,12 +785,18 @@ impl Component for GeneralSettings {
             { title }
             { success_banner_html }
             { failure_banner_html }
+                if let Some(error) = &self.load_error {
+                    <p role="alert" class="text-sm text-red-700">{format!("Could not load network settings: {error}")}</p>
+                    <button type="button" class="mt-2 text-blue-600 underline" onclick={ctx.link().callback(|_| Message::Load)}>{"Retry loading network settings"}</button>
+                }
+                <fieldset disabled={self.saving || self.loading || self.network_settings.is_none()}>
                 if let Some(network_settings) = &self.network_settings {
                     {render_category("Network", SettingCategories::Network(network_settings.clone()))}
-                } else {
-                    <div>{"Loading..."}</div>
+                } else if self.loading {
+                    <div role="status">{"Loading..."}</div>
                 }
                     {render_category("Certificate", SettingCategories::Certificate(self.ca_config.clone()))}
+                </fieldset>
 
             {save_button!(save_callback, save_button_state)}
             </>
@@ -802,23 +814,23 @@ fn render_certificate_setting(
 ) -> Html {
     let input_id = setting_name.to_string().to_lowercase().replace(" ", "_");
     html! {
-        <div class="mb-4" style="display: flex; flex-direction: column; width: 100%; padding: 2px 0;">
-            <div style="display: flex; align-items: center; width: 100%;">
-                <div class="text-gray-500" style="width: 200px; text-align: left; padding-right: 4px;">{ setting_name }</div>
-                <div style="flex-grow: 1;">
+        <div class="settings-field">
+            <div class="settings-field-row">
+                <div class="settings-field-label">{ setting_name }</div>
+                <div class="settings-field-control">
                     <textarea
-                        value={value}
+                        aria-label={setting_name.to_string()} value={value}
                         class="shadow appearance-none border rounded w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline"
                         oninput={oninput}
                     />
                 </div>
             </div>
-            <div class="ml-200" style="margin-left: 200px;">
+            <div class="settings-field-help">
                 <input
                     type="file"
                     id={input_id.clone()}
                     name={input_id.clone()}
-                    class={ get_css(ButtonColor::Blue) }
+                    class={ classes!(get_css(ButtonColor::Blue), "max-w-full") }
                     onchange={Callback::from(move |e: Event| {
                         let input: web_sys::HtmlInputElement = e.target_unchecked_into();
                         if let Some(file) = input.files().and_then(|files| files.get(0)) {
@@ -844,18 +856,18 @@ fn render_select_setting(
     description: &str,
 ) -> Html {
     html! {
-        <div class="mb-4" style="display: flex; flex-direction: column; width: 100%; padding: 2px 0;">
-            <div style="display: flex; align-items: center; width: 100%;">
-                <div class="text-gray-500" style="width: 200px; text-align: left; padding-right: 4px;">{ setting_name }</div>
-                <div style="flex-grow: 1;">
-                    <select onchange={onchange} class="shadow appearance-none border rounded w-80 py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline">
+        <div class="settings-field">
+            <div class="settings-field-row">
+                <div class="settings-field-label">{ setting_name }</div>
+                <div class="settings-field-control">
+                    <select aria-label={setting_name.to_string()} onchange={onchange} class="shadow appearance-none border rounded w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline">
                         { for options.iter().map(|(value, label)| html! {
                             <option value={value.to_string()} selected={*value == selected}>{ *label }</option>
                         }) }
                     </select>
                 </div>
             </div>
-            <div style="margin-left: 200px;">
+            <div class="settings-field-help">
                 <p class="text-gray-400 text-sm">{description}</p>
             </div>
         </div>

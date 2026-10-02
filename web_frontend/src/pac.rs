@@ -1,5 +1,5 @@
 use crate::save_button;
-use crate::{failure_banner, success_banner, ApiError};
+use crate::{api, failure_banner, success_banner, ApiError};
 use gloo_net::http::Request;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -115,6 +115,7 @@ impl PacFormState {
 pub enum Message {
     Load,
     LoadSuccess(PacSettings),
+    LoadFailed(String),
     UpdateEnabled(bool),
     UpdateProxyHost(String),
     UpdateDirectIps(String),
@@ -131,6 +132,8 @@ pub struct PacSettingsPage {
     form: Option<PacFormState>,
     remote: Option<PacFormState>,
     loading: bool,
+    saving: bool,
+    load_error: Option<String>,
     show_success: bool,
     show_error: bool,
     err_msg: String,
@@ -162,6 +165,8 @@ impl Component for PacSettingsPage {
             form: None,
             remote: None,
             loading: true,
+            saving: false,
+            load_error: None,
             show_success: false,
             show_error: false,
             err_msg: String::new(),
@@ -171,23 +176,19 @@ impl Component for PacSettingsPage {
     fn update(&mut self, ctx: &Context<Self>, msg: Self::Message) -> bool {
         match msg {
             Message::Load => {
+                self.loading = true;
+                self.load_error = None;
                 let link = ctx.link().clone();
                 spawn_local(async move {
-                    let request = Request::get(PAC_RESOURCE_URL);
-                    match request.send().await {
-                        Ok(response) if response.ok() => {
-                            if let Ok(settings) = response.json::<PacSettings>().await {
-                                link.send_message(Message::LoadSuccess(settings));
-                            }
-                        }
-                        Ok(response) => {
-                            log::error!("Failed to load PAC settings: {:?}", response.status());
-                        }
-                        Err(err) => {
-                            log::error!("Request error: {:?}", err);
-                        }
-                    }
+                    link.send_message(match api::get_json(PAC_RESOURCE_URL).await {
+                        Ok(settings) => Message::LoadSuccess(settings),
+                        Err(error) => Message::LoadFailed(error),
+                    });
                 });
+            }
+            Message::LoadFailed(error) => {
+                self.loading = false;
+                self.load_error = Some(error);
             }
             Message::LoadSuccess(settings) => {
                 let form = PacFormState::from_settings(&settings);
@@ -222,6 +223,9 @@ impl Component for PacSettingsPage {
                 }
             }
             Message::Save => {
+                if self.saving || !self.config_has_changed() || !self.validate() {
+                    return false;
+                }
                 let form = match self.form.clone() {
                     Some(form) => form,
                     None => return false,
@@ -234,6 +238,9 @@ impl Component for PacSettingsPage {
                         return true;
                     }
                 };
+                self.saving = true;
+                self.show_success = false;
+                self.show_error = false;
                 let link = ctx.link().clone();
                 spawn_local(async move {
                     let body = match serde_json::to_string(&settings) {
@@ -269,11 +276,13 @@ impl Component for PacSettingsPage {
                 });
             }
             Message::SaveSuccess => {
+                self.saving = false;
                 self.show_success = true;
                 self.show_error = false;
                 self.err_msg = String::new();
             }
             Message::SaveFailed(err) => {
+                self.saving = false;
                 self.show_success = false;
                 self.show_error = true;
                 self.err_msg = err.error;
@@ -327,7 +336,12 @@ impl Component for PacSettingsPage {
                 <>
                     { title }
                     { description }
-                    <div class="mt-6 text-gray-500">{"Loading..."}</div>
+                    if let Some(error) = &self.load_error {
+                        <p role="alert" class="mt-6 text-sm text-red-700">{format!("Could not load PAC settings: {error}")}</p>
+                        <button type="button" class="mt-2 text-blue-600 underline" onclick={ctx.link().callback(|_| Message::Load)}>{"Retry loading PAC settings"}</button>
+                    } else {
+                        <div role="status" class="mt-6 text-gray-500">{"Loading..."}</div>
+                    }
                 </>
             };
         }
@@ -354,7 +368,9 @@ impl Component for PacSettingsPage {
             Message::UpdateDirectFqdns(input.value())
         });
 
-        let save_state = if self.config_has_changed() && self.validate() {
+        let save_state = if self.saving {
+            save_button::SaveButtonState::Loading
+        } else if self.config_has_changed() && self.validate() {
             save_button::SaveButtonState::Enabled
         } else {
             save_button::SaveButtonState::Disabled
@@ -368,24 +384,24 @@ impl Component for PacSettingsPage {
                 { success_banner }
                 { failure_banner }
 
-                <fieldset class="mt-6">
+                <fieldset disabled={self.saving} class="mt-6">
                     <div class="border-t border-b border-gray-200 divide-y divide-gray-200">
-                        <div class="py-4 flex items-center">
-                            <div class="text-gray-500" style="width: 220px;">{"Serve proxy.pac"}</div>
-                            <div class="flex-grow">
-                                <input type="checkbox" checked={form.enabled} onclick={on_enabled}
+                        <div class="py-4 settings-field-row">
+                            <div class="settings-field-label">{"Serve proxy.pac"}</div>
+                            <div class="settings-field-control">
+                                <input aria-label="Serve proxy.pac" type="checkbox" checked={form.enabled} onclick={on_enabled}
                                     class="focus:ring-blue-500 h-4 w-4 text-blue-600 border-gray-300 rounded" />
                                 <p class="text-gray-400 text-sm mt-1">
                                     {"Expose the auto-config file at /proxy.pac (no auth)."}
                                 </p>
                             </div>
                         </div>
-                        <div class="py-4 flex items-start">
-                            <div class="text-gray-500 pt-2" style="width: 220px;">{"Advertised proxy host"}</div>
-                            <div class="flex-grow">
-                                <input type="text" value={form.proxy_host.clone()} oninput={on_proxy_host}
+                        <div class="py-4 settings-field-row">
+                            <div class="settings-field-label">{"Advertised proxy host"}</div>
+                            <div class="settings-field-control">
+                                <input aria-label="Advertised proxy host" type="text" value={form.proxy_host.clone()} oninput={on_proxy_host}
                                     placeholder="e.g. 192.168.1.10:8100"
-                                    class="shadow appearance-none border rounded w-80 py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline" />
+                                    class="shadow appearance-none border rounded w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline" />
                                 <p class="text-gray-400 text-sm mt-1">
                                     {"host:port emitted as the PROXY directive. Leave blank to use the bind address and proxy port."}
                                 </p>
@@ -394,7 +410,7 @@ impl Component for PacSettingsPage {
                     </div>
                 </fieldset>
 
-                <fieldset class="mt-6">
+                <fieldset disabled={self.saving} class="mt-6">
                     <legend class="text-lg font-medium text-gray-900">{"Direct (bypass) rules"}</legend>
                     <p class="text-gray-500 text-sm mt-1">
                         {"Hosts matching any rule below are returned to clients as DIRECT instead of PROXY. One entry per line."}

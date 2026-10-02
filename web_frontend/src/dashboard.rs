@@ -1,16 +1,12 @@
 use crate::blocking_enabled::BlockingEnabled;
-use futures::future::{AbortHandle, Abortable};
-use futures::StreamExt;
-use gloo_net::websocket::futures::WebSocket;
-use gloo_timers::future::TimeoutFuture;
+use crate::live_stream;
+use futures::future::AbortHandle;
 use num_format::{Locale, ToFormattedString};
 use serde::Deserialize;
-use std::io::Cursor;
-use wasm_bindgen_futures::spawn_local;
 use yew::{html, Component, Context, Html};
 
 #[derive(Debug, Deserialize, PartialEq, Eq)]
-pub struct Message {
+pub struct Statistics {
     proxied_requests: Option<u64>,
     blocked_requests: Option<u64>,
     modified_responses: Option<u64>,
@@ -20,8 +16,14 @@ pub struct Message {
     top_clients: Vec<(String, u64)>,
 }
 
+pub enum Message {
+    Received(Statistics),
+    Connection(bool),
+}
+
 pub struct Dashboard {
-    message: Message,
+    message: Statistics,
+    connected: bool,
     ws_abort_handle: AbortHandle,
 }
 
@@ -30,75 +32,16 @@ impl Component for Dashboard {
     type Properties = ();
 
     fn create(ctx: &Context<Self>) -> Self {
-        let message_callback = ctx.link().callback(|message: Message| message);
-
-        let (abort_handle, abort_registration) = AbortHandle::new_pair();
-        let future = Abortable::new(
-            async move {
-                loop {
-                    let ws = match WebSocket::open("/api/statistics") {
-                        Ok(ws) => ws,
-                        Err(_err) => {
-                            log::warn!("Unable to connect to websocket, trying again.");
-
-                            TimeoutFuture::new(1_000).await;
-
-                            continue;
-                        }
-                    };
-
-                    let (_write, mut read) = ws.split();
-
-                    while let Some(result) = read.next().await {
-                        match result {
-                            Ok(msg) => {
-                                let message = match msg {
-                                    gloo_net::websocket::Message::Text(s) => {
-                                        let cursor = Cursor::new(s.as_bytes());
-                                        let mut deserializer =
-                                            serde_json::Deserializer::from_reader(cursor)
-                                                .into_iter::<Message>();
-
-                                        match deserializer.next() {
-                                            Some(Ok(message)) => message,
-                                            Some(Err(e)) => {
-                                                log::error!(
-                                                    "Failed to deserialize message: {:?}",
-                                                    e
-                                                );
-                                                continue;
-                                            }
-                                            None => {
-                                                log::warn!("No message received");
-                                                continue;
-                                            }
-                                        }
-                                    }
-                                    gloo_net::websocket::Message::Bytes(_) => unreachable!(),
-                                };
-                                message_callback.emit(message);
-                            }
-                            Err(e) => {
-                                log::warn!("WebSocket error: {:?}", e);
-                                break;
-                            }
-                        }
-                    }
-                    log::warn!("Lost connection to websocket, trying again.");
-
-                    TimeoutFuture::new(1_000).await;
-                }
-            },
-            abort_registration,
+        let abort_handle = live_stream::subscribe(
+            "/api/statistics",
+            ctx.link().callback(Message::Received),
+            ctx.link().callback(Message::Connection),
         );
-
-        spawn_local(async {
-            let _result = future.await;
-        });
 
         Self {
             ws_abort_handle: abort_handle,
-            message: Message {
+            connected: false,
+            message: Statistics {
                 proxied_requests: None,
                 blocked_requests: None,
                 modified_responses: None,
@@ -109,10 +52,17 @@ impl Component for Dashboard {
     }
 
     fn update(&mut self, _ctx: &Context<Self>, msg: Self::Message) -> bool {
-        let update = self.message != msg;
-
-        self.message = msg;
-        update
+        match msg {
+            Message::Received(message) => {
+                let changed = self.message != message;
+                self.message = message;
+                changed
+            }
+            Message::Connection(connected) => {
+                self.connected = connected;
+                true
+            }
+        }
     }
 
     fn view(&self, _ctx: &Context<Self>) -> Html {
@@ -141,8 +91,7 @@ impl Component for Dashboard {
             <>
                 <div class="md:flex md:justify-between md:space-x-5">
                     <div class="pt-1.5">
-                        <h1 class="text-2xl font-bold text-gray-900">{ "Dashboard" }<div
-                                class=" mt-3 ml-3 inline pulsating-circle"></div>
+                        <h1 class="text-2xl font-bold text-gray-900">{ "Dashboard" } if self.connected { <div class="mt-3 ml-3 inline pulsating-circle"></div> }
                         </h1>
                     </div>
                     <div
@@ -160,6 +109,9 @@ impl Component for Dashboard {
                     </div>
                 </div>
 
+                if !self.connected {
+                    <p role="status" class="mt-4 text-sm text-gray-600">{"Connecting to statistics… Retrying automatically. Displayed counts may be out of date."}</p>
+                }
                 <dl
                     class="mt-5 grid grid-cols-1 rounded-lg bg-white overflow-hidden shadow divide-y divide-gray-200 md:grid-cols-3 md:divide-y-0 md:divide-x">
                     <div class="px-4 py-5 sm:p-6">

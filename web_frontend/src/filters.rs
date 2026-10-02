@@ -2,14 +2,11 @@ use crate::button::{ButtonColor, ButtonState, PrivaxyButton};
 use crate::filter_edit::FilterEditModal;
 use crate::filter_failures::FilterFailuresPanel;
 use crate::filterlists::SearchFilterList;
-use crate::{failure_banner, save_button, submit_banner, ApiError};
+use crate::{api, failure_banner, save_button, submit_banner, ApiError};
 use gloo_net::http::Request;
 use serde::{Deserialize, Serialize};
-use serde_json::de::IoRead;
-use serde_json::StreamDeserializer;
 use serde_with::{serde_as, DisplayFromStr};
 use std::fmt::Debug;
-use std::io::Cursor;
 use url::Url;
 use wasm_bindgen_futures::spawn_local;
 use web_sys::{HtmlInputElement, HtmlSelectElement};
@@ -30,6 +27,7 @@ pub enum FilterGroup {
 #[derive(Properties, PartialEq)]
 pub struct Props {
     pub state: save_button::SaveButtonState,
+    pub on_changed: Callback<()>,
 }
 
 impl FilterGroup {
@@ -95,7 +93,7 @@ pub struct AddFilterComponent {
     category: FilterGroup,
     title: String,
     url: String,
-    changes_saved: bool,
+    saving: bool,
     show_error: bool,
     err_msg: String,
 }
@@ -111,7 +109,7 @@ impl Component for AddFilterComponent {
             category: FilterGroup::Default,
             url: String::new(),
             title: String::new(),
-            changes_saved: false,
+            saving: false,
             show_error: false,
             err_msg: String::new(),
         }
@@ -119,9 +117,22 @@ impl Component for AddFilterComponent {
 
     fn update(&mut self, _ctx: &Context<Self>, msg: AddFilterMessage) -> bool {
         match msg {
-            AddFilterMessage::Open => self.is_open = true,
-            AddFilterMessage::Close => self.is_open = false,
+            AddFilterMessage::Open => {
+                if _ctx.props().state != save_button::SaveButtonState::Enabled {
+                    return false;
+                }
+                self.is_open = true;
+            }
+            AddFilterMessage::Close => {
+                if self.saving {
+                    return false;
+                }
+                self.is_open = false;
+            }
             AddFilterMessage::Save(url, title, category) => {
+                if self.saving {
+                    return false;
+                }
                 let parsed_url = match Url::parse(&url) {
                     Ok(parsed_url) => parsed_url,
                     Err(err) => {
@@ -132,6 +143,8 @@ impl Component for AddFilterComponent {
                     }
                 };
 
+                self.saving = true;
+                self.show_error = false;
                 let request_body = AddFilterRequest {
                     enabled: true,
                     title: if title.is_empty() {
@@ -173,9 +186,13 @@ impl Component for AddFilterComponent {
                 self.is_open = false;
                 self.show_error = false;
                 self.err_msg = String::new();
-                self.changes_saved = true;
+                self.saving = false;
+                self.title.clear();
+                self.url.clear();
+                _ctx.props().on_changed.emit(());
             }
             AddFilterMessage::Failed(err) => {
+                self.saving = false;
                 log::error!("Failed to add filter: {}", err.error);
                 self.show_error = true;
                 self.err_msg = err.error;
@@ -235,7 +252,7 @@ impl Component for AddFilterComponent {
             .into_iter()
             .map(|group| {
                 html! {
-                    <option value={group.as_str()}>{group.as_str()}</option>
+                    <option value={group.as_str()} selected={group == self.category}>{group.as_str()}</option>
                 }
             })
             .collect();
@@ -254,10 +271,9 @@ impl Component for AddFilterComponent {
             html! {}
         };
 
-        // <button onclick={self.link.callback(|_| AddFilterMessage::Open)} type="button" class="mt-5 button-base button-green">
         html! {
             <>
-                <button onclick={self.link.callback(|_| AddFilterMessage::Open)} type="button" class={classes!(save_button_classes, "mt-5" )}>
+                <button disabled={properties.state != save_button::SaveButtonState::Enabled} onclick={self.link.callback(|_| AddFilterMessage::Open)} type="button" class={classes!(save_button_classes, "mt-5" )}>
                     <svg xmlns="http://www.w3.org/2000/svg" class="-ml-0.5 mr-2 h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
                     </svg>
@@ -266,14 +282,14 @@ impl Component for AddFilterComponent {
                 {if self.is_open {
                     html! {
                         <div class="fixed inset-0 bg-gray-600 bg-opacity-75 flex items-center justify-center z-50 ">
-                            <div class="bg-white p-6 rounded-lg shadow-lg z-60">
-                                <div class="flex flex-col space-y-4">
+                            <div role="dialog" aria-modal="true" aria-label="Add filter" class="bg-white p-6 rounded-lg shadow-lg w-full max-w-lg max-h-screen overflow-y-auto m-4">
+                                <fieldset disabled={self.saving} class="flex flex-col space-y-4">
                                     { failure_banner }
                                     <div class="flex items-center">
                                         <div class="w-32">
                                             <label class="font-bold">{"Category"}</label>
                                         </div>
-                                        <select class="flex-1 bg-white border border-gray-300 text-gray-700 py-2 px-4 pr-8 rounded leading-tight focus:outline-none focus:bg-white focus:border-gray-500"
+                                        <select class="min-w-0 flex-1 bg-white border border-gray-300 text-gray-700 py-2 px-4 pr-8 rounded leading-tight focus:outline-none focus:bg-white focus:border-gray-500"
                                             onchange={_ctx.link().callback(|e: Event| {
                                                 let select = e.target_dyn_into::<HtmlSelectElement>().expect("event target should be a select element");
                                                 let value = select.value();
@@ -289,7 +305,7 @@ impl Component for AddFilterComponent {
                                         </div>
                                         <input
                                             type="text"
-                                            class="flex-1 bg-white border border-gray-300 text-gray-700 py-2 px-4 rounded leading-tight focus:outline-none focus:bg-white focus:border-gray-500"
+                                            class="min-w-0 flex-1 bg-white border border-gray-300 text-gray-700 py-2 px-4 rounded leading-tight focus:outline-none focus:bg-white focus:border-gray-500"
                                             value={self.title.clone()}
                                             oninput={_ctx.link().callback(|e: InputEvent| {
                                                 let input = e.target_dyn_into::<HtmlInputElement>().expect("event target should be an input element");
@@ -303,7 +319,7 @@ impl Component for AddFilterComponent {
                                         </div>
                                         <input
                                             type="text"
-                                            class="flex-1 bg-white border border-gray-300 text-gray-700 py-2 px-4 rounded leading-tight focus:outline-none focus:bg-white focus:border-gray-500"
+                                            class="min-w-0 flex-1 bg-white border border-gray-300 text-gray-700 py-2 px-4 rounded leading-tight focus:outline-none focus:bg-white focus:border-gray-500"
                                             value={self.url.clone()}
                                             oninput={_ctx.link().callback(|e: InputEvent| {
                                                 let input = e.target_dyn_into::<HtmlInputElement>().expect("event target should be an input element");
@@ -315,7 +331,7 @@ impl Component for AddFilterComponent {
                                         <button onclick={_ctx.link().callback(move |_| AddFilterMessage::Save(url.clone(), title.clone(), category))} class="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded z-60">{"Save"}</button>
                                         <button onclick={_ctx.link().callback(|_| AddFilterMessage::Close)} class="bg-gray-500 hover:bg-gray-700 text-white font-bold py-2 px-4 rounded z-60">{"Cancel"}</button>
                                     </div>
-                                </div>
+                                </fieldset>
                             </div>
                         </div>
                     }
@@ -386,9 +402,10 @@ pub struct FilterRefreshResult {
 pub enum Message {
     Load,
     Display(FilterConfiguration),
+    Failed(String),
     UpdateFilterSelection((String, bool)),
     Save,
-    ChangesSaved,
+    ChangesSaved(FilterConfiguration),
     AckChanges,
     OpenEdit(Filter),
     CloseEdit,
@@ -399,6 +416,9 @@ pub enum Message {
 
 pub struct Filters {
     filter_configuration: Option<FilterConfiguration>,
+    loading: bool,
+    saving: bool,
+    error: Option<String>,
     filter_configuration_before_changes: Option<FilterConfiguration>,
     changes_saved: bool,
     editing_filter: Option<Filter>,
@@ -435,6 +455,9 @@ impl Component for Filters {
 
         Self {
             filter_configuration: None,
+            loading: true,
+            saving: false,
+            error: None,
             filter_configuration_before_changes: None,
             changes_saved: false,
             editing_filter: None,
@@ -446,69 +469,77 @@ impl Component for Filters {
 
     fn update(&mut self, ctx: &Context<Self>, msg: Self::Message) -> bool {
         match msg {
-            Message::Display(filter_configuration) => {
-                log::debug!("Displaying");
-                self.filter_configuration = Some(filter_configuration.clone());
-                self.filter_configuration_before_changes = Some(filter_configuration);
-            }
-            Message::Load => {
-                log::debug!("Retrieving filters..");
-                let request = Request::get("/api/filters");
-                log::debug!("Request: {:?}", request);
-                let message_callback = ctx.link().callback(|message: Message| message);
-                log::debug!("Message callback: {:?}", message_callback);
-
-                spawn_local(async move {
-                    if let Ok(response) = request.send().await {
-                        log::debug!("Response: {:?}", response);
-                        if response.ok() {
-                            log::debug!("Response OK");
-                            if let Ok(body) = response.text().await {
-                                let cursor = Cursor::new(body);
-                                let stream = StreamDeserializer::new(IoRead::new(cursor));
-                                for result in stream {
-                                    match result {
-                                        Ok(filter_configuration) => message_callback
-                                            .emit(Message::Display(filter_configuration)),
-                                        Err(e) => log::error!("Failed to parse chunk: {:?}", e),
-                                    }
-                                }
+            Message::Display(remote) => {
+                let mut draft = remote.clone();
+                // Adding, removing or editing a list must not discard pending
+                // checkbox changes elsewhere on this page.
+                if let (Some(current), Some(saved)) = (
+                    &self.filter_configuration,
+                    &self.filter_configuration_before_changes,
+                ) {
+                    for filter in &mut draft {
+                        if let (Some(current), Some(saved)) = (
+                            current.iter().find(|f| f.file_name == filter.file_name),
+                            saved.iter().find(|f| f.file_name == filter.file_name),
+                        ) {
+                            if current.enabled != saved.enabled {
+                                filter.enabled = current.enabled;
                             }
                         }
                     }
+                }
+                self.filter_configuration = Some(draft);
+                self.filter_configuration_before_changes = Some(remote);
+                self.loading = false;
+            }
+            Message::Failed(error) => {
+                self.error = Some(error);
+                self.loading = false;
+                self.saving = false;
+            }
+            Message::Load => {
+                self.loading = true;
+                self.error = None;
+                let link = ctx.link().clone();
+                spawn_local(async move {
+                    link.send_message(match api::get_json("/api/filters").await {
+                        Ok(filters) => Message::Display(filters),
+                        Err(error) => Message::Failed(format!("Could not load filters: {error}")),
+                    });
                 });
             }
             Message::Save => {
-                if !self.configuration_has_changed() {
+                if self.loading
+                    || self.saving
+                    || self.refreshing
+                    || !self.configuration_has_changed()
+                {
                     return false;
                 }
-                let request_body = self
-                    .filter_configuration
-                    .as_ref()
-                    .unwrap()
+                let Some(submitted) = self.filter_configuration.clone() else {
+                    return false;
+                };
+                self.saving = true;
+                self.error = None;
+                self.changes_saved = false;
+                let request_body = submitted
                     .iter()
                     .map(|filter| FilterStatusChangeRequest {
                         enabled: filter.enabled,
                         file_name: filter.file_name.clone(),
                     })
                     .collect::<Vec<_>>();
-
-                let request = Request::put("/api/filters")
-                    .header("Content-Type", "application/json")
-                    .body(serde_json::to_string(&request_body).unwrap())
-                    .unwrap();
-
-                let callback = ctx.link().callback(|message: Message| message);
-
+                let link = ctx.link().clone();
                 spawn_local(async move {
-                    if let Ok(response) = request.send().await {
-                        if response.ok() {
-                            callback.emit(Message::ChangesSaved);
-                        }
-                    }
+                    link.send_message(
+                        match api::send_json(Request::put("/api/filters"), &request_body).await {
+                            Ok(()) => Message::ChangesSaved(submitted),
+                            Err(error) => {
+                                Message::Failed(format!("Could not save filters: {error}"))
+                            }
+                        },
+                    );
                 });
-
-                log::info!("Save")
             }
             Message::UpdateFilterSelection((filter_name, enabled)) => {
                 self.changes_saved = false;
@@ -523,9 +554,10 @@ impl Component for Filters {
                     filter.enabled = enabled;
                 }
             }
-            Message::ChangesSaved => {
-                self.changes_saved = true;
-                self.filter_configuration_before_changes = self.filter_configuration.clone();
+            Message::ChangesSaved(submitted) => {
+                self.saving = false;
+                self.filter_configuration_before_changes = Some(submitted);
+                self.changes_saved = !self.configuration_has_changed();
             }
             Message::AckChanges => self.changes_saved = false,
             Message::OpenEdit(filter) => self.editing_filter = Some(filter),
@@ -535,7 +567,11 @@ impl Component for Filters {
                 ctx.link().send_message(Message::Load);
             }
             Message::RefreshLists => {
-                if self.refreshing || self.configuration_has_changed() {
+                if self.loading
+                    || self.saving
+                    || self.refreshing
+                    || self.configuration_has_changed()
+                {
                     return false;
                 }
                 self.refreshing = true;
@@ -572,7 +608,9 @@ impl Component for Filters {
 
     fn view(&self, ctx: &Context<Self>) -> Html {
         log::debug!("At view.");
-        let save_button_state = if !self.configuration_has_changed() {
+        let save_button_state = if self.saving {
+            ButtonState::Loading
+        } else if self.loading || self.refreshing || !self.configuration_has_changed() {
             ButtonState::Disabled
         } else {
             ButtonState::Enabled
@@ -605,6 +643,7 @@ impl Component for Filters {
                 html! {
                     <button type="button"
                         class="mr-4 text-gray-400 hover:text-blue-600"
+                        disabled={self.saving || self.loading || self.refreshing}
                         title="Edit or remove this filter list"
                         onclick={Callback::from(move |_| edit_callback.emit(filter_clone.clone()))}>
                         <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none"
@@ -623,7 +662,7 @@ impl Component for Filters {
                 </div>
                 <div class="ml-3 flex items-center h-5">
                     { edit_button }
-                    <input checked={filter.enabled} onchange={checkbox_callback} name={filter.file_name.clone()} type="checkbox"
+                    <input disabled={self.saving || self.loading || self.refreshing} id={filter.file_name.clone()} checked={filter.enabled} onchange={checkbox_callback} name={filter.file_name.clone()} type="checkbox"
                         class="focus:ring-blue-500 h-4 w-4 text-blue-600 border-gray-300 rounded" />
                 </div>
             </div>
@@ -683,7 +722,9 @@ impl Component for Filters {
 
         let refresh_state = if self.refreshing {
             ButtonState::Loading
-        } else if self.configuration_has_changed()
+        } else if self.saving
+            || self.loading
+            || self.configuration_has_changed()
             || !self
                 .filter_configuration
                 .as_ref()
@@ -722,6 +763,14 @@ impl Component for Filters {
             None => html! {},
         };
 
+        let error_banner = self.error.as_ref().map(|error| html! {
+            <div class="mb-4">
+                <p role="alert" class="text-sm text-red-700">{error}</p>
+                if self.filter_configuration.is_none() {
+                    <button type="button" class="mt-2 text-blue-600 underline" disabled={self.loading} onclick={ctx.link().callback(|_| Message::Load)}>{"Retry loading filters"}</button>
+                }
+            </div>
+        }).unwrap_or_default();
         match &self.filter_configuration {
             Some(filter_configuration) => {
                 html! {
@@ -730,10 +779,11 @@ impl Component for Filters {
                             <FilterFailuresPanel on_changed={ctx.link().callback(|_| Message::Load)}
                                 refresh_trigger={self.refresh_generation} />
                             {success_banner}
+                            {error_banner}
                             { edit_modal }
                             <div class="mb-5 flex flex-wrap items-center gap-x-4">
-                                <AddFilterComponent state={save_button::SaveButtonState::Enabled}/>
-                                <SearchFilterList filter_configuration={filter_configuration.clone()}/>
+                                <AddFilterComponent state={if self.saving || self.loading || self.refreshing { save_button::SaveButtonState::Disabled } else { save_button::SaveButtonState::Enabled }} on_changed={ctx.link().callback(|_| Message::Load)}/>
+                                <SearchFilterList filter_configuration={filter_configuration.clone()} on_changed={ctx.link().callback(|_| Message::Load)} disabled={self.saving || self.loading || self.refreshing}/>
                                 {save_button!(save_callback, save_button_state)}
                                 <div class="mt-5">
                                     <PrivaxyButton state={refresh_state} color={ButtonColor::Blue}
@@ -756,9 +806,9 @@ impl Component for Filters {
                         </>
                 }
             }
-            // This realistically loads way too fast for a loader to be useful. Adding one would just add
-            // unwanted flickering.
-            None => html! {{ title }},
+            None => {
+                html! { <>{title}{error_banner} if self.loading { <p role="status" class="text-gray-500">{"Loading filters…"}</p> }</> }
+            }
         }
     }
 }

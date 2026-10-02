@@ -27,6 +27,7 @@ struct SetupPayload {
 #[derive(Debug, Clone, PartialEq)]
 enum GateState {
     Loading,
+    Failed,
     NeedsSetup,
     NeedsLogin,
     Authenticated(Option<String>),
@@ -86,7 +87,7 @@ impl Component for AuthGate {
                 true
             }
             GateMessage::StatusLoadFailed => {
-                self.state = GateState::NeedsLogin;
+                self.state = GateState::Failed;
                 true
             }
             GateMessage::SetupCompleted(username) => {
@@ -107,6 +108,15 @@ impl Component for AuthGate {
     fn view(&self, ctx: &Context<Self>) -> Html {
         match &self.state {
             GateState::Loading => render_loading(),
+            GateState::Failed => render_card(
+                "Unable to load Privaxy",
+                html! {
+                    <>
+                        <p role="alert" class="mb-4 text-sm text-red-700">{"Could not check your sign-in status. Check the connection and try again."}</p>
+                        <button type="button" class="text-blue-600 underline" onclick={ctx.link().callback(|_| GateMessage::LoadStatus)}>{"Retry"}</button>
+                    </>
+                },
+            ),
             GateState::NeedsSetup => {
                 let on_setup = ctx
                     .link()

@@ -1,6 +1,6 @@
 use crate::button::{ButtonColor, ButtonState, PrivaxyButton};
 use crate::filters::{AddFilterRequest, Filter, FilterConfiguration, FilterGroup};
-use crate::{failure_banner, ApiError};
+use crate::{api, failure_banner};
 use gloo_net::http::Request;
 use url::Url;
 use wasm_bindgen_futures::spawn_local;
@@ -16,7 +16,9 @@ pub enum SearchFilterMessage {
     RemoveFilter(filterlists_api::Filter),
     LoadFilters,
     FiltersLoaded(Vec<filterlists_api::Filter>),
-    AddFilterFailed(String, String),
+    Added(Filter),
+    Removed(String),
+    OperationFailed(String),
     AcknowledgeError,
     Error(String),
     NextPage,
@@ -32,6 +34,7 @@ pub struct SearchFilterList {
     filters: Vec<filterlists_api::Filter>,
     filter_query: String,
     loading: bool,
+    busy: bool,
     languages: Vec<filterlists_api::FilterLanguage>,
     licenses: Vec<filterlists_api::FilterLicense>,
     tags: Vec<filterlists_api::FilterTag>,
@@ -46,6 +49,8 @@ const FILTER_TAG_GROUPS: [&str; 4] = ["ads", "privacy", "malware", "social"];
 #[derive(Properties, PartialEq)]
 pub struct Props {
     pub filter_configuration: FilterConfiguration,
+    pub on_changed: Callback<()>,
+    pub disabled: bool,
 }
 
 impl Component for SearchFilterList {
@@ -62,6 +67,7 @@ impl Component for SearchFilterList {
             tags: Vec::<filterlists_api::FilterTag>::new(),
             filter_query: String::new(),
             loading: true,
+            busy: false,
             current_page: 1,
             results_per_page: 10,
             active_filters: _ctx.props().filter_configuration.clone(),
@@ -73,11 +79,19 @@ impl Component for SearchFilterList {
         match msg {
             SearchFilterMessage::Open => {
                 self.is_open = true;
+                self.loading = self.filters.is_empty() || self.error_message.is_some();
                 self.link.send_message(SearchFilterMessage::LoadFilters);
             }
             SearchFilterMessage::Close => self.is_open = false,
-            SearchFilterMessage::FilterChanged(query) => self.filter_query = query,
+            SearchFilterMessage::FilterChanged(query) => {
+                self.filter_query = query;
+                self.current_page = 1;
+            }
             SearchFilterMessage::AddFilter(filter) => {
+                if self.busy || _ctx.props().disabled {
+                    return false;
+                }
+                self.busy = true;
                 let group: FilterGroup = self
                     .tags
                     .clone()
@@ -97,176 +111,101 @@ impl Component for SearchFilterList {
                     .unwrap_or(FilterGroup::Regional);
 
                 self.error_message = None;
-                self.active_filters.push(Filter::new(
-                    filter.name.clone(),
-                    FilterGroup::Malware,
-                    "".to_string(),
-                ));
-                let filter_name = filter.name.clone();
-                let rollback_name = filter.name.clone();
-                let filter_id = filter.id;
                 let link = self.link.clone();
                 spawn_local(async move {
-                    let parsed_url = match resolve_primary_view_url(filter_id).await {
-                        Some(url) => url,
-                        None => {
-                            link.send_message(SearchFilterMessage::AddFilterFailed(
-                                rollback_name,
-                                "Could not resolve a download URL for this filter list".to_string(),
-                            ));
-                            return;
-                        }
+                    let Some(url) = resolve_primary_view_url(filter.id).await else {
+                        link.send_message(SearchFilterMessage::OperationFailed(
+                            "Could not resolve a download URL for this filter list".into(),
+                        ));
+                        return;
                     };
-                    let request_body = AddFilterRequest::new(filter_name, group, parsed_url);
-                    let request = Request::post("/api/filters")
-                        .header("Content-Type", "application/json")
-                        .body(serde_json::to_string(&request_body).unwrap())
-                        .unwrap();
-                    match request.send().await {
-                        Ok(response) if response.ok() => {
-                            log::info!("Filter added successfully");
+                    let request = AddFilterRequest::new(filter.name.clone(), group, url.clone());
+                    match api::send_json(Request::post("/api/filters"), &request).await {
+                        Ok(()) => {
+                            let mut added = Filter::new(filter.name.clone(), group, String::new());
+                            added.url = url.to_string();
+                            link.send_message(SearchFilterMessage::Added(added));
                         }
-                        Ok(response) => {
-                            let err = response.json::<ApiError>().await.unwrap_or(ApiError {
-                                error: format!("HTTP {}", response.status()),
-                            });
-                            link.send_message(SearchFilterMessage::AddFilterFailed(
-                                rollback_name,
-                                err.error,
-                            ));
-                        }
-                        Err(err) => {
-                            link.send_message(SearchFilterMessage::AddFilterFailed(
-                                rollback_name,
-                                format!("{err:?}"),
-                            ));
+                        Err(error) => {
+                            link.send_message(SearchFilterMessage::OperationFailed(error))
                         }
                     }
-                })
+                });
             }
             SearchFilterMessage::RemoveFilter(filter) => {
-                self.active_filters.retain(|f| f.title != filter.name);
-                let filter_name = filter.name.clone();
-                let filter_id = filter.id;
+                if self.busy || _ctx.props().disabled {
+                    return false;
+                }
+                let Some(existing) = self
+                    .active_filters
+                    .iter()
+                    .find(|f| f.title == filter.name && !f.is_default)
+                else {
+                    return false;
+                };
+                let Ok(url) = Url::parse(&existing.url) else {
+                    return false;
+                };
+                self.busy = true;
+                self.error_message = None;
+                let link = self.link.clone();
                 spawn_local(async move {
-                    let parsed_url = match resolve_primary_view_url(filter_id).await {
-                        Some(url) => url,
-                        None => return,
-                    };
-                    let request_body =
-                        AddFilterRequest::new(filter_name, FilterGroup::Malware, parsed_url);
-                    let request = Request::delete("/api/filters")
-                        .header("Content-Type", "application/json")
-                        .body(serde_json::to_string(&request_body).unwrap())
-                        .unwrap();
-                    match request.send().await {
-                        Ok(response) => {
-                            if response.ok() {
-                                log::info!("Filter removed successfully");
-                            } else {
-                                log::error!("Failed to remove filter: {:?}", response.status());
-                            }
+                    let request =
+                        AddFilterRequest::new(filter.name.clone(), FilterGroup::Regional, url);
+                    match api::send_json(Request::delete("/api/filters"), &request).await {
+                        Ok(()) => {
+                            link.send_message(SearchFilterMessage::Removed(filter.name.clone()))
                         }
-                        Err(err) => {
-                            log::error!("Request error: {:?}", err);
+                        Err(error) => {
+                            link.send_message(SearchFilterMessage::OperationFailed(error))
                         }
                     }
-                })
+                });
+            }
+            SearchFilterMessage::Added(filter) => {
+                self.busy = false;
+                self.active_filters.push(filter);
+                _ctx.props().on_changed.emit(());
+            }
+            SearchFilterMessage::Removed(name) => {
+                self.busy = false;
+                self.active_filters.retain(|filter| filter.title != name);
+                _ctx.props().on_changed.emit(());
+            }
+            SearchFilterMessage::OperationFailed(error) => {
+                self.busy = false;
+                self.error_message = Some(error);
             }
             SearchFilterMessage::LoadFilters => {
                 if self.loading {
+                    self.error_message = None;
                     let link = self.link.clone();
                     spawn_local(async move {
-                        let request = Request::get("/api/filterlists/list");
-                        match request.send().await {
-                            Ok(response) => {
-                                if response.ok() {
-                                    if let Ok(filters) =
-                                        response.json::<Vec<filterlists_api::Filter>>().await
-                                    {
-                                        link.send_message(SearchFilterMessage::FiltersLoaded(
-                                            filters,
-                                        ))
-                                    }
-                                } else {
-                                    log::error!("Failed to load filters: {:?}", response.status());
-                                    link.send_message(SearchFilterMessage::Error(
-                                        response.status().to_string(),
-                                    ))
-                                }
+                        match api::get_json("/api/filterlists/list").await {
+                            Ok(filters) => {
+                                link.send_message(SearchFilterMessage::FiltersLoaded(filters))
                             }
-                            Err(err) => {
-                                link.send_message(SearchFilterMessage::Error(err.to_string()))
+                            Err(error) => {
+                                link.send_message(SearchFilterMessage::Error(error));
+                                return;
                             }
                         }
-                        let request = Request::get("/api/filterlists/languages");
-                        match request.send().await {
-                            Ok(response) => {
-                                if response.ok() {
-                                    if let Ok(langs) = response
-                                        .json::<Vec<filterlists_api::FilterLanguage>>()
-                                        .await
-                                    {
-                                        link.send_message(SearchFilterMessage::LanguagesLoaded(
-                                            langs,
-                                        ))
-                                    }
-                                } else {
-                                    log::error!(
-                                        "Failed to load languages: {:?}",
-                                        response.status()
-                                    );
-                                    link.send_message(SearchFilterMessage::Error(
-                                        response.status().to_string(),
-                                    ))
-                                }
+                        match api::get_json("/api/filterlists/languages").await {
+                            Ok(languages) => {
+                                link.send_message(SearchFilterMessage::LanguagesLoaded(languages))
                             }
-                            Err(err) => {
-                                link.send_message(SearchFilterMessage::Error(err.to_string()))
+                            Err(error) => link.send_message(SearchFilterMessage::Error(error)),
+                        }
+                        match api::get_json("/api/filterlists/licenses").await {
+                            Ok(licenses) => {
+                                link.send_message(SearchFilterMessage::LicensesLoaded(licenses))
                             }
-                        };
-                        let request = Request::get("/api/filterlists/licenses");
-                        match request.send().await {
-                            Ok(response) => {
-                                if response.ok() {
-                                    if let Ok(licenses) =
-                                        response.json::<Vec<filterlists_api::FilterLicense>>().await
-                                    {
-                                        link.send_message(SearchFilterMessage::LicensesLoaded(
-                                            licenses,
-                                        ))
-                                    }
-                                } else {
-                                    log::error!("Failed to load licenses: {:?}", response.status());
-                                    link.send_message(SearchFilterMessage::Error(
-                                        response.status().to_string(),
-                                    ))
-                                }
-                            }
-                            Err(err) => {
-                                link.send_message(SearchFilterMessage::Error(err.to_string()))
-                            }
-                        };
-                        let request = Request::get("/api/filterlists/tags");
-                        match request.send().await {
-                            Ok(response) => {
-                                if response.ok() {
-                                    if let Ok(tags) =
-                                        response.json::<Vec<filterlists_api::FilterTag>>().await
-                                    {
-                                        link.send_message(SearchFilterMessage::TagsLoaded(tags))
-                                    }
-                                } else {
-                                    log::error!("Failed to load tags: {:?}", response.status());
-                                    link.send_message(SearchFilterMessage::Error(
-                                        response.status().to_string(),
-                                    ))
-                                }
-                            }
-                            Err(err) => {
-                                link.send_message(SearchFilterMessage::Error(err.to_string()))
-                            }
-                        };
+                            Err(error) => link.send_message(SearchFilterMessage::Error(error)),
+                        }
+                        match api::get_json("/api/filterlists/tags").await {
+                            Ok(tags) => link.send_message(SearchFilterMessage::TagsLoaded(tags)),
+                            Err(error) => link.send_message(SearchFilterMessage::Error(error)),
+                        }
                     });
                 }
             }
@@ -287,19 +226,18 @@ impl Component for SearchFilterList {
                 log::info!("Tags loaded successfully");
                 self.tags = tags.clone();
             }
-            SearchFilterMessage::AddFilterFailed(name, error) => {
-                log::error!("Failed to add filter {name}: {error}");
-                self.active_filters.retain(|f| f.title != name);
-                self.error_message = Some(error);
-            }
             SearchFilterMessage::AcknowledgeError => self.error_message = None,
             SearchFilterMessage::Error(error) => {
                 log::error!("Error loading filters: {}", error);
                 self.loading = false;
+                self.error_message = Some(format!(
+                    "Could not load filter catalog: {error}. Close and reopen to retry."
+                ));
             }
             SearchFilterMessage::NextPage => {
                 if self.current_page
-                    < (self.filters.len() as f64 / self.results_per_page as f64).ceil() as usize
+                    < filtered_filters_len(&self.filters, &self.filter_query)
+                        .div_ceil(self.results_per_page)
                 {
                     self.current_page += 1;
                 }
@@ -313,6 +251,17 @@ impl Component for SearchFilterList {
         true
     }
 
+    fn changed(&mut self, ctx: &Context<Self>, _old_props: &Self::Properties) -> bool {
+        self.active_filters = ctx.props().filter_configuration.clone();
+        true
+    }
+
+    fn destroy(&mut self, _ctx: &Context<Self>) {
+        if let Some(body) = gloo_utils::document().body() {
+            let _ = body.class_list().remove_1("modal-open");
+        }
+    }
+
     fn view(&self, _ctx: &Context<Self>) -> Html {
         let filtered_filters: Vec<&filterlists_api::Filter> = self
             .filters
@@ -324,8 +273,10 @@ impl Component for SearchFilterList {
                     .contains(&self.filter_query.to_lowercase())
             })
             .collect();
-        let total_pages =
-            (filtered_filters.len() as f64 / self.results_per_page as f64).ceil() as usize;
+        let total_pages = filtered_filters
+            .len()
+            .div_ceil(self.results_per_page)
+            .max(1);
         let start_index = (self.current_page - 1) * self.results_per_page;
         let paginated_filters = filtered_filters
             .into_iter()
@@ -343,7 +294,7 @@ impl Component for SearchFilterList {
         let next_button = html! {
         <PrivaxyButton
             color={ButtonColor::Gray}
-            state={if self.current_page == total_pages {ButtonState::Disabled} else {ButtonState::Enabled}}
+            state={if self.current_page >= total_pages {ButtonState::Disabled} else {ButtonState::Enabled}}
             onclick={self.link.callback(|_| SearchFilterMessage::NextPage)}
             button_text={"Next"}
         />
@@ -357,7 +308,7 @@ impl Component for SearchFilterList {
         let search_button = html! {
             <div class="mt-5">
             <PrivaxyButton
-                state={ButtonState::Enabled}
+                state={if _ctx.props().disabled { ButtonState::Disabled } else { ButtonState::Enabled }}
                 onclick={self.link.callback(|_| SearchFilterMessage::Open)}
                 color={ButtonColor::Blue}
                 button_text={"Search filterlists.com"}
@@ -368,7 +319,11 @@ impl Component for SearchFilterList {
         };
         let document = gloo_utils::document();
         if let Some(body) = document.body() {
-            body.set_class_name(if self.is_open { "modal-open" } else { "" });
+            if self.is_open {
+                let _ = body.class_list().add_1("modal-open");
+            } else {
+                let _ = body.class_list().remove_1("modal-open");
+            }
         }
 
         let close_on_backdrop = self.link.callback(|_| SearchFilterMessage::Close);
@@ -401,8 +356,9 @@ impl Component for SearchFilterList {
                             tabindex="-1"
                         >
                             <div
-                                class="bg-white rounded-lg shadow-xl flex flex-col"
-                                style="width: 70vw; max-width: 1100px; max-height: 80vh; overflow: hidden;"
+                                role="dialog" aria-modal="true" aria-label="Search filterlists.com"
+                                class="bg-white rounded-lg shadow-xl flex flex-col w-full mx-4"
+                                style="max-width: 1100px; max-height: 80vh; overflow: hidden;"
                                 onclick={stop_propagation}
                             >
                                 <div class="flex items-center justify-between px-6 py-4 border-b border-gray-200">
@@ -442,7 +398,7 @@ impl Component for SearchFilterList {
                                             }
                                         } else {
                                             html! {
-                                                <table class="table-fixed w-full bg-white">
+                                                <table class="table-fixed w-full min-w-[640px] bg-white">
                                                     <thead class="sticky top-0 bg-gray-50 border-b border-gray-200">
                                                         <tr>
                                                             <th class="px-4 py-2 text-left text-xs font-semibold text-gray-600 uppercase" style="width: 22%;">{"Name"}</th>
@@ -497,19 +453,22 @@ fn filtered_filters_len(filters: &[filterlists_api::Filter], query: &str) -> usi
 impl SearchFilterList {
     fn view_filter_row(&self, filter: &filterlists_api::Filter, ctx: &Context<Self>) -> Html {
         let filter_clone = filter.clone();
-        let existing_filter = self
-            .active_filters
-            .clone()
-            .into_iter()
-            .any(|f| f.title == filter.name);
-        let button = if existing_filter {
-            html! {
-                <PrivaxyButton state={ButtonState::Enabled} onclick={ctx.link().callback(move |_| SearchFilterMessage::RemoveFilter(filter_clone.clone()))} color={ButtonColor::Red} button_text={"Remove"}/>
+        let existing = self.active_filters.iter().find(|f| f.title == filter.name);
+        let state = if self.busy {
+            ButtonState::Loading
+        } else if ctx.props().disabled {
+            ButtonState::Disabled
+        } else {
+            ButtonState::Enabled
+        };
+        let button = if let Some(existing) = existing {
+            if existing.is_default {
+                html! { <span class="text-sm text-gray-500">{"Built-in"}</span> }
+            } else {
+                html! { <PrivaxyButton {state} onclick={ctx.link().callback(move |_| SearchFilterMessage::RemoveFilter(filter_clone.clone()))} color={ButtonColor::Red} button_text={"Remove"}/> }
             }
         } else {
-            html! {
-                <PrivaxyButton state={ButtonState::Enabled} onclick={ctx.link().callback(move |_| SearchFilterMessage::AddFilter(filter_clone.clone()))} color={ButtonColor::Green} button_text={"Add"}/>
-            }
+            html! { <PrivaxyButton {state} onclick={ctx.link().callback(move |_| SearchFilterMessage::AddFilter(filter_clone.clone()))} color={ButtonColor::Green} button_text={"Add"}/> }
         };
         html! {
             <tr class="hover:bg-gray-50">
