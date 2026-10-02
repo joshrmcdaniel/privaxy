@@ -1,8 +1,6 @@
-use futures::future::{AbortHandle, Abortable};
-use futures::StreamExt;
-use gloo_net::websocket::futures::WebSocket;
+use crate::live_stream;
+use futures::future::AbortHandle;
 use serde::Deserialize;
-use wasm_bindgen_futures::spawn_local;
 use web_sys::HtmlSelectElement;
 use yew::{html, Component, Context, Html, TargetCast};
 
@@ -73,6 +71,7 @@ impl LevelFilter {
 
 pub enum Message {
     Received(LogEntry),
+    Connection(bool),
     SetFilter(LevelFilter),
     TogglePause,
     Clear,
@@ -82,6 +81,7 @@ pub struct LogStream {
     entries: Vec<LogEntry>,
     filter: LevelFilter,
     paused: bool,
+    connected: bool,
     ws_abort_handle: AbortHandle,
 }
 
@@ -90,42 +90,27 @@ impl Component for LogStream {
     type Properties = ();
 
     fn create(ctx: &Context<Self>) -> Self {
-        let message_callback = ctx.link().callback(Message::Received);
-
-        let ws = WebSocket::open("/api/logs").unwrap();
-        let (_write, mut read) = ws.split();
-
-        let (abort_handle, abort_registration) = AbortHandle::new_pair();
-        let future = Abortable::new(
-            async move {
-                while let Some(Ok(msg)) = read.next().await {
-                    let entry = match msg {
-                        gloo_net::websocket::Message::Text(s) => {
-                            serde_json::from_str::<LogEntry>(&s).unwrap()
-                        }
-                        gloo_net::websocket::Message::Bytes(_) => unreachable!(),
-                    };
-
-                    message_callback.emit(entry);
-                }
-            },
-            abort_registration,
+        let abort_handle = live_stream::subscribe(
+            "/api/logs",
+            ctx.link().callback(Message::Received),
+            ctx.link().callback(Message::Connection),
         );
-
-        spawn_local(async {
-            let _result = future.await;
-        });
 
         Self {
             entries: Vec::new(),
             filter: LevelFilter::All,
             paused: false,
+            connected: false,
             ws_abort_handle: abort_handle,
         }
     }
 
     fn update(&mut self, _ctx: &Context<Self>, msg: Self::Message) -> bool {
         match msg {
+            Message::Connection(connected) => {
+                self.connected = connected;
+                true
+            }
             Message::Received(entry) => {
                 // While paused the live view is frozen; incoming records are
                 // dropped rather than buffered.
@@ -179,7 +164,7 @@ impl Component for LogStream {
             <fieldset class="mb-8" style="width: 100%;">
                 <legend class="text-lg font-medium text-gray-900">
                     { "Live logs" }
-                    if !self.paused {
+                    if !self.paused && self.connected {
                         <div class="mt-2 ml-3 inline pulsating-circle"></div>
                     }
                 </legend>
@@ -189,7 +174,10 @@ impl Component for LogStream {
                     { "). Filtering and pausing are local to this view and don't affect what the server records." }
                 </p>
 
-                <div class="flex items-center space-x-3 mb-3">
+                if !self.connected {
+                    <p role="status" class="mb-3 text-sm text-gray-600">{"Connecting to live logs… Retrying automatically."}</p>
+                }
+                <div class="flex flex-wrap items-center gap-3 mb-3">
                     <label class="text-sm text-gray-500">{ "Minimum level" }</label>
                     <select
                         onchange={on_filter_change}

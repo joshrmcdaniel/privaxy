@@ -74,14 +74,20 @@ impl Component for SubmitBanner {
         }
     }
 
-    fn changed(&mut self, ctx: &Context<Self>, _old_props: &Self::Properties) -> bool {
-        if ctx.props().visible && self.transition == TransitionState::Hidden {
+    fn changed(&mut self, ctx: &Context<Self>, old_props: &Self::Properties) -> bool {
+        if !ctx.props().visible {
+            self.timeout = None;
+            self.transition = TransitionState::Hidden;
+        } else if !old_props.visible || ctx.props().message != old_props.message {
             ctx.link().send_message(Msg::Show);
         }
         true
     }
 
     fn view(&self, ctx: &Context<Self>) -> Html {
+        if self.transition == TransitionState::Hidden {
+            return html! {};
+        }
         let props = ctx.props();
         let first_color = match props.color {
             Color::Green => "bg-green-500",
@@ -99,7 +105,7 @@ impl Component for SubmitBanner {
         };
 
         html! {
-            <div class={classes!(
+            <div role={if props.color == Color::Red { "alert" } else { "status" }} class={classes!(
                 "mb-5", "p-2", "rounded-lg", "shadow-lg", "sm:p-3", opacity_class, first_color
             )}>
                 <div class="flex items-center justify-between flex-wrap">
@@ -107,7 +113,7 @@ impl Component for SubmitBanner {
                         <span class={classes!("flex", "p-2", "rounded-lg", second_color)}>
                             {props.icon.clone()}
                         </span>
-                        <p class="ml-3 font-medium text-white truncate">
+                        <p class="ml-3 font-medium text-white break-words">
                             {&props.message}
                         </p>
                     </div>

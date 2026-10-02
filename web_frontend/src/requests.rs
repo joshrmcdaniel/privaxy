@@ -1,22 +1,26 @@
-use futures::future::{AbortHandle, Abortable};
-use futures::StreamExt;
-use gloo_net::websocket::futures::WebSocket;
+use crate::live_stream;
+use futures::future::AbortHandle;
 use serde::Deserialize;
-use wasm_bindgen_futures::spawn_local;
 use yew::{html, Component, Context, Html};
 
 const MAX_REQUESTS_SHOWN: usize = 500;
 
 #[derive(Deserialize)]
-pub struct Message {
+pub struct RequestEvent {
     now: String,
     method: String,
     url: String,
     is_request_blocked: bool,
 }
 
+pub enum Message {
+    Received(RequestEvent),
+    Connection(bool),
+}
+
 pub struct Requests {
-    messages: Vec<Message>,
+    messages: Vec<RequestEvent>,
+    connected: bool,
     ws_abort_handle: AbortHandle,
 }
 
@@ -25,50 +29,30 @@ impl Component for Requests {
     type Properties = ();
 
     fn create(ctx: &Context<Self>) -> Self {
-        let message_callback = ctx.link().callback(|message: Message| message);
-
-        let ws = WebSocket::open("/api/events").unwrap();
-        let (_write, mut read) = ws.split();
-
-        let (abort_handle, abort_registration) = AbortHandle::new_pair();
-        let future = Abortable::new(
-            async move {
-                while let Some(Ok(msg)) = read.next().await {
-                    let message = match msg {
-                        gloo_net::websocket::Message::Text(s) => {
-                            serde_json::from_str::<Message>(&s).unwrap()
-                        }
-                        gloo_net::websocket::Message::Bytes(_) => unreachable!(),
-                    };
-
-                    message_callback.emit(message);
-                }
-            },
-            abort_registration,
-        );
-
-        spawn_local(async {
-            let _result = future.await;
-        });
-
         Self {
-            ws_abort_handle: abort_handle,
+            ws_abort_handle: live_stream::subscribe(
+                "/api/events",
+                ctx.link().callback(Message::Received),
+                ctx.link().callback(Message::Connection),
+            ),
             messages: Vec::new(),
+            connected: false,
         }
     }
 
-    fn update(&mut self, _ctx: &Context<Self>, msg: Self::Message) -> bool {
-        self.messages.insert(0, msg);
-
-        self.messages.truncate(MAX_REQUESTS_SHOWN);
-
-        // The server only sends new messages when there is actually
-        // new data.
+    fn update(&mut self, _ctx: &Context<Self>, msg: Message) -> bool {
+        match msg {
+            Message::Received(event) => {
+                self.messages.insert(0, event);
+                self.messages.truncate(MAX_REQUESTS_SHOWN);
+            }
+            Message::Connection(connected) => self.connected = connected,
+        }
         true
     }
 
     fn view(&self, _ctx: &Context<Self>) -> Html {
-        fn render_element(element: &Message) -> Html {
+        fn render_element(element: &RequestEvent) -> Html {
             let background = {
                 if element.is_request_blocked {
                     "bg-red-50"
@@ -100,8 +84,11 @@ impl Component for Requests {
                <>
           <h3 class="text-2xl font-bold text-gray-900 pt-1.5">
             {"Requests feed"}
-            <div class="mt-2 ml-3 inline pulsating-circle"></div>
+            if self.connected { <div class="mt-2 ml-3 inline pulsating-circle"></div> }
           </h3>
+          if !self.connected {
+              <p role="status" class="mt-2 text-sm text-gray-600">{"Connecting to requests feed… Retrying automatically."}</p>
+          }
           <div class="mt-4 flex flex-col">
             <div class="-my-2 overflow-x-auto sm:-mx-6 lg:-mx-8">
               <div class="py-2 align-middle inline-block min-w-full sm:px-6 lg:px-8">

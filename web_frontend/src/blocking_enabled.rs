@@ -1,24 +1,19 @@
+use crate::api;
+use crate::button::{ButtonColor, ButtonState, PrivaxyButton};
 use gloo_net::http::Request;
 use wasm_bindgen_futures::spawn_local;
-use yew::{classes, html, Component, Context, Html};
-
-pub enum ButtonState {
-    Loading,
-    Ready,
-}
+use yew::{html, Component, Context, Html};
 
 pub struct BlockingEnabled {
-    blocking_enabled: bool,
-    button_state: ButtonState,
+    enabled: Option<bool>,
+    busy: bool,
+    error: Option<String>,
 }
 
-#[derive(Debug)]
 pub enum Message {
-    EnableBlocking,
-    DisableBlocking,
-    BlockingEnabled,
-    BlockingDisabled,
-    SetCurrentBlockingState,
+    Load,
+    Toggle,
+    Completed(Result<bool, String>),
 }
 
 impl Component for BlockingEnabled {
@@ -26,138 +21,75 @@ impl Component for BlockingEnabled {
     type Properties = ();
 
     fn create(ctx: &Context<Self>) -> Self {
-        ctx.link().send_message(Message::SetCurrentBlockingState);
-
+        ctx.link().send_message(Message::Load);
         Self {
-            blocking_enabled: true,
-            button_state: ButtonState::Loading,
+            enabled: None,
+            busy: true,
+            error: None,
         }
     }
 
-    fn update(&mut self, ctx: &Context<Self>, msg: Self::Message) -> bool {
-        let base_request =
-            Request::put("/api/blocking-enabled").header("Content-Type", "application/json");
-
-        let message_callback = ctx.link().callback(|message: Message| message);
-
+    fn update(&mut self, ctx: &Context<Self>, msg: Message) -> bool {
         match msg {
-            Message::EnableBlocking => {
-                self.button_state = ButtonState::Loading;
-
-                let request = base_request.body("true").unwrap();
-
+            Message::Load => {
+                self.busy = true;
+                self.error = None;
+                let link = ctx.link().clone();
                 spawn_local(async move {
-                    match request.send().await {
-                        Ok(response) => {
-                            if response.ok() {
-                                message_callback.emit(Message::BlockingEnabled)
-                            }
-                        }
-                        Err(_) => message_callback.emit(Message::BlockingDisabled),
-                    }
+                    link.send_message(Message::Completed(
+                        api::get_json("/api/blocking-enabled").await,
+                    ));
                 });
             }
-            Message::DisableBlocking => {
-                self.button_state = ButtonState::Loading;
-
-                let request = base_request.body("false").unwrap();
-
+            Message::Toggle => {
+                if self.busy {
+                    return false;
+                }
+                let Some(enabled) = self.enabled.map(|enabled| !enabled) else {
+                    return false;
+                };
+                self.busy = true;
+                self.error = None;
+                let link = ctx.link().clone();
                 spawn_local(async move {
-                    if let Ok(response) = request.send().await {
-                        if response.ok() {
-                            message_callback.emit(Message::BlockingDisabled);
-                        }
-                    }
+                    let result =
+                        api::send_json(Request::put("/api/blocking-enabled"), &enabled).await;
+                    link.send_message(Message::Completed(result.map(|()| enabled)));
                 });
             }
-            Message::BlockingEnabled => {
-                self.button_state = ButtonState::Ready;
-                self.blocking_enabled = true;
-            }
-            Message::BlockingDisabled => {
-                self.button_state = ButtonState::Ready;
-                self.blocking_enabled = false;
-            }
-            Message::SetCurrentBlockingState => {
-                let request = Request::get("/api/blocking-enabled");
-
-                spawn_local(async move {
-                    if let Ok(response) = request.send().await {
-                        if response.ok() {
-                            if let Ok(value) = response.json::<bool>().await {
-                                if value {
-                                    message_callback.emit(Message::BlockingEnabled)
-                                } else {
-                                    message_callback.emit(Message::BlockingDisabled)
-                                }
-                            };
-                        }
+            Message::Completed(result) => {
+                self.busy = false;
+                match result {
+                    Ok(enabled) => self.enabled = Some(enabled),
+                    Err(error) => {
+                        self.error = Some(format!("Could not update blocking status: {error}"))
                     }
-                });
+                }
             }
         }
-
         true
     }
 
     fn view(&self, ctx: &Context<Self>) -> Html {
-        let enable_blocking = ctx.link().callback(|_| Message::EnableBlocking);
-        let disable_blocking = ctx.link().callback(|_| Message::DisableBlocking);
-
-        let mut button_classes = classes!(
-            "inline-flex",
-            "items-center",
-            "justify-center",
-            "px-4",
-            "py-2",
-            "border",
-            "transition",
-            "ease-in-out",
-            "duration-150",
-            "border-transparent",
-            "text-sm",
-            "text-sm",
-            "font-medium",
-            "rounded-md",
-            "shadow-sm",
-            "text-white",
-            "focus:outline-none",
-            "focus:ring-2",
-            "focus:ring-offset-2",
-            "focus:ring-offset-gray-100",
-        );
-
-        if let ButtonState::Loading = self.button_state {
-            button_classes.push("opacity-50");
-            button_classes.push("cursor-not-allowed");
-        }
-
-        if self.blocking_enabled {
-            html! {
-            <button onclick={disable_blocking} type="button"
-                class={classes!(button_classes, "focus:ring-red-500", "bg-red-600", "hover:bg-red-700")}>
-                <svg xmlns="http://www.w3.org/2000/svg" class="-ml-0.5 mr-2 h-5 w-5" fill="none"
-                    viewBox="0 0 24 24" stroke="currentColor">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                        d="M10 9v6m4-6v6m7-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-                </svg>
-                {"Pause blocking"}
-            </button>
-            }
+        let state = if self.busy {
+            ButtonState::Loading
         } else {
-            html! {
-            <button onclick={enable_blocking} type="button"
-                class={classes!(button_classes, "focus:ring-green-500", "bg-green-600", "hover:bg-green-700")}>
-                <svg xmlns="http://www.w3.org/2000/svg" class="-ml-0.5 mr-2 h-5 w-5" fill="none" viewBox="0 0 24 24"
-                    stroke="currentColor">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                        d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                        d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                </svg>
-                {"Resume blocking"}
-            </button>
-            }
+            ButtonState::Enabled
+        };
+        let (color, button_text) = match self.enabled {
+            Some(true) => (ButtonColor::Red, "Pause blocking"),
+            Some(false) => (ButtonColor::Green, "Resume blocking"),
+            None => (ButtonColor::Gray, "Retry blocking status"),
+        };
+        let loaded = self.enabled.is_some();
+        html! {
+            <div>
+                <PrivaxyButton {state} {color} {button_text}
+                    onclick={ctx.link().callback(move |_| if loaded { Message::Toggle } else { Message::Load })} />
+                if let Some(error) = &self.error {
+                    <p role="alert" class="mt-2 text-sm text-red-700">{error}</p>
+                }
+            </div>
         }
     }
 }

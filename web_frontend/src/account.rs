@@ -5,7 +5,7 @@ use web_sys::{HtmlInputElement, SubmitEvent};
 use yew::prelude::*;
 use yew::{html, Callback, Component, Context, Html};
 
-use crate::auth::AuthStatus;
+use crate::{api, auth::AuthStatus};
 
 #[derive(Serialize)]
 struct ChangePasswordPayload {
@@ -20,6 +20,7 @@ struct ApiKeyResponse {
 
 pub enum Message {
     StatusLoaded(Option<String>),
+    LoadApiKey,
     ApiKeyLoaded(String),
     UpdateCurrentPassword(String),
     UpdateNewPassword(String),
@@ -62,17 +63,7 @@ impl Component for AccountSettings {
             }
         });
 
-        let link = ctx.link().clone();
-        spawn_local(async move {
-            match Request::get("/api/auth/api-key").send().await {
-                Ok(response) if response.ok() => {
-                    if let Ok(payload) = response.json::<ApiKeyResponse>().await {
-                        link.send_message(Message::ApiKeyLoaded(payload.api_key));
-                    }
-                }
-                _ => {}
-            }
-        });
+        ctx.link().send_message(Message::LoadApiKey);
 
         Self {
             username: None,
@@ -84,17 +75,34 @@ impl Component for AccountSettings {
             password_success: false,
             password_submitting: false,
             api_key_error: None,
-            api_key_busy: false,
+            api_key_busy: true,
         }
     }
 
     fn update(&mut self, ctx: &Context<Self>, msg: Self::Message) -> bool {
         match msg {
+            Message::LoadApiKey => {
+                self.api_key_busy = true;
+                self.api_key_error = None;
+                let link = ctx.link().clone();
+                spawn_local(async move {
+                    link.send_message(
+                        match api::get_json::<ApiKeyResponse>("/api/auth/api-key").await {
+                            Ok(payload) => Message::ApiKeyLoaded(payload.api_key),
+                            Err(error) => Message::ApiKeyRotateFailed(format!(
+                                "Could not load API key: {error}"
+                            )),
+                        },
+                    );
+                });
+                true
+            }
             Message::StatusLoaded(username) => {
                 self.username = username;
                 true
             }
             Message::ApiKeyLoaded(key) => {
+                self.api_key_busy = false;
                 self.api_key = Some(key);
                 true
             }
@@ -233,10 +241,14 @@ impl Component for AccountSettings {
         let on_rotate = link.callback(|_| Message::RotateApiKey);
 
         let username_display = self.username.clone().unwrap_or_else(|| "—".to_string());
-        let api_key_display = self
-            .api_key
-            .clone()
-            .unwrap_or_else(|| "Loading...".to_string());
+        let api_key_display = self.api_key.clone().unwrap_or_else(|| {
+            if self.api_key_busy {
+                "Loading..."
+            } else {
+                "Unavailable"
+            }
+            .to_string()
+        });
 
         html! {
             <>
@@ -288,14 +300,17 @@ impl Component for AccountSettings {
                         />
                     </div>
                     { if let Some(msg) = &self.api_key_error {
-                        html! { <div class="mt-3 p-3 rounded bg-red-50 border border-red-200 text-sm text-red-700">{msg.clone()}</div> }
+                        html! { <div role="alert" class="mt-3 p-3 rounded bg-red-50 border border-red-200 text-sm text-red-700">{msg.clone()}</div> }
                     } else { html!{} } }
+                    if self.api_key.is_none() && self.api_key_error.is_some() {
+                        <button type="button" class="mt-3 mr-4 text-blue-600 underline" onclick={ctx.link().callback(|_| Message::LoadApiKey)}>{"Retry loading API key"}</button>
+                    }
                     <button
                         type="button"
                         onclick={on_rotate}
                         disabled={self.api_key_busy}
                         class="mt-3 inline-flex justify-center py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-red-600 hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500 disabled:opacity-50 disabled:cursor-not-allowed">
-                        { if self.api_key_busy { "Rotating..." } else { "Rotate API key" } }
+                        { if self.api_key_busy { "Loading..." } else { "Rotate API key" } }
                     </button>
                     <p class="text-xs text-gray-400 mt-2">
                         { "Rotating invalidates the previous key immediately." }

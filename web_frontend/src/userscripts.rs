@@ -139,6 +139,9 @@ impl Component for UserScriptsPage {
     fn update(&mut self, ctx: &Context<Self>, msg: Self::Message) -> bool {
         match msg {
             Message::Load => {
+                if self.config.is_none() {
+                    self.error = None;
+                }
                 let link = ctx.link().clone();
                 spawn_local(async move {
                     match Request::get("/api/userscripts").send().await {
@@ -326,7 +329,15 @@ impl Component for UserScriptsPage {
         };
 
         let Some(config) = &self.config else {
-            return html! { <>{ title }{ self.render_error(ctx) }</> };
+            return html! {
+                <>
+                    {title}
+                    if let Some(error) = &self.error {
+                        <p role="alert" class="text-sm text-red-700">{error}</p>
+                        <button type="button" class="mt-2 text-blue-600 underline" onclick={ctx.link().callback(|_| Message::Load)}>{"Retry loading userscripts"}</button>
+                    } else { <p role="status" class="text-gray-500">{"Loading userscripts…"}</p> }
+                </>
+            };
         };
 
         html! {
@@ -339,7 +350,7 @@ impl Component for UserScriptsPage {
                 { self.render_engine_switch(ctx, config) }
                 <fieldset class="mb-8" style="width: 100%;">
                     <legend class="text-lg font-medium text-gray-900">{ "Installed scripts" }</legend>
-                    <div class="mb-5 flex space-x-4">
+                    <div class="mb-5 flex flex-wrap gap-x-4">
                         { self.render_add_button(ctx) }
                         { self.render_refresh_button(ctx) }
                     </div>
@@ -452,12 +463,12 @@ impl UserScriptsPage {
             <fieldset class="mb-8" style="width: 100%;">
                 <legend class="text-lg font-medium text-gray-900">{ "Userscript engine" }</legend>
                 <div class="mt-4 border-t border-b border-gray-200 divide-y divide-gray-200">
-                    <div class="mb-4" style="display: flex; flex-direction: column; width: 100%; padding: 2px 0;">
-                        <div style="display: flex; align-items: center; width: 100%;">
-                            <div class="text-gray-500" style="width: 260px; text-align: left; padding-right: 4px;">
+                    <div class="settings-field">
+                        <div class="settings-field-row">
+                            <div class="settings-field-label">
                                 { "Enable userscripts" }
                             </div>
-                            <div style="flex-grow: 1;">
+                            <div class="settings-field-control">
                                 <input
                                     checked={config.enabled}
                                     onclick={on_toggle}
@@ -466,7 +477,7 @@ impl UserScriptsPage {
                                     class="focus:ring-blue-500 h-4 w-4 text-blue-600 border-gray-300 rounded" />
                             </div>
                         </div>
-                        <div style="margin-left: 260px;">
+                        <div class="settings-field-help">
                             <p class="text-gray-400 text-sm">
                                 { "Master switch. When off, no script is injected regardless of its own setting, and each script keeps its state for when you switch it back on." }
                             </p>
@@ -492,12 +503,12 @@ impl UserScriptsPage {
         });
 
         html! {
-            <div class="mb-4" style="display: flex; flex-direction: column; width: 100%; padding: 2px 0;">
-                <div style="display: flex; align-items: center; width: 100%;">
-                    <div class="text-gray-500" style="width: 260px; text-align: left; padding-right: 4px;">
+            <div class="settings-field">
+                <div class="settings-field-row">
+                    <div class="settings-field-label">
                         { "Allow requests to private addresses" }
                     </div>
-                    <div style="flex-grow: 1;">
+                    <div class="settings-field-control">
                         <input
                             checked={config.allow_private_network_requests}
                             onclick={on_toggle}
@@ -506,10 +517,10 @@ impl UserScriptsPage {
                             class="focus:ring-blue-500 h-4 w-4 text-blue-600 border-gray-300 rounded" />
                     </div>
                 </div>
-                <div style="margin-left: 260px;">
+                <div class="settings-field-help">
                     <p class="text-gray-400 text-sm">
                         { "Lets " }
-                        <span class="font-mono bg-gray-100 px-1">{ "GM_xmlhttpRequest" }</span>
+                        <span class="font-mono bg-gray-100 px-1 break-all">{ "GM_xmlhttpRequest" }</span>
                         { " reach loopback, LAN and link-local addresses. Those requests are made by Privaxy, not by the browser, so they can reach routers, admin panels and cloud metadata endpoints that no page could contact. Leave off unless a script genuinely needs it." }
                     </p>
                 </div>
@@ -717,11 +728,11 @@ impl UserScriptsPage {
                                 value={self.add_body.clone()} oninput={on_body_input} />
                             <p class="text-gray-400 text-xs mt-1">
                                 { "Must contain a " }
-                                <span class="font-mono bg-gray-100 px-1">{ "==UserScript==" }</span>
+                                <span class="font-mono bg-gray-100 px-1 break-all">{ "==UserScript==" }</span>
                                 { " block declaring at least one " }
-                                <span class="font-mono bg-gray-100 px-1">{ "@match" }</span>
+                                <span class="font-mono bg-gray-100 px-1 break-all">{ "@match" }</span>
                                 { " or " }
-                                <span class="font-mono bg-gray-100 px-1">{ "@include" }</span>
+                                <span class="font-mono bg-gray-100 px-1 break-all">{ "@include" }</span>
                                 { "." }
                             </p>
                         </div>

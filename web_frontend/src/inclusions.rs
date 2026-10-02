@@ -173,6 +173,9 @@ impl Component for Inclusions {
             .error
             .as_ref()
             .map(|error| {
+                if self.form.is_none() {
+                    return html! { <p role="alert" class="mt-4 text-sm text-red-700">{error}</p> };
+                }
                 failure_banner!(
                     true,
                     ctx.link().callback(|_| Message::Dismiss),

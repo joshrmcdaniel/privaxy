@@ -1,8 +1,8 @@
-use crate::save_button;
 use crate::submit_banner;
+use crate::{api, save_button};
 use gloo_net::http::Request;
 use wasm_bindgen_futures::spawn_local;
-use web_sys::HtmlInputElement;
+use web_sys::HtmlTextAreaElement;
 use yew::virtual_dom::VNode;
 use yew::{html, Component, Context, Html, InputEvent, Properties, TargetCast};
 
@@ -25,7 +25,12 @@ pub struct Props {
 }
 
 pub struct SettingsTextarea {
-    is_save_button_enabled: bool,
+    loading: bool,
+    loaded: bool,
+    saving: bool,
+    loading_defaults: bool,
+    generation: u64,
+    error: Option<String>,
     changes_saved: bool,
     input_data: String,
     previous_input_data: String,
@@ -48,12 +53,13 @@ fn merge_missing_line(target: &mut String, line: &str) {
 
 pub enum Message {
     LoadCurrentState,
+    Loaded(u64, Result<String, String>),
     UpdateInput(String),
-    UpdatePreviousInputData,
     Save,
-    Saved,
+    Saved(u64, String, Result<(), String>),
     AckChanges,
     LoadDefaults,
+    DefaultsLoaded(u64, Result<String, String>),
 }
 
 impl Component for SettingsTextarea {
@@ -62,88 +68,118 @@ impl Component for SettingsTextarea {
 
     fn create(ctx: &Context<Self>) -> Self {
         ctx.link().send_message(Message::LoadCurrentState);
-
         Self {
-            is_save_button_enabled: false,
+            loading: true,
+            loaded: false,
+            saving: false,
+            loading_defaults: false,
+            generation: 0,
+            error: None,
             input_data: String::new(),
             previous_input_data: String::new(),
             changes_saved: false,
         }
     }
 
-    fn update(&mut self, ctx: &Context<Self>, msg: Self::Message) -> bool {
+    fn update(&mut self, ctx: &Context<Self>, msg: Message) -> bool {
         match msg {
-            Message::UpdateInput(input_value) => {
+            Message::UpdateInput(value) => {
                 self.changes_saved = false;
-                self.is_save_button_enabled = true;
-
-                self.input_data = input_value;
-            }
-            Message::Save => {
-                if !self.is_save_button_enabled {
-                    return false;
-                }
-
-                let request = Request::put(&ctx.props().resource_url)
-                    .header("Content-Type", "application/json")
-                    .body(serde_json::to_string(&self.input_data).unwrap())
-                    .unwrap();
-
-                spawn_local(async move {
-                    if let Ok(response) = request.send().await {
-                        // Todo: Handle errors
-                        if response.ok() {}
-                    }
-                });
-
-                ctx.link().send_message(Message::Saved);
-            }
-            Message::Saved => {
-                ctx.link().send_message(Message::UpdatePreviousInputData);
-
-                self.changes_saved = true;
-                self.is_save_button_enabled = false;
-            }
-            Message::AckChanges => {
-                self.changes_saved = false;
+                self.input_data = value;
             }
             Message::LoadCurrentState => {
-                let request = Request::get(&ctx.props().resource_url);
-
-                let message_callback = ctx.link().callback(|message: Message| message);
-
+                self.generation += 1;
+                let generation = self.generation;
+                self.loading = true;
+                self.error = None;
+                let url = ctx.props().resource_url.clone();
+                let link = ctx.link().clone();
                 spawn_local(async move {
-                    if let Ok(response) = request.send().await {
-                        // Todo: Handle errors
-                        if response.ok() {
-                            if let Ok(response_content) = response.json::<String>().await {
-                                message_callback.emit(Message::UpdateInput(response_content));
-                                message_callback.emit(Message::UpdatePreviousInputData)
-                            };
-                        }
-                    }
+                    link.send_message(Message::Loaded(generation, api::get_json(&url).await));
                 });
             }
-            Message::UpdatePreviousInputData => {
-                self.previous_input_data = self.input_data.clone();
+            Message::Loaded(generation, result) => {
+                if generation != self.generation {
+                    return false;
+                }
+                self.loading = false;
+                match result {
+                    Ok(mut value) => {
+                        for line in &ctx.props().merge_lines {
+                            merge_missing_line(&mut value, line.trim());
+                        }
+                        self.previous_input_data = value.clone();
+                        self.input_data = value;
+                        self.loaded = true;
+                    }
+                    Err(error) => self.error = Some(format!("Could not load settings: {error}")),
+                }
             }
+            Message::Save => {
+                if !self.loaded
+                    || self.loading
+                    || self.saving
+                    || self.loading_defaults
+                    || self.input_data == self.previous_input_data
+                {
+                    return false;
+                }
+                self.saving = true;
+                self.changes_saved = false;
+                self.error = None;
+                let generation = self.generation;
+                let value = self.input_data.clone();
+                let url = ctx.props().resource_url.clone();
+                let link = ctx.link().clone();
+                spawn_local(async move {
+                    let result = api::send_json(Request::put(&url), &value).await;
+                    link.send_message(Message::Saved(generation, value, result));
+                });
+            }
+            Message::Saved(generation, value, result) => {
+                if generation != self.generation {
+                    return false;
+                }
+                self.saving = false;
+                match result {
+                    Ok(()) => {
+                        // Only acknowledge the submitted snapshot. Edits made
+                        // while saving remain unsaved and available to retry.
+                        self.previous_input_data = value;
+                        self.changes_saved = self.input_data == self.previous_input_data;
+                    }
+                    Err(error) => self.error = Some(format!("Could not save settings: {error}")),
+                }
+            }
+            Message::AckChanges => self.changes_saved = false,
             Message::LoadDefaults => {
-                let Some(defaults_url) = ctx.props().defaults_url.clone() else {
+                if !self.loaded || self.loading || self.saving || self.loading_defaults {
+                    return false;
+                }
+                let Some(url) = ctx.props().defaults_url.clone() else {
                     return false;
                 };
-
-                let request = Request::get(&defaults_url);
-                let message_callback = ctx.link().callback(|message: Message| message);
-
+                self.loading_defaults = true;
+                self.changes_saved = false;
+                self.error = None;
+                let generation = self.generation;
+                let link = ctx.link().clone();
                 spawn_local(async move {
-                    if let Ok(response) = request.send().await {
-                        if response.ok() {
-                            if let Ok(response_content) = response.json::<String>().await {
-                                message_callback.emit(Message::UpdateInput(response_content));
-                            };
-                        }
-                    }
+                    link.send_message(Message::DefaultsLoaded(
+                        generation,
+                        api::get_json(&url).await,
+                    ));
                 });
+            }
+            Message::DefaultsLoaded(generation, result) => {
+                if generation != self.generation {
+                    return false;
+                }
+                self.loading_defaults = false;
+                match result {
+                    Ok(value) => self.input_data = value,
+                    Err(error) => self.error = Some(format!("Could not load defaults: {error}")),
+                }
             }
         }
         true
@@ -151,41 +187,46 @@ impl Component for SettingsTextarea {
 
     fn changed(&mut self, ctx: &Context<Self>, old_props: &Self::Properties) -> bool {
         let props = ctx.props();
-
-        // A pure `merge_lines` change appends the new entries in place: the
-        // server already has them, so both the draft and the saved-state
-        // snapshot gain the lines, and unsaved user edits are preserved
-        // (a reload here would silently discard them).
-        if props.resource_url == old_props.resource_url
-            && props.merge_lines != old_props.merge_lines
-        {
-            for line in &props.merge_lines {
+        if props.resource_url != old_props.resource_url {
+            // Invalidate responses belonging to the previous settings page.
+            self.generation += 1;
+            self.loaded = false;
+            self.loading = true;
+            self.saving = false;
+            self.loading_defaults = false;
+            self.input_data.clear();
+            self.previous_input_data.clear();
+            self.changes_saved = false;
+            self.error = None;
+            ctx.link().send_message(Message::LoadCurrentState);
+        } else {
+            for line in props
+                .merge_lines
+                .iter()
+                .filter(|line| !old_props.merge_lines.contains(line))
+            {
                 let line = line.trim();
-                if line.is_empty() {
-                    continue;
+                if !line.is_empty() {
+                    merge_missing_line(&mut self.input_data, line);
+                    merge_missing_line(&mut self.previous_input_data, line);
                 }
-                merge_missing_line(&mut self.input_data, line);
-                merge_missing_line(&mut self.previous_input_data, line);
             }
-
-            return true;
         }
-
-        ctx.link().send_message(Message::UpdateInput(String::new()));
-        ctx.link().send_message(Message::LoadCurrentState);
-
-        self.changes_saved = false;
-
         true
     }
 
     fn view(&self, ctx: &Context<Self>) -> Html {
-        let button_state =
-            if !self.is_save_button_enabled || (self.input_data == self.previous_input_data) {
-                save_button::SaveButtonState::Disabled
-            } else {
-                save_button::SaveButtonState::Enabled
-            };
+        let button_state = if self.saving {
+            save_button::SaveButtonState::Loading
+        } else if !self.loaded
+            || self.loading
+            || self.loading_defaults
+            || self.input_data == self.previous_input_data
+        {
+            save_button::SaveButtonState::Disabled
+        } else {
+            save_button::SaveButtonState::Enabled
+        };
 
         let success_banner = if self.changes_saved {
             let icon = html! {
@@ -207,7 +248,7 @@ impl Component for SettingsTextarea {
         };
 
         let oninput = ctx.link().callback(|e: InputEvent| {
-            let input = e.target_unchecked_into::<HtmlInputElement>();
+            let input = e.target_unchecked_into::<HtmlTextAreaElement>();
             let value = input.value();
 
             Message::UpdateInput(value)
@@ -225,6 +266,7 @@ impl Component for SettingsTextarea {
                 .unwrap_or_else(|| "Reset to defaults".to_string());
             html! {
                 <button onclick={on_defaults_click} type="button"
+                    disabled={!self.loaded || self.loading || self.saving || self.loading_defaults}
                     class="ml-2 mt-5 inline-flex items-center justify-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md shadow-sm text-gray-700 bg-white hover:bg-gray-50 transition ease-in-out duration-150 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-gray-100 focus:ring-blue-500">
                     <svg xmlns="http://www.w3.org/2000/svg" class="-ml-0.5 mr-2 h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
@@ -244,14 +286,23 @@ impl Component for SettingsTextarea {
             {props.description.clone()}
 
             {success_banner}
+            if let Some(error) = &self.error {
+                <p role="alert" class="mt-4 text-sm text-red-700">{error}</p>
+                if !self.loaded {
+                    <button type="button" class="mt-2 text-blue-600 underline" onclick={ctx.link().callback(|_| Message::LoadCurrentState)} disabled={self.loading}>{"Retry loading settings"}</button>
+                }
+            }
+            if self.loading {
+                <p role="status" class="mt-4 text-gray-500">{"Loading settings…"}</p>
+            }
 
             <div class="mt-4">
                 <label for={props.input_name.clone()} class="block text-sm font-medium text-gray-700">{&props.textarea_description}</label>
                 <div class="mt-1">
-                    <textarea {oninput} value={self.input_data.clone()} rows="8" name={props.input_name.clone()} id={props.input_name.clone()} class="shadow-sm focus:ring-blue-500 focus:border-blue-500 block w-full sm:text-sm border-gray-300 rounded-md" />
+                    <textarea disabled={!self.loaded || self.loading || self.loading_defaults} {oninput} value={self.input_data.clone()} rows="8" name={props.input_name.clone()} id={props.input_name.clone()} class="shadow-sm focus:ring-blue-500 focus:border-blue-500 block w-full sm:text-sm border-gray-300 rounded-md" />
                 </div>
             </div>
-            <div class="flex items-center">
+            <div class="flex flex-wrap items-center">
                 <save_button::SaveButton state={button_state} {onclick} />
                 {defaults_button}
             </div>

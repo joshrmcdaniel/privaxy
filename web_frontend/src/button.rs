@@ -97,6 +97,7 @@ impl Component for PrivaxyButton {
         };
         html! {
             <button
+                type="button"
                 class={css}
                 onclick={onclick}
                 disabled={properties.state == ButtonState::Disabled || properties.state == ButtonState::Loading}

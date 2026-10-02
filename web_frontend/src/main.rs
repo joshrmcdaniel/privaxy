@@ -6,6 +6,7 @@ use yew::prelude::*;
 use yew_router::prelude::*;
 
 mod account;
+mod api;
 mod auth;
 mod blocking_enabled;
 mod button;
@@ -19,6 +20,7 @@ mod filterlists;
 mod filters;
 mod general;
 mod inclusions;
+mod live_stream;
 mod logs;
 mod pac;
 mod requests;
@@ -100,17 +102,15 @@ fn switch(route: Route) -> Html {
     let navigation = html! {
         <nav class="bg-gray-800">
       <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        <div class="flex items-center justify-between h-16">
-          <div class="flex items-center">
+        <div class="flex flex-wrap items-center justify-between gap-2 py-3">
             <div class="flex-shrink-0">
               <img class="h-8 w-auto text-white" src="/logo.svg" alt="Logo" />
             </div>
-              <div class="flex ml-6 space-x-4">
+              <div class="order-last flex w-full justify-between sm:order-none sm:ml-4 sm:mr-auto sm:w-auto sm:justify-start sm:space-x-4">
               <Link<Route> classes={ get_classes(route, Route::Dashboard) } to={Route::Dashboard}>{ "Dashboard" }</Link<Route>>
                <Link<Route> classes={ get_classes(route, Route::Requests) } to={Route::Requests}>{ "Requests" }</Link<Route>>
                <Link<settings::SettingsRoute> classes={ get_classes(route, Route::Settings) } to={settings::SettingsRoute::Filters}>{ "Settings" }</Link<settings::SettingsRoute>>
                </div>
-          </div>
           <LogoutButton />
         </div>
       </div>
