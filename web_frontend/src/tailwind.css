@@ -2,6 +2,10 @@
 @tailwind components;
 @tailwind utilities;
 
+@layer base {
+  fieldset { min-width: 0; }
+}
+
 /* Thanks to Plausible analytics for this beautiful circle :)
 https://github.com/plausible/analytics/blob/7d37208d52c2331a5ba22df21c8179bb3313c2da/assets/css/app.css#L112 */
 .pulsating-circle {
@@ -94,3 +98,10 @@ body.modal-open {
         transform: rotate(360deg);
     }
 }
+
+/* Stack settings on phones; keep labels aligned on wider screens. */
+.settings-field { @apply mb-4 w-full; }
+.settings-field-row { @apply flex flex-col gap-2 sm:flex-row sm:items-start; }
+.settings-field-label { @apply text-gray-600 sm:w-48 sm:shrink-0; }
+.settings-field-control { @apply min-w-0 flex-1; }
+.settings-field-help { @apply mt-1 sm:ml-48; }

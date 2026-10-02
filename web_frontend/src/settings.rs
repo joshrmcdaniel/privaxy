@@ -125,7 +125,7 @@ pub fn switch_settings(route: SettingsRoute) -> Html {
         <Link<SettingsRoute> classes={get_classes(route, SettingsRoute::Account)} to={SettingsRoute::Account}> <span class="truncate">{ "Account" }</span></Link<SettingsRoute>>
         <Link<SettingsRoute> classes={get_classes(route, SettingsRoute::Debug)} to={SettingsRoute::Debug}> <span class="truncate">{ "Debug" }</span></Link<SettingsRoute>>
     </nav>
-        <div class="container mx-auto px-4 sm:px-6 lg:px-8 mt-4 sm:col-span-6">{ content }</div>
+        <div class="min-w-0 mt-4 md:pl-6 lg:pl-8 md:col-span-6 lg:col-span-7">{ content }</div>
     </div>
     }
 }
