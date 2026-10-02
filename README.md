@@ -32,6 +32,7 @@ features, dependency updates, an improved UI, and server-friendly configuration 
   - [Point clients at the proxy](#3-point-clients-at-the-proxy)
   - [Cert-pinned hosts (exclusions)](#4-cert-pinned-hosts-exclusions)
   - [Filter only selected hosts (inclusions)](#5-filter-only-selected-hosts-inclusions)
+  - [HTTP CONNECT and proxy chaining](#6-http-connect-and-proxy-chaining)
 - [Screenshots](#screenshots)
 - [Acknowledgements](#acknowledgements)
 
@@ -269,6 +270,50 @@ you want their requests filtered too.
 The equivalent top-level configuration fields are `include_only = true` and
 `inclusions = ["example.com", "*.example.com"]`. Existing configurations default
 to `include_only = false`. File edits take effect on SIGHUP or restart.
+
+### 6. HTTP CONNECT and proxy chaining
+
+Privaxy accepts both plain HTTP and HTTPS inside CONNECT tunnels. A compatible
+HTTP proxy or adapter can use Privaxy as its upstream proxy:
+
+`Client → HTTP proxy or adapter → Privaxy → website`
+
+Point the preceding proxy at Privaxy's proxy port (default `8100`). Privaxy
+automatically recognizes HTTP and TLS, including on nonstandard destination
+ports, and applies the same filtering, HTML injection, inclusions, and
+exclusions used by ordinary proxy clients. No additional Privaxy setting is
+needed. This feature supports chains that feed into Privaxy; configuring an
+upstream proxy for Privaxy's own outbound traffic is outside its scope.
+
+The preceding proxy should preserve the destination hostname in CONNECT, which
+Privaxy uses for certificates and domain matching. An IP-only CONNECT for a
+named HTTPS site does not recover the hostname from TLS SNI and can fail
+certificate validation. Clients must trust Privaxy's CA; certificate-pinned
+services still need exclusions. Excluded or unselected hosts are tunneled
+without protocol probing.
+
+Filtering covers TCP HTTP/HTTPS. Handle UDP/QUIC and non-HTTP protocols in your
+routing policy; HTTP/3 traffic allowed directly will bypass filtering.
+Privaxy's client statistics identify the connecting proxy's address, so devices
+sharing that address appear together.
+
+#### Example: tun2proxy
+
+[tun2proxy](https://github.com/tun2proxy/tun2proxy) is one adapter that can send
+traffic into Privaxy using CONNECT. Configure it to use Privaxy's proxy port
+and **virtual DNS**, which preserves destination hostnames in CONNECT. For an
+already configured TUN interface and Privaxy running on the same machine:
+
+```sh
+tun2proxy-bin --tun tun0 --proxy http://127.0.0.1:8100 --dns virtual
+```
+
+Replace the interface and proxy address for your deployment. You are responsible
+for creating the TUN interface, selecting client devices, routing their traffic
+and DNS queries through tun2proxy, and keeping the proxy's outbound connections
+out of that route to avoid loops. Follow
+[tun2proxy's setup documentation](https://github.com/tun2proxy/tun2proxy#setup)
+for those steps.
 
 > **Recovering access**: if you lose the web-UI password, delete the
 > `password_hash` value from the config file and restart. The web UI will

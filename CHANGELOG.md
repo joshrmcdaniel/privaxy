@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Support both plain HTTP and HTTPS inside CONNECT tunnels, allowing compatible
+  HTTP proxies and adapters to chain into Privaxy. Detect HTTP versus TLS on any
+  destination port and apply existing filtering, injection, and inclusion and
+  exclusion policies. Excluded/unselected hosts still bypass inspection,
+  including server-first protocols. Document hostname preservation and
+  user-managed routing, with tun2proxy as an example. This adds no configuration
+  for forwarding Privaxy's own outbound traffic through another upstream proxy.
 - Add inclusion-only filtering under Settings → Inclusions & exclusions, with
   a separate hostname/wildcard list. Exclusions retain precedence; an empty
   inclusion list bypasses all hosts. The mode applies to HTTP, HTTPS, and PAC
