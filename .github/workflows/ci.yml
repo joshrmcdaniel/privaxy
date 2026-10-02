@@ -462,6 +462,9 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: Checkout release notes
+        uses: actions/checkout@v6
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
@@ -485,6 +488,7 @@ jobs:
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
+          body_path: RELEASE.md
           files: ./release-assets/*
           generate_release_notes: true
           fail_on_unmatched_files: true

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## v0.8.0 - 2026-10-02
+
+Release highlights and upgrade notes are in [RELEASE.md](RELEASE.md).
+
 - Support both plain HTTP and HTTPS inside CONNECT tunnels, allowing compatible
   HTTP proxies and adapters to chain into Privaxy. Detect HTTP versus TLS on any
   destination port and apply existing filtering, injection, and inclusion and
