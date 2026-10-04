@@ -23,6 +23,7 @@ pub(crate) mod events;
 pub(crate) mod exclusions;
 mod filterlists;
 pub(crate) mod filters;
+mod history;
 mod inclusions;
 pub(crate) mod logs;
 mod pac;
@@ -155,7 +156,21 @@ fn create_api_routes(
             ws.on_upgrade(move |websocket| events::events(websocket, events_sender))
         });
 
+    let history_route = warp::path("history")
+        .and(require_auth.clone())
+        .and(history::routes(
+            statistics.clone(),
+            configuration_save_lock.clone(),
+        ));
+    let statistics_settings_route = warp::path!("settings" / "statistics" / ..)
+        .and(require_auth.clone())
+        .and(history::settings_routes(
+            statistics.clone(),
+            configuration_save_lock.clone(),
+        ));
+
     let statistics_route = warp::path("statistics")
+        .and(warp::path::end())
         .and(require_auth.clone())
         .and(warp::ws())
         .map(move |ws: warp::ws::Ws| {
@@ -257,6 +272,8 @@ fn create_api_routes(
     let api_inner = auth_routes
         .or(events_route)
         .or(statistics_route)
+        .or(history_route)
+        .or(statistics_settings_route)
         .or(logs_route)
         .or(filters_route)
         .or(custom_filters_route)

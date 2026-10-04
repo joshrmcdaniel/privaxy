@@ -26,6 +26,9 @@ const catalog = Array.from({ length: 24 }, (_, i) => ({
     languageIds: [], tagIds: [], maintainerIds: [],
 }));
 const statistics = { proxied_requests: 12, blocked_requests: 4, modified_responses: 2, top_blocked_paths: {}, top_clients: {} };
+const historyStatus = { active: false, error: null, dropped_events: 0, stored_requests: 0, database_bytes: 0 };
+const historySettings = { config: { enabled: false, privacy: 'hide_domains_and_clients', retention_days: 7, max_entries: 100000, excluded_domains: [] }, status: historyStatus };
+const historySnapshot = { status: { ...historyStatus, active: true, stored_requests: 12 }, totals: { proxied_requests: 8, blocked_requests: 4, modified_responses: 2 }, hourly: [[Date.now(), { proxied_requests: 8, blocked_requests: 4, modified_responses: 2 }]], top_domains: [['example.test', 12]], top_blocked_domains: [['example.test', 4]], top_clients: [['192.0.2.10', 12]], requests: [{ id: 200, timestamp: Date.now(), domain: 'example.test', client: '192.0.2.10', blocked: true }], next_before: 200 };
 const tests = [];
 const test = (name, fn) => tests.push({ name, fn });
 
@@ -91,10 +94,14 @@ async function fixture(browser, viewport = { width: 1280, height: 900 }) {
                 result = { pac_enabled: false, pac_direct_ips: [], pac_direct_cidrs: {}, pac_direct_fqdns: [] };
             } else if (resource === '/api/settings/debug') {
                 result = { scriptlet_console_logging: false, log_level: 'info' };
+            } else if (resource === '/api/settings/statistics') {
+                result = historySettings;
+            } else if (resource === '/api/history') {
+                result = historySnapshot;
             } else {
                 result = { status: 404, json: { error: `No fixture for ${key}` } };
             }
-            const wrapped = result && typeof result === 'object' && 'status' in result;
+            const wrapped = result && typeof result === 'object' && Number.isInteger(result.status);
             await route.fulfill(wrapped ? (result.body !== undefined ? { status: result.status, body: result.body, contentType: result.contentType || 'text/plain' } : { status: result.status, json: result.json }) : { status: 200, json: result }).catch(() => {});
             return;
         }
@@ -329,9 +336,87 @@ test('failed defaults fetch keeps exclusion edits intact', async f => {
     assert.equal(f.state.text, '! saved rules', 'loading defaults must not save automatically');
 });
 
+test('statistics require opt-in and preserve exclusions after a failed save', async f => {
+    await f.go('/settings/statistics');
+    const enabled = f.page.getByLabel('Enable persistent statistics');
+    await enabled.waitFor();
+    assert(!(await enabled.isChecked()));
+    await enabled.check();
+    await f.page.getByLabel('Privacy level').selectOption('full');
+    await f.page.getByLabel('Exclude domains from statistics and request logs').fill('Example.test\n*.PRIVATE.test');
+    f.handlers.set('PUT /api/settings/statistics', () => ({ status: 500, json: { error: 'disk full fixture' } }));
+    await f.page.getByRole('button', { name: 'Save statistics settings' }).click();
+    await f.page.getByRole('alert').filter({ hasText: 'disk full fixture' }).waitFor();
+    assert.equal(await f.page.getByLabel('Exclude domains from statistics and request logs').inputValue(), 'Example.test\n*.PRIVATE.test');
+    assert(!(await f.page.getByRole('button', { name: 'Save statistics settings' }).isDisabled()));
+    const body = JSON.parse(f.calls.find(call => call.key === 'PUT /api/settings/statistics').body);
+    assert.deepEqual(body.excluded_domains, ['example.test', '*.private.test']);
+    assert.equal(body.enabled, true);
+    assert.equal(body.privacy, 'full');
+});
+
+test('statistics settings lock while saving and report paused storage', async f => {
+    await f.go('/settings/statistics');
+    await f.page.getByLabel('Enable persistent statistics').check();
+    f.handlers.set('PUT /api/settings/statistics', async request => {
+        await delay(400);
+        return { config: request.postDataJSON(), status: { ...historyStatus, error: 'storage unavailable fixture' } };
+    });
+    await f.page.getByRole('button', { name: 'Save statistics settings' }).click();
+    assert(await f.page.getByLabel('Privacy level').isDisabled());
+    assert(await f.page.getByLabel('Exclude domains from statistics and request logs').isDisabled());
+    await f.page.getByRole('alert').filter({ hasText: 'storage unavailable fixture' }).waitFor();
+    assert(!(await f.page.getByRole('button', { name: 'Save statistics settings' }).isDisabled()));
+});
+
+test('clearing history requires confirmation and reports delete failures', async f => {
+    await f.go('/settings/statistics');
+    await f.page.getByRole('button', { name: 'Clear saved history…' }).click();
+    assert(!f.calls.some(c => c.key === 'DELETE /api/history'));
+    await f.page.getByRole('button', { name: 'Cancel', exact: true }).click();
+    assert(!f.calls.some(c => c.key === 'DELETE /api/history'));
+    f.handlers.set('DELETE /api/history', () => ({ status: 500, json: { error: 'delete failed fixture' } }));
+    await f.page.getByRole('button', { name: 'Clear saved history…' }).click();
+    await f.page.getByRole('button', { name: 'Delete saved history', exact: true }).click();
+    await f.page.getByRole('alert').filter({ hasText: 'delete failed fixture' }).waitFor();
+    assert.equal(f.calls.filter(c => c.key === 'DELETE /api/history').length, 1);
+});
+
+test('history renders redacted rows and passes paging and filter parameters', async f => {
+    const urls = [];
+    f.handlers.set('GET /api/history', request => {
+        urls.push(new URL(request.url()));
+        return { ...historySnapshot, requests: [{ ...historySnapshot.requests[0], domain: null, client: null }] };
+    });
+    await f.go('/history');
+    await f.page.getByRole('cell', { name: 'Hidden', exact: true }).first().waitFor();
+    assert.equal(await f.page.getByRole('cell', { name: 'Hidden', exact: true }).count(), 2);
+    await f.page.getByRole('button', { name: 'Older requests' }).click();
+    await eventually(() => urls.some(u => u.searchParams.get('before') === '200'), 'cursor was not sent');
+    await f.page.getByLabel('Request history filter').selectOption('true');
+    await eventually(() => urls.some(u => u.searchParams.get('blocked') === 'true' && !u.searchParams.has('before')), 'filter did not reset the cursor');
+    await f.page.getByLabel('Time range').selectOption('168');
+    await eventually(() => urls.some(u => u.searchParams.get('hours') === '168'), 'time range not sent');
+});
+
+test('history ignores stale responses when its time range changes', async f => {
+    f.handlers.set('GET /api/history', async request => {
+        const hours = new URL(request.url()).searchParams.get('hours');
+        if (hours === '168') await delay(500);
+        return { ...historySnapshot, requests: [{ ...historySnapshot.requests[0], domain: `range-${hours}.test` }] };
+    });
+    await f.go('/history');
+    await f.page.getByRole('cell', { name: 'range-24.test', exact: true }).waitFor();
+    await f.page.getByLabel('Time range').selectOption('168');
+    await f.page.getByLabel('Time range').selectOption('720');
+    await f.page.getByRole('cell', { name: 'range-720.test', exact: true }).waitFor();
+    await delay(650);
+    assert.equal(await f.page.getByRole('cell', { name: 'range-168.test', exact: true }).count(), 0);
+});
+
 test('phone settings and navigation fit a 375px viewport', async f => {
     await f.page.setViewportSize({ width: 375, height: 812 });
-    for (const route of ['/', '/requests', '/settings/general', '/settings/pac', '/settings/debug', '/settings/filters', '/settings/exclusions', '/settings/account', '/settings/userscripts']) {
+    for (const route of ['/', '/requests', '/history', '/settings/statistics', '/settings/general', '/settings/pac', '/settings/debug', '/settings/filters', '/settings/exclusions', '/settings/account', '/settings/userscripts']) {
         await f.go(route);
         await delay(150);
         const width = await f.page.evaluate(() => ({ actual: document.documentElement.scrollWidth, viewport: innerWidth }));

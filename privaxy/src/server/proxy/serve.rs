@@ -302,8 +302,6 @@ pub(crate) async fn serve(
     user_scripts: UserScriptContext,
     intercept: bool,
 ) -> Result<Response<ProxyBody>, hyper::Error> {
-    let scheme_string = scheme.to_string();
-
     let uri = match http::uri::Builder::new()
         .scheme(scheme)
         .authority(authority)
@@ -349,14 +347,13 @@ pub(crate) async fn serve(
     let req = Request::from_parts(parts, body);
 
     log::debug!("{} {}", req.method(), req.uri());
-
-    statistics.increment_top_clients(client_ip_address);
+    let statistics = statistics.for_domain(uri.host());
 
     if !intercept {
         let mut req = req;
         req.headers_mut().remove(http::header::PROXY_AUTHORIZATION);
         req.headers_mut().remove("proxy-connection");
-        if broadcast_sender.receiver_count() > 0 {
+        if statistics.should_collect() && broadcast_sender.receiver_count() > 0 {
             let _ = broadcast_sender.send(Event {
                 now: chrono::Utc::now(),
                 method: req.method().to_string(),
@@ -367,7 +364,7 @@ pub(crate) async fn serve(
         // Forward with hyper so bodies, compression and CSP remain untouched.
         // This path skips adblock, DoH policy and all HTML/userscript injection.
         let response = if req.headers().contains_key(http::header::UPGRADE) {
-            perform_two_ends_upgrade(req, uri, hyper_client).await
+            perform_two_ends_upgrade(req, uri.clone(), hyper_client).await
         } else {
             let (mut parts, body) = req.into_parts();
             parts.headers.remove(http::header::HOST);
@@ -385,7 +382,7 @@ pub(crate) async fn serve(
                 }
             }
         };
-        statistics.increment_proxied_requests();
+        statistics.record_request(uri.host(), client_ip_address, false);
         return Ok(response);
     }
 
@@ -403,7 +400,7 @@ pub(crate) async fn serve(
         log::debug!("Refusing DoH request: {}", uri);
         // Events only feed the live requests view; when nobody is subscribed,
         // building one (two Strings and a timestamp) is wasted work.
-        if broadcast_sender.receiver_count() > 0 {
+        if statistics.should_collect() && broadcast_sender.receiver_count() > 0 {
             let _result = broadcast_sender.send(Event {
                 now: chrono::Utc::now(),
                 method: req.method().to_string(),
@@ -411,7 +408,7 @@ pub(crate) async fn serve(
                 is_request_blocked: true,
             });
         }
-        statistics.increment_blocked_requests();
+        statistics.record_request(uri.host(), client_ip_address, true);
         return Ok(get_empty_response(StatusCode::BAD_GATEWAY));
     }
 
@@ -426,7 +423,7 @@ pub(crate) async fn serve(
         request_type,
     );
 
-    if broadcast_sender.receiver_count() > 0 {
+    if statistics.should_collect() && broadcast_sender.receiver_count() > 0 {
         let _result = broadcast_sender.send(Event {
             now: chrono::Utc::now(),
             method: req.method().to_string(),
@@ -436,13 +433,7 @@ pub(crate) async fn serve(
     }
 
     if is_request_blocked {
-        statistics.increment_blocked_requests();
-        statistics.increment_top_blocked_paths(format!(
-            "{}://{}{}",
-            scheme_string,
-            uri.host().unwrap(),
-            uri.path()
-        ));
+        statistics.record_request(uri.host(), client_ip_address, true);
 
         // adblock-rust fuses many same-option patterns into one filter and
         // reports the union as the matched filter, which can be enormous; cap
@@ -476,7 +467,7 @@ pub(crate) async fn serve(
             return Ok(get_empty_response(StatusCode::BAD_GATEWAY));
         };
         let response = perform_two_ends_upgrade(req, outbound_uri, hyper_client).await;
-        statistics.increment_proxied_requests();
+        statistics.record_request(uri.host(), client_ip_address, false);
         return Ok(response);
     }
 
@@ -532,7 +523,7 @@ pub(crate) async fn serve(
         }
     };
 
-    statistics.increment_proxied_requests();
+    statistics.record_request(uri.host(), client_ip_address, false);
 
     *new_response.headers_mut() = response.headers().clone();
 

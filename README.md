@@ -33,6 +33,7 @@ features, dependency updates, an improved UI, and server-friendly configuration 
   - [Cert-pinned hosts (exclusions)](#4-cert-pinned-hosts-exclusions)
   - [Filter only selected hosts (inclusions)](#5-filter-only-selected-hosts-inclusions)
   - [HTTP CONNECT and proxy chaining](#6-http-connect-and-proxy-chaining)
+  - [Persistent statistics and privacy](#7-persistent-statistics-and-privacy)
 - [Screenshots](#screenshots)
 - [Acknowledgements](#acknowledgements)
 
@@ -73,6 +74,7 @@ blocker more than it strictly replaces one.
 
 - Suppport for [Adblock Plus filters](https://adblockplus.org/filter-cheatsheet), such as [easylist](https://easylist.to/).
 - Web graphical user interface with a statistics display as well as a live request explorer.
+- Opt-in persistent statistics and request history, with privacy levels, retention limits, and domain exclusions.
 - Support for uBlock origin's `js` syntax.
 - Support for uBlock origin's `redirect` syntax.
 - Support for uBlock origin's scriptlets.
@@ -318,6 +320,85 @@ for those steps.
 > **Recovering access**: if you lose the web-UI password, delete the
 > `password_hash` value from the config file and restart. The web UI will
 > force the setup flow again.
+
+### 7. Persistent statistics and privacy
+
+Enable collection under **Settings → Statistics**, then open **History** for
+saved totals, hourly/daily trends, top domains/clients, and a paginated request
+log. The Dashboard continues to show the current process's live counters.
+Persistence is **off by default**; enabling it starts collecting new activity,
+without importing the live Requests feed.
+
+History records timestamps, destination hostnames, client IP addresses, and
+whether a request was blocked or successfully forwarded. It never stores URL
+paths, query strings, headers, cookies, or request/response bodies. Raw CONNECT
+tunnels and requests that fail before being forwarded are not counted. Clients
+behind another proxy share that proxy's client address.
+
+The privacy levels follow [Pi-hole's approach](https://docs.pi-hole.net/ftldns/privacylevels/):
+
+| Level | Saved identifiers |
+| --- | --- |
+| Show domains and clients | Hostname and client IP |
+| Hide domains | Client IP only |
+| Hide domains and clients (default) | Neither; request times and outcomes remain |
+| Anonymous | No new history; session counters only |
+
+Hidden identifiers are removed **before queueing or storage**, without retaining
+a reversible mapping or a hash. While collection is enabled, raising privacy
+also redacts identifiers in existing history, including when entering anonymous
+mode. Lowering privacy cannot restore them. These controls apply to statistics;
+the separate live Requests feed and diagnostic logs can still contain full URLs.
+
+**Exclude domains from statistics and request logs** skips matching new traffic
+in session counters, modified-response counts, saved history, and the live
+Requests feed, even with persistence disabled. Filtering and interception still
+apply. Use one case-insensitive hostname or wildcard pattern per line:
+`example.com` matches exactly; `*.example.com` matches its subdomains. Do not
+include schemes, ports, or paths. Existing history and diagnostic logs are
+unaffected.
+
+Defaults are **7 days** and **100,000 saved requests**. The oldest records expire
+when either limit is reached; valid limits are 1–365 days and 100–1,000,000
+requests. History totals and top lists describe retained requests, so they can
+decrease as older entries expire. Modified-response totals are separate hourly
+aggregates retained by age. Time windows include the current hour and preceding
+hours. **Clear saved history** removes the database and starts fresh if enabled.
+Turning collection off stops recording and closes the database; it retains the
+existing file until cleared or collection is re-enabled and retention runs.
+
+The equivalent configuration section is:
+
+```toml
+[statistics]
+enabled = false
+privacy = "hide_domains_and_clients" # full, hide_domains, hide_domains_and_clients, anonymous
+retention_days = 7
+max_entries = 100000
+excluded_domains = ["example.com", "*.example.com"]
+```
+
+UI changes apply immediately; file edits also apply on SIGHUP. Data stays local
+in `statistics.redb` under `PRIVAXY_BASE_PATH` (`/etc/privaxy` by default, `/conf`
+in Docker). Keep `/conf` on a persistent Docker volume for history to survive
+container replacement. No new ports or external database service are required.
+On Unix, the database is restricted to its owner (`0600`). Storage is not
+encrypted, and redaction/deletion is not secure erasure of filesystem snapshots,
+backups, or recoverable disk pages.
+
+[redb](https://github.com/cberner/redb) transactions run on a dedicated worker,
+with a bounded queue and batches flushed every five seconds or 512 events.
+SIGTERM/SIGINT also flush accepted events; an abrupt kill can lose the pending
+batch. Expired rows are pruned every minute and free space is compacted hourly;
+the row limit bounds retained data, not an exact file size. Disk/write errors
+pause recording and appear in Statistics settings without stopping the proxy.
+Free space and save settings again to retry. Queue overflow drops statistics
+events and reports their count instead of delaying proxy requests.
+
+The authenticated APIs are `GET/PUT /api/settings/statistics` and
+`GET/DELETE /api/history`. History accepts `hours`, `limit` (1–200), `before`
+(the previous response's `next_before` cursor), and `blocked=true|false`.
+Pagination and the blocked filter affect request rows, not the window's totals.
 
 ## Screenshots
 

@@ -104,7 +104,7 @@ pub(crate) fn parse_ip_address(ip_str: &str) -> IpAddr {
     IpAddr::from_str(ip_str).unwrap()
 }
 
-async fn handle_signals() -> (Arc<Notify>, Arc<Notify>) {
+async fn handle_signals(statistics: statistics::Statistics) -> (Arc<Notify>, Arc<Notify>) {
     let notify_shutdown = Arc::new(Notify::new());
     let notify_reload = Arc::new(Notify::new());
     let notify_shutdown_clone = notify_shutdown.clone();
@@ -115,6 +115,8 @@ async fn handle_signals() -> (Arc<Notify>, Arc<Notify>) {
             signal(SignalKind::hangup()).expect("failed to set up SIGHUP signal handler");
         let mut term_signal =
             signal(SignalKind::terminate()).expect("failed to set up SIGTERM signal handler");
+        let mut int_signal =
+            signal(SignalKind::interrupt()).expect("failed to set up SIGINT signal handler");
 
         loop {
             tokio::select! {
@@ -122,9 +124,16 @@ async fn handle_signals() -> (Arc<Notify>, Arc<Notify>) {
                     log::info!("Received SIGHUP signal, restarting child processes...");
                     notify_reload_clone.notify_waiters();
                 }
-                _ = term_signal.recv() => {
-                    log::info!("Received SIGTERM signal, shutting down gracefully...");
+                _ = async { tokio::select! { _ = term_signal.recv() => {}, _ = int_signal.recv() => {} } } => {
+                    log::info!("Shutting down; flushing persistent statistics...");
                     notify_shutdown_clone.notify_waiters();
+                    if let Some(history) = &statistics.history {
+                        match tokio::time::timeout(Duration::from_secs(8), history.shutdown()).await {
+                            Ok(Ok(())) => {},
+                            Ok(Err(error)) => log::error!("Could not flush statistics: {error}"),
+                            Err(_) => log::error!("Timed out flushing statistics"),
+                        }
+                    }
                     std::process::exit(0);
                 }
             }
@@ -220,7 +229,7 @@ pub async fn start_privaxy() -> PrivaxyServer {
         }
     };
 
-    let statistics = statistics::Statistics::new();
+    let statistics = statistics::Statistics::with_history(configuration.statistics.clone()).await;
     let statistics_clone = statistics.clone();
 
     let tls_failure_store = TlsFailureStore::new(configuration.ignored_tls_failures.clone());
@@ -272,7 +281,7 @@ pub async fn start_privaxy() -> PrivaxyServer {
 
     let configuration_save_lock = Arc::new(tokio::sync::Mutex::new(()));
 
-    let (_notify_shutdown, notify_reload) = handle_signals().await;
+    let (_notify_shutdown, notify_reload) = handle_signals(statistics.clone()).await;
 
     let block_disable_ref = blocking_disabled_store.clone();
     let local_exclusion_store_ref = local_exclusion_store.clone();
@@ -361,6 +370,19 @@ pub async fn start_privaxy() -> PrivaxyServer {
             // The UI updates this store live; SIGHUP must also pick up file
             // edits to the mode and both inclusion/exclusion lists.
             local_exclusion_store.replace_configuration(&cfg);
+            {
+                // Serialize this re-read/apply with the settings API. A reload
+                // must not restore a stale privacy policy over a concurrent save.
+                let _guard = cfg_lock_backend.lock().await;
+                match configuration::Configuration::read_from_home().await {
+                    Ok(current) => {
+                        if let Err(error) = statistics.configure_history(current.statistics).await {
+                            log::error!("Could not apply statistics settings: {error}");
+                        }
+                    }
+                    Err(error) => log::error!("Could not reload statistics settings: {error}"),
+                }
+            }
             // Same for the TLS-failure ignore set: pick up hand-edited
             // `ignored_tls_failures` entries on SIGHUP reload.
             tls_failure_store.set_ignored(cfg.ignored_tls_failures.clone());

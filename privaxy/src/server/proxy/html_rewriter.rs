@@ -427,6 +427,10 @@ impl Rewriter {
             endpoint_tokens,
         } = self;
 
+        // Head scriptlets and the trailing cosmetic stylesheet belong to one
+        // response. Their separate tasks share a single counting guard.
+        let statistics = statistics.for_response();
+
         let CosmeticBlockerResult {
             hidden_selectors,
             style_selectors,
@@ -676,6 +680,56 @@ impl Rewriter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn head_and_body_injections_count_each_response_only_once() {
+        use crate::blocker::BlockingDisabledStore;
+        use http_body_util::BodyExt;
+        use std::sync::RwLock;
+
+        let statistics = Statistics::new();
+        for expected in 1..=2 {
+            let requester =
+                AdblockRequester::new(BlockingDisabledStore(Arc::new(RwLock::new(false))));
+            let mut cosmetics = requester
+                .get_cosmetic_response("https://example.test/".into())
+                .await;
+            cosmetics.hidden_selectors.push(".ad-test".into());
+            let (input, receiver) = mpsc::channel(2);
+            let (sender, mut body) = body_channel();
+            let rewriter = Rewriter::new(
+                requester,
+                receiver,
+                sender,
+                statistics.clone(),
+                "fixture".into(),
+                cosmetics,
+                false,
+                Vec::new(),
+                GmStorageStore::in_memory(),
+                HashMap::new(),
+            );
+            input
+                .send(Ok(Bytes::from_static(
+                    b"<html><head></head><body><div class=ad-test>ad</div></body></html>",
+                )))
+                .await
+                .unwrap();
+            drop(input);
+            let task = tokio::task::spawn_blocking(move || rewriter.rewrite());
+            let mut output = Vec::new();
+            while let Some(frame) = body.frame().await {
+                if let Ok(bytes) = frame.unwrap().into_data() {
+                    output.extend_from_slice(&bytes);
+                }
+            }
+            task.await.unwrap();
+            let html = String::from_utf8(output).unwrap();
+            assert!(html.contains("<script"));
+            assert!(html.contains(".ad-test"));
+            assert_eq!(statistics.get_serialized().modified_responses, expected);
+        }
+    }
     use crate::blocker::BlockingDisabledStore;
     use crate::proxy::body_channel;
     use http_body_util::BodyExt;

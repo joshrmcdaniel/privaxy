@@ -7,6 +7,7 @@ mod ca;
 mod filter;
 mod filter_failures;
 mod network;
+mod statistics;
 mod updater;
 mod userscript;
 pub use auth::*;
@@ -15,6 +16,7 @@ pub use filter::*;
 pub use filter_failures::*;
 use futures::future::join_all;
 pub use network::*;
+pub use statistics::*;
 use std::env;
 use std::path::{Path, PathBuf};
 pub use updater::*;
@@ -85,6 +87,8 @@ pub struct Configuration {
     pub auth: Auth,
     #[serde(default)]
     pub debug: DebugConfig,
+    #[serde(default)]
+    pub statistics: StatisticsConfig,
     /// Userscripts and the master switch governing them. Absent from
     /// configuration files written before the feature existed, hence the serde
     /// default.
@@ -588,6 +592,7 @@ impl Configuration {
             custom_filters: Vec::new(),
             auth: Auth::new_initialized(),
             debug: DebugConfig::default(),
+            statistics: StatisticsConfig::default(),
             userscripts: UserScriptsConfig::default(),
         })
     }

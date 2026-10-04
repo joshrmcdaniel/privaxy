@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- Added opt-in persistent statistics and individual request history using redb.
+  History includes time ranges, trends, top domains/clients, and pagination, with
+  privacy levels that remove identifiers before collection. URL paths, query
+  strings, headers, and bodies are never saved in statistics.
+- Added Statistics settings for retention, a request-count limit, clearing saved
+  history, and excluding domain patterns from both statistics and the live
+  Requests log. Exclusions do not change filtering behavior and work even when
+  persistence is disabled.
+- Bounded statistics buffering, batched transactional writes, visible storage
+  errors, and shutdown flushing keep storage failures off the proxy request path.
+  Existing installations retain memory-only statistics until explicitly enabled.
+- Dashboard top blocked entries now use domains and select the top 50 after
+  sorting; client tracking is bounded. Dashboard counters remain per-process;
+  the new History page shows statistics retained across restarts.
+- Count each modified HTML response once when both head scripts and cosmetic
+  styles are injected, instead of counting the two injection stages separately.
+
 ## v0.8.0 - 2026-10-02
 
 Release highlights and upgrade notes are in [RELEASE.md](RELEASE.md).

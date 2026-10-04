@@ -137,6 +137,7 @@ tera = { version = "1", default-features = false }
 argon2 = { version = "0.5", features = ["std"] }
 hmac = "0.12"
 filterlists-api = { path = "../filterlists-api", features = ["reqwest"] }
+redb = "4.3.0"
 
 # getrandom 0.3 (pulled in via warp -> tokio-tungstenite -> rand) selects a
 # backend that calls the libc `getrandom()` wrapper on mips{,el}-unknown-linux-gnu,

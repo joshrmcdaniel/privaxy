@@ -19,6 +19,7 @@ mod filter_failures;
 mod filterlists;
 mod filters;
 mod general;
+mod history;
 mod inclusions;
 mod live_stream;
 mod logs;
@@ -27,6 +28,7 @@ mod requests;
 mod save_button;
 mod settings;
 mod settings_textarea;
+mod statistics_settings;
 mod submit_banner;
 mod tls_failures;
 mod userscript_edit;
@@ -43,6 +45,8 @@ enum Route {
     Dashboard,
     #[at("/requests")]
     Requests,
+    #[at("/history")]
+    History,
     #[at("/settings/:s")]
     Settings,
     #[at("/exclude")]
@@ -109,6 +113,7 @@ fn switch(route: Route) -> Html {
               <div class="order-last flex w-full justify-between sm:order-none sm:ml-4 sm:mr-auto sm:w-auto sm:justify-start sm:space-x-4">
               <Link<Route> classes={ get_classes(route, Route::Dashboard) } to={Route::Dashboard}>{ "Dashboard" }</Link<Route>>
                <Link<Route> classes={ get_classes(route, Route::Requests) } to={Route::Requests}>{ "Requests" }</Link<Route>>
+               <Link<Route> classes={ get_classes(route, Route::History) } to={Route::History}>{ "History" }</Link<Route>>
                <Link<settings::SettingsRoute> classes={ get_classes(route, Route::Settings) } to={settings::SettingsRoute::Filters}>{ "Settings" }</Link<settings::SettingsRoute>>
                </div>
           <LogoutButton />
@@ -128,6 +133,10 @@ fn switch(route: Route) -> Html {
         }
         Route::Settings => {
             html! {<>{navigation} <div class={"container mt-4 mb-10 mx-auto px-4 sm:px-6 lg:px-8"}> <Switch<settings::SettingsRoute> render={settings::switch_settings} /> </div> </>}
+        }
+        Route::History => {
+            set_title("History");
+            html! { <>{navigation}<div class="container mt-4 mb-10 mx-auto px-4 sm:px-6 lg:px-8"><history::HistoryPage /></div></> }
         }
         Route::Exclude => {
             set_title("Exclude host");

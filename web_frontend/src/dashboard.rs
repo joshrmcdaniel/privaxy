@@ -112,6 +112,7 @@ impl Component for Dashboard {
                 if !self.connected {
                     <p role="status" class="mt-4 text-sm text-gray-600">{"Connecting to statistics… Retrying automatically. Displayed counts may be out of date."}</p>
                 }
+                <p class="mt-4 text-sm text-gray-600">{"Live statistics since this process started. "}<a href="/history" class="text-blue-600 underline">{"View saved history and trends"}</a></p>
                 <dl
                     class="mt-5 grid grid-cols-1 rounded-lg bg-white overflow-hidden shadow divide-y divide-gray-200 md:grid-cols-3 md:divide-y-0 md:divide-x">
                     <div class="px-4 py-5 sm:p-6">
@@ -150,7 +151,7 @@ impl Component for Dashboard {
                 <div class="mt-4 lg:grid lg:gap-y-4 lg:gap-x-8 lg:grid-cols-2">
                     <div class="mt-4 bg-white overflow-hidden shadow rounded-lg divide-y divide-gray-200">
                         <div class="px-4 py-5 sm:px-6">
-                            <h3 class="text-lg font-medium">{"Top blocked paths"}</h3>
+                            <h3 class="text-lg font-medium">{"Top blocked domains"}</h3>
                         </div>
                         <div class="px-4 py-5 sm:p-6">
                             <ol role="list" class="divide-y divide-gray-200">
