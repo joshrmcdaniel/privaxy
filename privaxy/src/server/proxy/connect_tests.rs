@@ -241,6 +241,8 @@ async fn read_headers(stream: &mut (impl AsyncRead + Unpin)) -> io::Result<Vec<u
 enum Protocol {
     Http,
     HttpKeepAlive,
+    Http2RefuseOnce,
+    Http2ResponseHeaders(usize),
     Dns,
     Upgrade,
 }
@@ -305,6 +307,44 @@ impl Origin {
                                 tls.write_all(&query).await.unwrap();
                             }
                         }
+                        Protocol::Http2RefuseOnce => {
+                            let mut connection = h2::server::handshake(tls).await.unwrap();
+                            let mut refused = false;
+                            while let Some(request) = connection.accept().await {
+                                let (request, mut respond) = request.unwrap();
+                                tx.send((name.clone(), request.method().as_str().as_bytes().to_vec())).unwrap();
+                                if !refused {
+                                    // The origin explicitly guarantees it did
+                                    // not process this request. A bodyless GET
+                                    // should be replayed by reqwest's policy.
+                                    respond.send_reset(h2::Reason::REFUSED_STREAM);
+                                    refused = true;
+                                } else {
+                                    let response = http::Response::builder()
+                                        .header("content-type", "text/plain")
+                                        .body(())
+                                        .unwrap();
+                                    respond.send_response(response, false).unwrap()
+                                        .send_data(bytes::Bytes::from_static(b"retried"), true).unwrap();
+                                }
+                            }
+                            return;
+                        }
+                        Protocol::Http2ResponseHeaders(size) => {
+                            let mut connection = h2::server::handshake(tls).await.unwrap();
+                            while let Some(request) = connection.accept().await {
+                                let (request, mut respond) = request.unwrap();
+                                tx.send((name.clone(), request.method().as_str().as_bytes().to_vec())).unwrap();
+                                let response = http::Response::builder()
+                                    .header("content-type", "text/plain")
+                                    .header("content-security-policy", format!("script-src https://{}.test", "a".repeat(size)))
+                                    .body(())
+                                    .unwrap();
+                                respond.send_response(response, false).unwrap()
+                                    .send_data(bytes::Bytes::from_static(b"large headers"), true).unwrap();
+                            }
+                            return;
+                        }
                         Protocol::Upgrade => {
                             let request = read_headers(&mut tls).await.unwrap();
                             tx.send((name, request)).unwrap();
@@ -344,12 +384,6 @@ async fn http_request(
     uri: &str,
     accept: &str,
 ) -> (http::StatusCode, String) {
-    let (mut sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(stream))
-        .await
-        .unwrap();
-    let _task = Task(tokio::spawn(async {
-        let _ = connection.await;
-    }));
     // Neither an inner Host nor an absolute URL may change the selected peer.
     let request = Request::builder()
         .uri(uri)
@@ -357,6 +391,19 @@ async fn http_request(
         .header("Accept", accept)
         .body(empty_body())
         .unwrap();
+    send_http_request(stream, request).await
+}
+
+async fn send_http_request(
+    stream: impl AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    request: Request<ProxyBody>,
+) -> (http::StatusCode, String) {
+    let (mut sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(stream))
+        .await
+        .unwrap();
+    let _task = Task(tokio::spawn(async {
+        let _ = connection.await;
+    }));
     let response = timeout(TEST_TIMEOUT, sender.send_request(request))
         .await
         .unwrap()
@@ -572,6 +619,99 @@ async fn include_only_rules_are_evaluated_after_ip_sni_and_exclusions_win() {
 }
 
 #[tokio::test]
+async fn empty_get_retries_a_refused_http2_stream() {
+    let mut config = (*origin_config("retry.test", true, false)).clone();
+    config.alpn_protocols = vec![b"h2".to_vec()];
+    let mut origin = Origin::start(
+        vec![("retry.test", Arc::new(config))],
+        Protocol::Http2RefuseOnce,
+    )
+    .await;
+    let proxy = Proxy::start(LocalExclusionStore::new(vec![])).await;
+    let tls = proxy
+        .connect(
+            &origin.addr.to_string(),
+            client_config(true, true),
+            "retry.test",
+        )
+        .await;
+
+    let (status, body) = http_get(tls).await;
+    assert_eq!(status, http::StatusCode::OK, "{body}");
+    assert_eq!(body, "retried");
+    for _ in 0..2 {
+        let (sni, method) = origin.request().await;
+        assert_eq!(sni.as_deref(), Some("retry.test"));
+        assert_eq!(method, b"GET");
+    }
+    assert!(origin.requests.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn nonempty_requests_are_not_replayed_after_http2_refusal() {
+    for method in [Method::GET, Method::POST] {
+        let mut config = (*origin_config("retry.test", true, false)).clone();
+        config.alpn_protocols = vec![b"h2".to_vec()];
+        let mut origin = Origin::start(
+            vec![("retry.test", Arc::new(config))],
+            Protocol::Http2RefuseOnce,
+        )
+        .await;
+        let proxy = Proxy::start(LocalExclusionStore::new(vec![])).await;
+        let tls = proxy
+            .connect(
+                &origin.addr.to_string(),
+                client_config(true, true),
+                "retry.test",
+            )
+            .await;
+        let request = Request::builder()
+            .method(method.clone())
+            .uri("/upload")
+            .body(crate::proxy::full_body("must not be replayed"))
+            .unwrap();
+        let (status, _) = send_http_request(tls, request).await;
+        assert_eq!(status, http::StatusCode::BAD_GATEWAY);
+        assert_eq!(origin.request().await.1, method.as_str().as_bytes());
+        assert!(origin.requests.try_recv().is_err());
+    }
+}
+
+#[tokio::test]
+async fn large_http2_response_headers_are_accepted_with_a_bounded_limit() {
+    // Exercise the shared client (literal IP) and an SNI-pinned client. The
+    // decoded size, including HPACK's per-field overhead, matters here, not
+    // the compressed bytes on the wire.
+    for host in ["127.0.0.1", "headers.test"] {
+        for (size, expected) in [
+            (24 * 1024, http::StatusCode::OK),
+            (128 * 1024, http::StatusCode::BAD_GATEWAY),
+        ] {
+            let mut config = (*origin_config(host, true, false)).clone();
+            config.alpn_protocols = vec![b"h2".to_vec()];
+            let origin = Origin::start(
+                vec![(host, Arc::new(config))],
+                Protocol::Http2ResponseHeaders(size),
+            )
+            .await;
+            let proxy = Proxy::start(LocalExclusionStore::new(vec![])).await;
+            let tls = proxy
+                .connect(&origin.addr.to_string(), client_config(true, true), host)
+                .await;
+            let (status, body) = http_get(tls).await;
+            let reason = body
+                .lines()
+                .find(|line| line.contains("error sending request"))
+                .unwrap_or(&body);
+            assert_eq!(status, expected, "host={host}, size={size}: {reason}");
+            if expected == http::StatusCode::OK {
+                assert_eq!(body, "large headers");
+            }
+        }
+    }
+}
+
+#[tokio::test]
 async fn invalid_upstream_certificates_are_rejected() {
     for (cert_host, trusted, expired) in [
         ("one.test", false, false),
@@ -591,12 +731,13 @@ async fn invalid_upstream_certificates_are_rejected() {
                 "one.test",
             )
             .await;
-        let (status, _) = http_get(tls).await;
+        let (status, body) = http_get(tls).await;
         assert_eq!(
             status,
             http::StatusCode::BAD_GATEWAY,
             "cert={cert_host}, trusted={trusted}, expired={expired}"
         );
+        assert!(body.contains("invalid peer certificate"), "{body}");
         assert!(
             origin.requests.try_recv().is_err(),
             "HTTP must never reach an unverified peer"

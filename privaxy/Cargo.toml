@@ -140,6 +140,9 @@ hmac = "0.12"
 filterlists-api = { path = "../filterlists-api", features = ["reqwest"] }
 redb = "4.3.0"
 
+[dev-dependencies]
+h2 = "0.4"
+
 # getrandom 0.3 (pulled in via warp -> tokio-tungstenite -> rand) selects a
 # backend that calls the libc `getrandom()` wrapper on mips{,el}-unknown-linux-gnu,
 # but the MIPS cross-toolchain's pre-2.25 glibc doesn't export it, so the binary

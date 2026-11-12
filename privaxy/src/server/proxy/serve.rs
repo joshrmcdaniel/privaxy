@@ -14,7 +14,7 @@ use futures::TryStreamExt;
 use http::uri::{Authority, Scheme};
 use http::{HeaderMap, HeaderValue, Request, Response, StatusCode, Uri};
 use http_body_util::{BodyExt, BodyStream, Limited};
-use hyper::body::{Frame, Incoming};
+use hyper::body::{Body, Frame, Incoming};
 use hyper_util::rt::TokioIo;
 use std::net::IpAddr;
 use tokio::sync::broadcast;
@@ -25,6 +25,12 @@ use url::Url;
 /// `Bytes` stream). Trailer frames are dropped — proxied request bodies don't
 /// carry meaningful trailers.
 fn incoming_to_reqwest_body(incoming: Incoming) -> reqwest::Body {
+    // Even an empty wrap_stream body cannot be cloned. Preserve a known-empty
+    // body so reqwest can retry an HTTP/2 REFUSED_STREAM or graceful GOAWAY.
+    // Nonempty/unknown bodies still stream without buffering or replaying them.
+    if incoming.is_end_stream() {
+        return reqwest::Body::default();
+    }
     let stream =
         BodyStream::new(incoming).try_filter_map(|frame| async move { Ok(frame.into_data().ok()) });
     reqwest::Body::wrap_stream(stream)
@@ -517,13 +523,14 @@ pub(crate) async fn serve(
     {
         Ok(response) => response,
         Err(err) => {
-            log::error!("Failed to send request: {}", err);
+            let reason = format_error_chain(&err);
+            log::error!("Failed to send request: {reason}");
             // `authority` was moved into the uri builder above; the host of
             // the rebuilt `uri` is the same portless hostname.
             let failing_host = uri.host();
             let exclude_url = build_exclude_url(failing_host, gui_base_url.as_deref());
             return Ok(get_informative_error_response(
-                &err.to_string(),
+                &reason,
                 failing_host,
                 exclude_url.as_deref(),
             ));
@@ -669,6 +676,19 @@ pub(crate) async fn serve(
     tokio::spawn(write_proxied_body(response, sender));
 
     Ok(new_response)
+}
+
+/// reqwest's Display only says "error sending request"; its sources contain
+/// the actual DNS, TLS, socket or HTTP/2 failure needed to diagnose a 502.
+fn format_error_chain(error: &(dyn std::error::Error + 'static)) -> String {
+    let mut reason = error.to_string();
+    let mut source = error.source();
+    while let Some(error) = source {
+        reason.push_str(": ");
+        reason.push_str(&error.to_string());
+        source = error.source();
+    }
+    reason
 }
 
 /// Minimal HTML escaping for text interpolated into the proxy's error page.

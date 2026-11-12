@@ -136,6 +136,7 @@ pub(crate) async fn serve_mitm_session(
                             }
                         };
                     authority = tls_identity(&destination, hello.client_hello().server_name());
+                    log::debug!("CONNECT {raw_authority}: TLS identity {authority}");
                     if !should_intercept_authority(
                         &local_exclusion_store,
                         &authority,

@@ -33,6 +33,11 @@ pub(crate) fn http_client_builder() -> reqwest::ClientBuilder {
         .read_timeout(Duration::from_secs(300))
         // Avoid a slow response stalling other streams on an HTTP/2 connection.
         .http2_adaptive_window(true)
+        // Large CSP and Set-Cookie responses can exceed hyper's 16 KiB
+        // default, which h2 reports as a generic stream PROTOCOL_ERROR. Allow
+        // 64 KiB of decoded headers (including per-field overhead) while
+        // retaining a finite limit for both shared and IP-pinned clients.
+        .http2_max_header_list_size(64 * 1024)
 }
 
 #[derive(Clone)]
