@@ -3,17 +3,15 @@ use crate::configuration::{FilterFailureStore, NetworkConfig};
 use crate::proxy::exclusions::LocalExclusionStore;
 use crate::web_gui::events::Event;
 use hyper::service::service_fn;
-use hyper_util::client::legacy::Client;
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use hyper_util::server::conn::auto;
 use hyper_util::server::graceful::GracefulShutdown;
 use include_dir::{include_dir, Dir};
 use proxy::exclusions;
 use proxy::gm::storage::GmStorageStore;
-use proxy::serve::UpgradeClient;
 use proxy::tls_failures::TlsFailureStore;
+use proxy::upstream::{http_client_builder, UpstreamClients};
 use proxy::userscripts::{PrivateNetworkAccess, UserScriptContext, UserScriptStore};
-use reqwest::redirect::Policy;
 use std::env;
 use std::net::IpAddr;
 use std::net::SocketAddr;
@@ -158,38 +156,7 @@ pub async fn start_privaxy() -> PrivaxyServer {
 
     // We use reqwest instead of hyper's client to perform most of the proxying as it's more convenient
     // to handle compression as well as offers a more convenient interface.
-    let client = reqwest::Client::builder()
-        .use_rustls_tls()
-        .redirect(Policy::none())
-        .no_proxy()
-        .gzip(true)
-        .brotli(true)
-        .deflate(true)
-        // Without these, a proxied request can hang indefinitely on a pooled
-        // keep-alive connection the remote has silently dropped: reqwest reuses
-        // the dead connection and waits on a peer that will never answer.
-        // Retiring idle connections quickly (well under typical server keep-alive
-        // windows) plus OS-level keepalive probes bounds that. `connect_timeout`
-        // additionally fails fast on unreachable hosts.
-        .connect_timeout(Duration::from_secs(10))
-        .pool_idle_timeout(Duration::from_secs(30))
-        // Bounds a stalled read mid-response: a peer that stops sending without
-        // closing would otherwise hang the proxied request forever. Generous
-        // enough (5 minutes between reads) not to kill long-polls or quiet SSE
-        // streams, which routinely idle for a minute or two between events.
-        .read_timeout(Duration::from_secs(300))
-        // h2-heavy origins multiplex every subresource over a
-        // single connection whose flow-control window defaults to a small,
-        // shared 64 KB. When we drain one stream's body slowly (the browser
-        // reads slowly, or the HTML rewriter backpressures), that window fills
-        // and stalls *every other stream* on the connection — head-of-line
-        // stutter across the whole site. Adaptive flow control grows the
-        // stream/connection windows based on the bandwidth-delay product,
-        // relieving the stall while keeping multiplexing. (This overrides any
-        // manual http2_initial_*_window_size, which is why none are set.)
-        .http2_adaptive_window(true)
-        .build()
-        .unwrap();
+    let client = http_client_builder().build().unwrap();
 
     let configuration = match configuration::Configuration::read_from_home().await {
         Ok(configuration) => configuration,
@@ -764,21 +731,7 @@ async fn privaxy_backend(
     configuration_save_lock: Arc<tokio::sync::Mutex<()>>,
     notify_reload: Arc<tokio::sync::Notify>,
 ) {
-    // Mirror the reqwest client's connection hardening (see above): without a
-    // connect timeout and OS-level keepalive, an upgrade can hang on a pooled
-    // keep-alive connection the remote has silently dropped, surfacing as
-    // "upgrade expected but not completed".
-    let mut http_connector = hyper_util::client::legacy::connect::HttpConnector::new();
-    http_connector.enforce_http(false);
-    http_connector.set_connect_timeout(Some(Duration::from_secs(10)));
-    http_connector.set_keepalive(Some(Duration::from_secs(60)));
-
-    let https_connector = hyper_rustls::HttpsConnectorBuilder::new()
-        .with_native_roots()
-        .expect("failed to load native root certificates")
-        .https_or_http()
-        .enable_http1()
-        .wrap_connector(http_connector);
+    let clients = UpstreamClients::new(client).expect("failed to load native root certificates");
     let config = match read_configuration(&configuration_save_lock).await {
         Ok(config) => config,
         Err(err) => {
@@ -806,17 +759,6 @@ async fn privaxy_backend(
         endpoint_signing_key: config.auth.session_signing_key.clone(),
         allow_private_network_requests: private_network_access,
     };
-
-    // The hyper client is only used to perform upgrades. We don't need to
-    // handle compression.
-    // Hyper's client don't follow redirects, which is what we want, nothing to
-    // disable here.
-    // An upgraded connection is consumed by the tunnel anyway, so idle pooling
-    // buys nothing and only risks reusing a stale connection under a long-lived
-    // WebSocket — disable it.
-    let hyper_client: UpgradeClient = Client::builder(TokioExecutor::new())
-        .pool_max_idle_per_host(0)
-        .build(https_connector);
 
     let ip = env_or_config_ip(network_config).await;
     let proxy_server_addr = SocketAddr::from((ip, network_config.proxy_port));
@@ -864,8 +806,7 @@ async fn privaxy_backend(
                 );
 
                 let client_ip_address = peer_addr.ip();
-                let client = client.clone();
-                let hyper_client = hyper_client.clone();
+                let clients = clients.clone();
                 let cert_cache = cert_cache.clone();
                 let blocker_requester = blocker_requester.clone();
                 let broadcast_tx = broadcast_tx.clone();
@@ -883,8 +824,7 @@ async fn privaxy_backend(
                 let service = service_fn(move |req| {
                     proxy::serve_mitm_session(
                         blocker_requester.clone(),
-                        hyper_client.clone(),
-                        client.clone(),
+                        clients.clone(),
                         req,
                         cert_cache.clone(),
                         broadcast_tx.clone(),

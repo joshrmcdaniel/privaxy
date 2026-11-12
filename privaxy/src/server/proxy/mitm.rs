@@ -1,5 +1,6 @@
-use super::serve::UpgradeClient;
+use super::client_hello::{read_client_hello, HANDSHAKE_TIMEOUT};
 use super::tls_failures::TlsFailureStore;
+use super::upstream::UpstreamClients;
 use super::userscripts::UserScriptContext;
 use super::{empty_body, exclusions::LocalExclusionStore, serve::serve, ProxyBody};
 use crate::{
@@ -10,10 +11,12 @@ use http::uri::{Authority, Scheme};
 use http::{Method, Request, Response};
 use hyper::body::Incoming;
 use hyper::service::service_fn;
-use hyper::upgrade::Upgraded;
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use hyper_util::server::conn::auto;
-use std::{net::IpAddr, sync::Arc};
+use std::{
+    net::{IpAddr, SocketAddr},
+    sync::Arc,
+};
 use tokio::{
     io::{
         AsyncBufRead, AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt,
@@ -22,14 +25,12 @@ use tokio::{
     net::TcpStream,
     sync::broadcast,
 };
-use tokio_rustls::TlsAcceptor;
 use tokio_util::either::Either;
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn serve_mitm_session(
     adblock_requester: AdblockRequester,
-    hyper_client: UpgradeClient,
-    client: reqwest::Client,
+    clients: UpstreamClients,
     req: Request<Incoming>,
     cert_cache: CertCache,
     broadcast_tx: broadcast::Sender<Event>,
@@ -65,8 +66,9 @@ pub(crate) async fn serve_mitm_session(
     if Method::CONNECT == req.method() {
         // tun2proxy uses CONNECT for every TCP flow, including plain HTTP.
         // Reply before reading its payload; clients wait for the 200 first.
-        let intercept =
-            should_intercept_authority(&local_exclusion_store, &authority, &raw_authority);
+        let destination = authority.clone();
+        let destination_ip = authority_ip(&destination);
+        let bypass = bypass_before_client_hello(&local_exclusion_store, &authority, &raw_authority);
 
         tokio::task::spawn(async move {
             let upgraded = match hyper::upgrade::on(req).await {
@@ -77,34 +79,98 @@ pub(crate) async fn serve_mitm_session(
                 }
             };
             let mut upgraded = TokioIo::new(upgraded);
-            if !intercept {
+            if bypass {
                 // Bypass before looking at any payload. This also preserves
-                // server-first protocols and avoids unnecessary cert minting.
-                let _ = tunnel(&mut upgraded, &authority, &raw_authority).await;
+                // server-first protocols. Port 853 is DNS-over-TLS, never HTTP:
+                // keep its end-to-end TLS and DNS framing completely opaque.
+                let _ = tunnel(&mut upgraded, &destination, &raw_authority, &[]).await;
                 return;
             }
 
             // Keep both hyper's upgrade read-ahead and our protocol peek. The
             // first HTTP bytes or TLS ClientHello must reach the parser intact.
             let mut upgraded = BufReader::new(upgraded);
-            let protocol = match peek_connect_protocol(&mut upgraded).await {
-                Ok(Some(protocol)) => protocol,
-                Ok(None) => return,
-                Err(error) => {
-                    log::debug!("Unable to read CONNECT payload for {raw_authority}: {error}");
-                    return;
-                }
-            };
+            let protocol =
+                match tokio::time::timeout(HANDSHAKE_TIMEOUT, peek_connect_protocol(&mut upgraded))
+                    .await
+                    .unwrap_or_else(|_| Err(std::io::ErrorKind::TimedOut.into()))
+                {
+                    Ok(Some(protocol)) => protocol,
+                    Ok(None) => return,
+                    Err(error) => {
+                        log::debug!("Unable to read CONNECT payload for {raw_authority}: {error}");
+                        return;
+                    }
+                };
+            let mut authority = authority;
+            let mut clients = clients;
             let (stream, scheme) = match protocol {
-                ConnectProtocol::Http => (Either::Left(upgraded), Scheme::HTTP),
+                ConnectProtocol::Http => {
+                    if !should_intercept_authority(
+                        &local_exclusion_store,
+                        &authority,
+                        &raw_authority,
+                    ) {
+                        let _ = tunnel(&mut upgraded, &destination, &raw_authority, &[]).await;
+                        return;
+                    }
+                    (Either::Left(upgraded), Scheme::HTTP)
+                }
                 ConnectProtocol::Tls => {
-                    // Hostnames come from CONNECT (tun2proxy's virtual DNS
-                    // supplies them). Mint only once we know this is TLS.
+                    let (mut hello, prefix) =
+                        match tokio::time::timeout(HANDSHAKE_TIMEOUT, read_client_hello(upgraded))
+                            .await
+                            .unwrap_or_else(|_| Err(std::io::ErrorKind::TimedOut.into()))
+                        {
+                            Ok(hello) => hello,
+                            Err(error) => {
+                                tls_failure_store.record(
+                                    authority.host(),
+                                    &error.to_string(),
+                                    false,
+                                );
+                                log::debug!(
+                                    "Unable to read ClientHello for {raw_authority}: {error}"
+                                );
+                                return;
+                            }
+                        };
+                    authority = tls_identity(&destination, hello.client_hello().server_name());
+                    if !should_intercept_authority(
+                        &local_exclusion_store,
+                        &authority,
+                        &raw_authority,
+                    ) {
+                        let _ = tunnel(&mut hello.io, &destination, &raw_authority, &prefix).await;
+                        return;
+                    }
+                    if authority != destination {
+                        // Only IP CONNECTs can acquire a different TLS identity.
+                        // Pin both HTTP clients to that IP and original port;
+                        // resolving SNI could select a different server entirely.
+                        let address = SocketAddr::new(
+                            destination_ip.unwrap(),
+                            destination.port_u16().unwrap_or(443),
+                        );
+                        clients = match clients.for_destination(&authority, address) {
+                            Ok(clients) => clients,
+                            Err(error) => {
+                                log::warn!(
+                                    "Unable to build upstream client for {raw_authority}: {error}"
+                                );
+                                return;
+                            }
+                        };
+                    }
+                    // The cache key is the effective TLS identity, not the IP.
                     let server_configuration =
                         Arc::new(cert_cache.get(authority.clone()).await.server_configuration);
-                    match TlsAcceptor::from(server_configuration)
-                        .accept(upgraded)
-                        .await
+                    match tokio::time::timeout(
+                        HANDSHAKE_TIMEOUT,
+                        hello.into_stream(server_configuration),
+                    )
+                    .await
+                    .unwrap_or_else(|_| Err(std::io::ErrorKind::TimedOut.into()))
                     {
                         Ok(tls_stream) => (Either::Right(tls_stream), Scheme::HTTPS),
                         Err(error) => {
@@ -131,8 +197,8 @@ pub(crate) async fn serve_mitm_session(
             };
 
             // Both transports use the same filtering, rewriting and upgrade
-            // path. Bind requests to the CONNECT destination, not an inner
-            // Host header or absolute URI that could name a different host.
+            // path. Bind requests to the selected identity and the CONNECT
+            // destination; an inner Host header/URI cannot redirect the socket.
             let session_authority = raw_authority.clone();
             let result = auto::Builder::new(TokioExecutor::new())
                 .serve_connection_with_upgrades(
@@ -141,8 +207,7 @@ pub(crate) async fn serve_mitm_session(
                         serve(
                             adblock_requester.clone(),
                             req,
-                            hyper_client.clone(),
-                            client.clone(),
+                            clients.clone(),
                             authority.clone(),
                             scheme.clone(),
                             broadcast_tx.clone(),
@@ -202,8 +267,7 @@ pub(crate) async fn serve_mitm_session(
         serve(
             adblock_requester,
             req,
-            hyper_client.clone(),
-            client.clone(),
+            clients,
             authority,
             Scheme::HTTP,
             broadcast_tx,
@@ -373,11 +437,17 @@ async fn read_past_response_headers(stream: &mut TcpStream) -> std::io::Result<V
 /// warn level — the client only ever sees its tunnel close, so without a log
 /// line these failures are invisible.
 async fn tunnel(
-    upgraded: &mut TokioIo<Upgraded>,
+    upgraded: &mut (impl AsyncRead + AsyncWrite + Unpin),
     authority: &Authority,
     raw_authority: &Authority,
+    prefix: &[u8],
 ) -> std::io::Result<()> {
-    let mut server = match TcpStream::connect(authority.to_string()).await {
+    let mut server = match TcpStream::connect((
+        authority.host().trim_matches(['[', ']']),
+        authority.port_u16().unwrap_or(443),
+    ))
+    .await
+    {
         Ok(server) => server,
         Err(error) => {
             if authority == raw_authority {
@@ -395,6 +465,7 @@ async fn tunnel(
     };
 
     log::debug!("Started tunneling host: {}", authority);
+    server.write_all(prefix).await?;
 
     // Byte counts and lifetime make tunnel health diagnosable from logs: a
     // tunnel that closes quickly having received 0 bytes from upstream means
@@ -422,6 +493,41 @@ async fn tunnel(
             Err(error)
         }
     }
+}
+
+fn authority_ip(authority: &Authority) -> Option<IpAddr> {
+    authority.host().trim_matches(['[', ']']).parse().ok()
+}
+
+fn bypass_before_client_hello(
+    exclusions: &LocalExclusionStore,
+    destination: &Authority,
+    raw_authority: &Authority,
+) -> bool {
+    destination.port_u16() == Some(853)
+        || exclusions.is_excluded(destination.host(), raw_authority.host())
+        || (authority_ip(destination).is_none()
+            && !should_intercept_authority(exclusions, destination, raw_authority))
+}
+
+/// SNI is an identity hint only for IP CONNECTs. Keep named CONNECT behavior,
+/// port selection and literal-IP/no-SNI certificate verification unchanged.
+fn tls_identity(destination: &Authority, sni: Option<&str>) -> Authority {
+    if authority_ip(destination).is_some() {
+        if let Some(name) = sni {
+            if matches!(
+                rustls::pki_types::ServerName::try_from(name),
+                Ok(rustls::pki_types::ServerName::DnsName(_))
+            ) {
+                let name = name.to_ascii_lowercase();
+                let candidate = format!("{}:{}", name, destination.port_u16().unwrap_or(443));
+                if let Ok(identity) = candidate.parse() {
+                    return identity;
+                }
+            }
+        }
+    }
+    destination.clone()
 }
 
 /// Strip a trailing parenthesized service selector from an authority's host.
@@ -471,6 +577,10 @@ where
     tokio::io::copy_bidirectional(a, b).await?;
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "connect_tests.rs"]
+mod connect_tests;
 
 #[cfg(test)]
 mod tests {

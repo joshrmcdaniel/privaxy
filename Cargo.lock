@@ -2209,6 +2209,7 @@ dependencies = [
  "tokio-stream",
  "tokio-util",
  "toml",
+ "tower-service",
  "uluru",
  "url",
  "warp",

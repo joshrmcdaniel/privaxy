@@ -68,6 +68,7 @@ toml = "1"
 serde = { version = "1.0.148", features = ["derive"] }
 tokio-util = { version = "0.7.4", features = ["full"] }
 tokio-stream = "0.1"
+tower-service = "0.3"
 bytes = "1"
 socket2 = "0.5"
 # default-features = false only to drop `single-thread`: the multi-thread

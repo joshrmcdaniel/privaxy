@@ -287,17 +287,42 @@ exclusions used by ordinary proxy clients. No additional Privaxy setting is
 needed. This feature supports chains that feed into Privaxy; configuring an
 upstream proxy for Privaxy's own outbound traffic is outside its scope.
 
-The preceding proxy should preserve the destination hostname in CONNECT, which
-Privaxy uses for certificates and domain matching. An IP-only CONNECT for a
-named HTTPS site does not recover the hostname from TLS SNI and can fail
-certificate validation. Clients must trust Privaxy's CA; certificate-pinned
-services still need exclusions. Excluded or unselected hosts are tunneled
-without protocol probing.
+For an IP CONNECT (including resolved destinations from sing-box/TUN clients),
+Privaxy reads TLS ClientHello SNI before choosing an interception certificate
+or applying hostname inclusions and exclusions. A DNS SNI hostname supplies
+the certificate's DNS SAN, certificate cache identity, HTTP filtering identity,
+and upstream TLS SNI/verification name. The upstream connection still goes to
+the original CONNECT IP and port. No sing-box DNS or LAN routing changes are
+needed. Named CONNECT requests retain their existing behavior.
+
+Without usable DNS SNI, Privaxy retains the CONNECT identity: an intercepted
+literal IP receives an IP SAN, which cannot authenticate a hidden DNS hostname.
+Encrypted ClientHello (ECH) does not reveal its inner hostname to Privaxy.
+Malformed, truncated, oversized (over 64 KiB), or stalled ClientHellos fail
+closed; protocol detection, ClientHello reading, and the intercepted TLS
+handshake each have a 10-second timeout. Fragmented ClientHellos and buffered
+bytes are preserved, including when SNI selects a raw tunnel.
+
+Clients must still trust the existing Privaxy CA; certificate-pinned services
+need exclusions. Explicit CONNECT-host/IP exclusions bypass protocol probing.
+For other IP CONNECTs, hostname rules (including include-only mode) are decided
+after reading SNI. Exclusions take precedence over inclusions.
+
+CONNECT to port **853** is an opaque TCP tunnel for DNS-over-TLS, including
+`9.9.9.9:853` with SNI `dns.quad9.net`. TLS stays end-to-end and decrypted DNS
+never enters the HTTP parser. Privaxy's DoH policy applies only to HTTP traffic;
+it does not filter DoT. Non-HTTP TLS on other ports requires an exclusion.
 
 Filtering covers TCP HTTP/HTTPS. Handle UDP/QUIC and non-HTTP protocols in your
 routing policy; HTTP/3 traffic allowed directly will bypass filtering.
 Privaxy's client statistics identify the connecting proxy's address, so devices
 sharing that address appear together.
+
+Local TLS regression tests can be run with
+`cargo test -p privaxy --lib proxy::mitm::connect_tests`. They create temporary
+trusted test CAs in memory and use loopback fixtures, with no production config
+or external services. The DoT exchange uses an unprivileged ephemeral port;
+port 853's automatic tunnel selection is tested separately.
 
 #### Example: tun2proxy
 

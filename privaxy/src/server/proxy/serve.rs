@@ -1,6 +1,7 @@
 use super::doh::{self, DohAction};
 use super::gm::endpoint as gm_endpoint;
 use super::html_rewriter::Rewriter;
+use super::upstream::{UpgradeClient, UpstreamClients};
 use super::userscripts::UserScriptContext;
 use super::{body_channel, boxed_incoming, empty_body, full_body, BodySender, ProxyBody};
 use crate::blocker::AdblockRequester;
@@ -14,16 +15,10 @@ use http::uri::{Authority, Scheme};
 use http::{HeaderMap, HeaderValue, Request, Response, StatusCode, Uri};
 use http_body_util::{BodyExt, BodyStream, Limited};
 use hyper::body::{Frame, Incoming};
-use hyper_rustls::HttpsConnector;
-use hyper_util::client::legacy::connect::HttpConnector;
-use hyper_util::client::legacy::Client as HyperClient;
 use hyper_util::rt::TokioIo;
 use std::net::IpAddr;
 use tokio::sync::broadcast;
 use url::Url;
-
-/// Type of the hyper client used for upgrade tunneling (websockets, etc.).
-pub(crate) type UpgradeClient = HyperClient<HttpsConnector<HttpConnector>, ProxyBody>;
 
 /// Adapt an incoming request body into a `reqwest::Body`, preserving streaming
 /// (hyper 1.0 + reqwest 0.13 no longer share a body type, so we bridge via a
@@ -289,8 +284,7 @@ fn url_for_matching(uri: &Uri) -> String {
 pub(crate) async fn serve(
     adblock_requester: AdblockRequester,
     request: Request<Incoming>,
-    hyper_client: UpgradeClient,
-    client: reqwest::Client,
+    clients: UpstreamClients,
     authority: Authority,
     scheme: Scheme,
     broadcast_sender: broadcast::Sender<Event>,
@@ -302,6 +296,7 @@ pub(crate) async fn serve(
     user_scripts: UserScriptContext,
     intercept: bool,
 ) -> Result<Response<ProxyBody>, hyper::Error> {
+    let (client, hyper_client) = clients.proxy_clients();
     let uri = match http::uri::Builder::new()
         .scheme(scheme)
         .authority(authority)
@@ -336,9 +331,14 @@ pub(crate) async fn serve(
             .map(|collected| collected.to_bytes())
             .unwrap_or_default();
 
-        return Ok(
-            gm_endpoint::handle(&uri, &parts.method, &collected, &user_scripts, &client).await,
-        );
+        return Ok(gm_endpoint::handle(
+            &uri,
+            &parts.method,
+            &collected,
+            &user_scripts,
+            &clients.http,
+        )
+        .await);
     }
 
     let (mut parts, body) = request.into_parts();
@@ -461,6 +461,13 @@ pub(crate) async fn serve(
             doh::redirect_url(upstream, req.method(), &uri)
         }
         _ => req.uri().to_string(),
+    };
+    // A configured resolver is a separate destination and must use its usual
+    // DNS/TLS checks rather than inheriting this CONNECT session's IP pin.
+    let (client, hyper_client) = if matches!(doh_action, DohAction::Redirect(_)) {
+        (clients.http, clients.upgrade)
+    } else {
+        (client, hyper_client)
     };
     if req.headers().contains_key(http::header::UPGRADE) {
         let Ok(outbound_uri) = outbound_url.parse() else {

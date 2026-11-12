@@ -218,6 +218,9 @@ impl CertCache {
         cache.insert(certificate);
     }
 
+    /// `authority` is the TLS identity (DNS SNI for an IP CONNECT), not
+    /// necessarily the socket destination. Cache and SAN generation must use
+    /// that same identity so virtual hosts sharing an IP cannot share a leaf.
     pub async fn get(&self, authority: Authority) -> SignedWithCaCert {
         let mut cache = self.cache.lock().await;
 

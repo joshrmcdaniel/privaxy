@@ -1,3 +1,4 @@
+mod client_hello;
 pub(crate) mod doh;
 pub(crate) mod mitm;
 pub(crate) mod serve;
@@ -6,6 +7,7 @@ pub(crate) mod exclusions;
 pub(crate) mod gm;
 pub(crate) mod html_rewriter;
 pub(crate) mod tls_failures;
+pub(crate) mod upstream;
 pub(crate) mod userscripts;
 
 use bytes::Bytes;
