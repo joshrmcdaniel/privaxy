@@ -71,7 +71,7 @@ pub fn dashboard_header(props: &DashboardHeaderProps) -> Html {
             </div>
             <div class="mt-6 flex flex-col-reverse justify-stretch space-y-4 space-y-reverse sm:flex-row-reverse sm:justify-end sm:space-x-reverse sm:space-y-0 sm:space-x-3 md:mt-0 md:flex-row md:space-x-3">
                 <a href="/api/settings/ca-certificate"
-                    class="inline-flex items-center justify-center px-4 py-2 border border-gray-300 shadow-sm text-sm font-medium rounded-md text-white bg-gray-800 hover:bg-gray-900 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-gray-100 focus:ring-gray-500">
+                    class="inline-flex items-center justify-center px-4 py-2 border border-gray-300 shadow-xs text-sm font-medium rounded-md text-white bg-gray-800 hover:bg-gray-900 focus:outline-hidden focus:ring-2 focus:ring-offset-2 focus:ring-offset-gray-100 focus:ring-gray-500">
                     <svg xmlns="http://www.w3.org/2000/svg" class="ml-0.5 mr-2 h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
                     </svg>
@@ -166,7 +166,7 @@ impl Component for LiveDashboard {
 
                         <p class="text-sm font-medium text-gray-900 truncate">{if let Some(names) = names {crate::history::client_label(Some(key), names)} else {html!{<span title={key.to_owned()}>{key}</span>}}}</p>
                     </div>
-                    <div class="flex-shrink-0 whitespace-nowrap text-sm text-gray-500">{ count.to_formatted_string(&Locale::en) }</div>
+                    <div class="shrink-0 whitespace-nowrap text-sm text-gray-500">{ count.to_formatted_string(&Locale::en) }</div>
                 </div>
             </li>
                  }
@@ -181,7 +181,7 @@ impl Component for LiveDashboard {
                 }
                 <p class="mt-4 text-sm text-gray-600">{"Live statistics since this process started. "}<a href="/settings/statistics" class="text-blue-600 underline">{"Statistics settings"}</a></p>
                 <dl
-                    class="mt-5 grid grid-cols-1 rounded-lg bg-white overflow-hidden shadow divide-y divide-gray-200 md:grid-cols-3 md:divide-y-0 md:divide-x">
+                    class="mt-5 grid grid-cols-1 rounded-lg bg-white overflow-hidden shadow-sm divide-y divide-gray-200 md:grid-cols-3 md:divide-y-0 md:divide-x">
                     <div class="px-4 py-5 sm:p-6">
                         <dt class="text-base font-normal text-gray-900">
                             {"Proxied requests"}
@@ -216,7 +216,7 @@ impl Component for LiveDashboard {
                     </div>
                 </dl>
                 <div class="mt-4 lg:grid lg:gap-y-4 lg:gap-x-8 lg:grid-cols-2">
-                    <div class="mt-4 bg-white overflow-hidden shadow rounded-lg divide-y divide-gray-200">
+                    <div class="mt-4 bg-white overflow-hidden shadow-sm rounded-lg divide-y divide-gray-200">
                         <div class="px-4 py-5 sm:px-6">
                             <h3 class="text-lg font-medium">{"Top blocked domains"}</h3>
                         </div>
@@ -228,7 +228,7 @@ impl Component for LiveDashboard {
 
                         </div>
                     </div>
-                    <div class="mt-4 bg-white overflow-hidden shadow rounded-lg divide-y divide-gray-200">
+                    <div class="mt-4 bg-white overflow-hidden shadow-sm rounded-lg divide-y divide-gray-200">
                         <div class="px-4 py-5 sm:px-6">
                             <h3 class="text-lg font-medium">{"Top clients"}</h3>
                         </div>

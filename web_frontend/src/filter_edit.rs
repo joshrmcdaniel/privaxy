@@ -236,7 +236,7 @@ impl Component for FilterEditModal {
                             <div class="w-32">
                                 <label class="font-bold">{"Category"}</label>
                             </div>
-                            <select class="flex-1 bg-white border border-gray-300 text-gray-700 py-2 px-4 pr-8 rounded leading-tight focus:outline-none focus:bg-white focus:border-gray-500"
+                            <select class="flex-1 bg-white border border-gray-300 text-gray-700 py-2 px-4 pr-8 rounded-sm leading-tight focus:outline-hidden focus:bg-white focus:border-gray-500"
                                 onchange={ctx.link().callback(|e: Event| {
                                     let select = e.target_dyn_into::<HtmlSelectElement>().expect("event target should be a select element");
                                     let value = select.value();
@@ -252,7 +252,7 @@ impl Component for FilterEditModal {
                             </div>
                             <input
                                 type="text"
-                                class="flex-1 bg-white border border-gray-300 text-gray-700 py-2 px-4 rounded leading-tight focus:outline-none focus:bg-white focus:border-gray-500"
+                                class="flex-1 bg-white border border-gray-300 text-gray-700 py-2 px-4 rounded-sm leading-tight focus:outline-hidden focus:bg-white focus:border-gray-500"
                                 value={self.title.clone()}
                                 oninput={ctx.link().callback(|e: InputEvent| {
                                     let input = e.target_dyn_into::<HtmlInputElement>().expect("event target should be an input element");
@@ -266,7 +266,7 @@ impl Component for FilterEditModal {
                             </div>
                             <input
                                 type="text"
-                                class="flex-1 bg-white border border-gray-300 text-gray-700 py-2 px-4 rounded leading-tight focus:outline-none focus:bg-white focus:border-gray-500"
+                                class="flex-1 bg-white border border-gray-300 text-gray-700 py-2 px-4 rounded-sm leading-tight focus:outline-hidden focus:bg-white focus:border-gray-500"
                                 value={self.url.clone()}
                                 oninput={ctx.link().callback(|e: InputEvent| {
                                     let input = e.target_dyn_into::<HtmlInputElement>().expect("event target should be an input element");

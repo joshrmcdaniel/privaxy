@@ -155,7 +155,7 @@ docker run -d --name privaxy --restart unless-stopped \
 ```sh
 # 1. Frontend 
 cd web_frontend
-npm i
+npm ci
 trunk build --release
 
 # 2. Backend
@@ -167,9 +167,12 @@ cargo build --release
 
 Build requirements:
 
-- Rust 1.87+
-- Node.js
-- Trunk
+- Current stable Rust (the MIPS cross-builds require nightly)
+- Node.js 20+ (CI uses Node.js 24)
+- The Rust/WASM [Trunk](https://trunkrs.dev/) tool, installed with Cargo or cargo-binstall
+
+The web interface uses Tailwind CSS 4 and requires Safari 16.4+, Chrome 111+,
+or Firefox 128+. This requirement applies to the web UI, not proxied clients.
 
 ### Docker Compose
 

@@ -1,9 +1,23 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss" source(none);
+@source "./**/*.rs";
+@plugin "@tailwindcss/forms";
 
 @layer base {
   fieldset { min-width: 0; }
+
+  /* Preserve the existing form and divider defaults after the v4 upgrade. */
+  *, ::before, ::after, ::backdrop, ::file-selector-button {
+    border-color: var(--color-gray-200, currentColor);
+  }
+
+  input::placeholder, textarea::placeholder {
+    color: var(--color-gray-400);
+    opacity: 1;
+  }
+
+  button:not(:disabled), [role="button"]:not(:disabled) {
+    cursor: pointer;
+  }
 }
 
 /* Thanks to Plausible analytics for this beautiful circle :)

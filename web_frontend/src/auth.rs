@@ -433,7 +433,7 @@ async fn parse_error_message(response: gloo_net::http::Response) -> String {
 pub(crate) fn render_card(title: &str, content: Html) -> Html {
     html! {
         <div class="min-h-screen flex items-center justify-center bg-gray-100 px-4">
-            <div class="max-w-md w-full bg-white rounded-lg shadow p-8">
+            <div class="max-w-md w-full bg-white rounded-lg shadow-sm p-8">
                 <div class="flex items-center justify-center mb-6">
                     <img class="h-10 w-auto" src="/logo.svg" alt="Privaxy" />
                 </div>
@@ -461,7 +461,7 @@ fn form_field(
                 autocomplete={autocomplete.to_string()}
                 value={value.to_string()}
                 oninput={oninput}
-                class="shadow-sm appearance-none border rounded w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:ring-2 focus:ring-blue-500"
+                class="shadow-xs appearance-none border rounded-sm w-full py-2 px-3 text-gray-700 leading-tight focus:outline-hidden focus:ring-2 focus:ring-blue-500"
             />
         </div>
     }
@@ -470,7 +470,7 @@ fn form_field(
 fn error_banner(error: &Option<String>) -> Html {
     match error {
         Some(message) => html! {
-            <div class="mb-4 p-3 rounded bg-red-50 border border-red-200 text-sm text-red-700">
+            <div class="mb-4 p-3 rounded-sm bg-red-50 border border-red-200 text-sm text-red-700">
                 {message.clone()}
             </div>
         },
@@ -488,13 +488,13 @@ fn primary_button(label: &str, busy: bool) -> Html {
         "border",
         "border-transparent",
         "rounded-md",
-        "shadow-sm",
+        "shadow-xs",
         "text-sm",
         "font-medium",
         "text-white",
         "bg-blue-600",
         "hover:bg-blue-700",
-        "focus:outline-none",
+        "focus:outline-hidden",
         "focus:ring-2",
         "focus:ring-offset-2",
         "focus:ring-blue-500",

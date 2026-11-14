@@ -390,7 +390,7 @@ impl Component for PacSettingsPage {
                             <div class="settings-field-label">{"Serve proxy.pac"}</div>
                             <div class="settings-field-control">
                                 <input aria-label="Serve proxy.pac" type="checkbox" checked={form.enabled} onclick={on_enabled}
-                                    class="focus:ring-blue-500 h-4 w-4 text-blue-600 border-gray-300 rounded" />
+                                    class="focus:ring-blue-500 h-4 w-4 text-blue-600 border-gray-300 rounded-sm" />
                                 <p class="text-gray-400 text-sm mt-1">
                                     {"Expose the auto-config file at /proxy.pac (no auth)."}
                                 </p>
@@ -401,7 +401,7 @@ impl Component for PacSettingsPage {
                             <div class="settings-field-control">
                                 <input aria-label="Advertised proxy host" type="text" value={form.proxy_host.clone()} oninput={on_proxy_host}
                                     placeholder="e.g. 192.168.1.10:8100"
-                                    class="shadow appearance-none border rounded w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline" />
+                                    class="shadow-sm appearance-none border rounded-sm w-full py-2 px-3 text-gray-700 leading-tight focus:outline-hidden focus:shadow-outline" />
                                 <p class="text-gray-400 text-sm mt-1">
                                     {"host:port emitted as the PROXY directive. Leave blank to use the bind address and proxy port."}
                                 </p>
@@ -422,7 +422,7 @@ impl Component for PacSettingsPage {
                         <textarea
                             rows="4" value={form.direct_ips.clone()} oninput={on_ips}
                             placeholder="10.0.0.5"
-                            class="mt-1 shadow-sm focus:ring-blue-500 focus:border-blue-500 block w-full sm:text-sm border-gray-300 rounded-md" />
+                            class="mt-1 shadow-xs focus:ring-blue-500 focus:border-blue-500 block w-full sm:text-sm border-gray-300 rounded-md" />
                     </div>
                     <div class="mt-4">
                         <label class="block text-sm font-medium text-gray-700">
@@ -431,7 +431,7 @@ impl Component for PacSettingsPage {
                         <textarea
                             rows="4" value={form.direct_cidrs.clone()} oninput={on_cidrs}
                             placeholder="10.0.0.0 255.0.0.0"
-                            class="mt-1 shadow-sm focus:ring-blue-500 focus:border-blue-500 block w-full sm:text-sm border-gray-300 rounded-md" />
+                            class="mt-1 shadow-xs focus:ring-blue-500 focus:border-blue-500 block w-full sm:text-sm border-gray-300 rounded-md" />
                         if let Some(err) = form.cidrs_error.as_ref() {
                             <p class="text-red-500 text-xs italic mt-1">{err}</p>
                         }
@@ -443,7 +443,7 @@ impl Component for PacSettingsPage {
                         <textarea
                             rows="4" value={form.direct_fqdns.clone()} oninput={on_fqdns}
                             placeholder="example.com"
-                            class="mt-1 shadow-sm focus:ring-blue-500 focus:border-blue-500 block w-full sm:text-sm border-gray-300 rounded-md" />
+                            class="mt-1 shadow-xs focus:ring-blue-500 focus:border-blue-500 block w-full sm:text-sm border-gray-300 rounded-md" />
                     </div>
                 </fieldset>
 

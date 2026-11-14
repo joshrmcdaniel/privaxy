@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+- Update Rust and frontend dependencies to current stable releases, including
+  adblock 0.13.5, lol_html 3.0.3, Argon2 0.6, Tera 2.4, and Tailwind CSS 4.3.5.
+  Adapt the filtering, HTML rewriting, password hashing, PAC templates, and CSS
+  build APIs; pass the actual HTTP method to method-scoped blocking and exception rules.
+- Keep saved password hashes compatible and retain per-list rule diagnostics.
+  Keep redb pinned to 4.2.0 because newer releases still fail GNU MIPS builds.
+  Increase the compiler recursion limit for Warp routes on current nightly.
+- Replace the obsolete npm tool dependencies with the Tailwind CLI and forms
+  plugin, remove unused Rust dependencies and the obsolete nested Cargo lockfile,
+  and refresh the workspace and npm lockfiles. The web UI now requires Safari
+  16.4+, Chrome 111+, or Firefox 128+.
+
 ## v0.8.1
 
 - Use the combined uBlock Origin CDN lists for Ads, Badware risks, Privacy, Quick

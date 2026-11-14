@@ -90,14 +90,7 @@ lazy_static! {
 /// A `BlockerResult` representing "no filter matched", used whenever matching is
 /// bypassed (blocking disabled, unparseable request).
 fn unmatched_result() -> adblock::blocker::BlockerResult {
-    adblock::blocker::BlockerResult {
-        matched: false,
-        important: false,
-        redirect: None,
-        exception: None,
-        filter: None,
-        rewritten_url: None,
-    }
+    adblock::blocker::BlockerResult::default()
 }
 
 /// Build an engine from raw filter lists. CPU-heavy — seconds for full-size
@@ -106,6 +99,7 @@ fn build_engine(filters: Vec<FilterList>) -> Engine {
     log::debug!("Configuring blocking engine.");
 
     let mut filter_set = FilterSet::new(true);
+    let mut sources = Vec::new();
 
     for filter in filters {
         let parsed = match preprocess(&filter.contents) {
@@ -130,49 +124,60 @@ fn build_engine(filters: Vec<FilterList>) -> Engine {
             },
             ..Default::default()
         };
-        let mut supported = 0;
-        let mut unsupported = 0;
-        let mut rejection_reasons = BTreeMap::<String, usize>::new();
-        for line in parsed.lines {
-            if line.is_empty()
-                || line.starts_with('!')
-                || line.starts_with("[Adblock")
-                || line
-                    .strip_prefix('#')
-                    .is_some_and(|rest| rest.is_empty() || rest.starts_with(char::is_whitespace))
-            {
-                continue;
-            }
-            match filter_set.add_filter(line, options) {
-                Ok(()) => supported += 1,
-                Err(error) => {
-                    unsupported += 1;
-                    // Regex errors may contain the full rule. Keep diagnostics
-                    // useful without logging custom URLs or query parameters.
-                    let reason = match error {
-                        adblock::lists::FilterParseError::Network(
-                            adblock::filters::network::NetworkFilterError::RegexParsingError(_),
-                        ) => "network filter error: invalid regular expression".to_owned(),
-                        error => error.to_string(),
-                    };
-                    *rejection_reasons.entry(reason).or_default() += 1;
-                }
-            }
-        }
-        if unsupported > 0 {
-            let reasons = rejection_reasons
-                .iter()
-                .map(|(reason, count)| format!("{count} {reason}"))
-                .collect::<Vec<_>>()
-                .join("; ");
-            log::warn!(
-                "Filter list '{}': loaded {supported} rules; skipped {unsupported} unsupported or invalid rules ({reasons})",
-                filter.name
-            );
-        }
+        // The engine parses complete lists iteratively. Preserve their trust
+        // permissions and use its source metadata for rejection diagnostics.
+        let contents = parsed
+            .lines
+            .into_iter()
+            .filter(|line| {
+                !line.is_empty()
+                    && !line.starts_with('!')
+                    && !line.starts_with("[Adblock")
+                    && !line.strip_prefix('#').is_some_and(|rest| {
+                        rest.is_empty() || rest.starts_with(char::is_whitespace)
+                    })
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        filter_set.add_filter_list(contents, options);
+        sources.push((filter.name, options));
     }
 
-    let mut adblock_engine = Engine::from_filter_set(filter_set, true);
+    let mut adblock_engine = Engine::new_with_filter_set(filter_set);
+    for (source, (name, options)) in adblock_engine
+        .get_debug_info()
+        .source_info
+        .into_iter()
+        .zip(sources)
+    {
+        if source.parse_error == 0 {
+            continue;
+        }
+        let mut rejection_reasons = BTreeMap::<String, usize>::new();
+        // Reparse only rejected rules to obtain the individual error reasons.
+        for line in source.invalid_lines {
+            if let Err(error) = adblock::lists::parse_filter(&line, false, options) {
+                // Regex errors can include private URLs from custom filters.
+                let reason = match error {
+                    adblock::lists::FilterParseError::Network(
+                        adblock::filters::network::NetworkFilterError::RegexParsingError(_),
+                    ) => "network filter error: invalid regular expression".to_owned(),
+                    error => error.to_string(),
+                };
+                *rejection_reasons.entry(reason).or_default() += 1;
+            }
+        }
+        let supported = source.network_filter_count + source.cosmetic_filter_count;
+        let unsupported = source.parse_error;
+        let reasons = rejection_reasons
+            .iter()
+            .map(|(reason, count)| format!("{count} {reason}"))
+            .collect::<Vec<_>>()
+            .join("; ");
+        log::warn!(
+            "Filter list '{name}': loaded {supported} rules; skipped {unsupported} unsupported or invalid rules ({reasons})"
+        );
+    }
     adblock_engine.use_resources(ADBLOCKING_RESOURCES.clone());
 
     adblock_engine
@@ -244,13 +249,10 @@ pub(crate) struct AdblockRequester {
 
 impl AdblockRequester {
     pub(crate) fn new(blocking_disabled: BlockingDisabledStore) -> Self {
-        // adblock 0.12 removed `Engine::new`; the empty-filterset constructor
-        // is the documented replacement. `replace_engine` swaps this out as
-        // soon as filters are loaded.
+        // Use an empty filter set until the configured lists finish loading.
         Self {
-            engine: Arc::new(RwLock::new(Arc::new(Engine::from_filter_set(
+            engine: Arc::new(RwLock::new(Arc::new(Engine::new_with_filter_set(
                 FilterSet::new(true),
-                true,
             )))),
             blocking_disabled,
         }
@@ -311,12 +313,13 @@ impl AdblockRequester {
         // passing a constant here silently defeats those rules.
         referer: &str,
         request_type: &str,
+        method: &str,
     ) -> (bool, adblock::blocker::BlockerResult) {
         if !self.blocking_disabled.is_enabled() {
             return (false, unmatched_result());
         }
 
-        let request = match Request::new(network_url, referer, request_type) {
+        let request = match Request::new(network_url, referer, request_type, method) {
             Ok(request) => request,
             // An unparseable URL cannot be matched against filters; let it
             // through rather than failing the whole request.
@@ -325,7 +328,7 @@ impl AdblockRequester {
 
         let blocker_result = self.current_engine().check_network_request(&request);
 
-        (blocker_result.matched, blocker_result)
+        (blocker_result.should_block(), blocker_result)
     }
 }
 
@@ -356,9 +359,13 @@ mod tests {
                 &format!("https://{host}/ad.js"),
                 "https://site.example/",
                 "script",
+                "GET",
             )
             .unwrap();
-            assert_eq!(engine.check_network_request(&request).matched, expected);
+            assert_eq!(
+                engine.check_network_request(&request).should_block(),
+                expected
+            );
         }
     }
 
@@ -409,10 +416,11 @@ mod tests {
             "https://ads.example.com/track.js",
             "https://example.com/",
             "script",
+            "GET",
         );
 
         assert!(!blocked);
-        assert!(!result.matched);
+        assert!(!result.should_block());
     }
 
     #[tokio::test]
@@ -426,18 +434,44 @@ mod tests {
             "https://ads.example.com/track.js",
             "https://example.com/",
             "script",
+            "GET",
         );
 
         assert!(blocked);
-        assert!(result.matched);
+        assert!(result.should_block());
 
         let (blocked, _result) = requester.is_network_url_blocked(
             "https://example.com/site.js",
             "https://example.com/",
             "script",
+            "GET",
         );
 
         assert!(!blocked);
+    }
+
+    #[tokio::test]
+    async fn method_filters_and_exceptions_use_the_actual_request_method() {
+        let requester = requester();
+        requester
+            .replace_engine(vec![list(
+                "||example.test/ad$method=POST\n@@||example.test/ad/allowed$method=POST",
+            )])
+            .await;
+        for (path, method, expected) in [
+            ("ad", "POST", true),
+            ("ad", "GET", false),
+            ("ad", "HEAD", false),
+            ("ad/allowed", "POST", false),
+        ] {
+            let (blocked, _) = requester.is_network_url_blocked(
+                &format!("https://example.test/{path}"),
+                "https://example.test/",
+                "xmlhttprequest",
+                method,
+            );
+            assert_eq!(blocked, expected, "{method} {path}");
+        }
     }
 
     #[tokio::test]
@@ -452,6 +486,7 @@ mod tests {
             "https://ads.example.com/track.js",
             "https://example.com/",
             "script",
+            "GET",
         );
 
         assert!(!blocked);

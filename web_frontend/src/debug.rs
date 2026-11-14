@@ -177,7 +177,7 @@ impl Component for DebugSettingsPage {
                                         onclick={on_toggle}
                                         disabled={self.saving}
                                         type="checkbox"
-                                        class="focus:ring-blue-500 h-4 w-4 text-blue-600 border-gray-300 rounded"
+                                        class="focus:ring-blue-500 h-4 w-4 text-blue-600 border-gray-300 rounded-sm"
                                     />
                                     { status.clone() }
                                 </div>

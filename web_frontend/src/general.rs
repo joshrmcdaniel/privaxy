@@ -587,7 +587,7 @@ impl Component for GeneralSettings {
                     <div class="settings-field-row">
                         <div class="settings-field-label">{ setting_name }</div>
                         <div class="settings-field-control">
-                            <input aria-label={setting_name.to_string()} value={setting_value} class="shadow appearance-none border rounded w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline" type="text" oninput={oninput} />
+                            <input aria-label={setting_name.to_string()} value={setting_value} class="shadow-sm appearance-none border rounded-sm w-full py-2 px-3 text-gray-700 leading-tight focus:outline-hidden focus:shadow-outline" type="text" oninput={oninput} />
                         </div>
                     </div>
                     <div class="settings-field-help">
@@ -609,7 +609,7 @@ impl Component for GeneralSettings {
                     <div class="settings-field-row">
                         <div class="settings-field-label">{ setting_name }</div>
                         <div class="settings-field-control">
-                            <input aria-label={setting_name.to_string()} checked={setting_value} onclick={oninput} type="checkbox" class="focus:ring-blue-500 h-4 w-4 text-blue-600 border-gray-300 rounded" />
+                            <input aria-label={setting_name.to_string()} checked={setting_value} onclick={oninput} type="checkbox" class="focus:ring-blue-500 h-4 w-4 text-blue-600 border-gray-300 rounded-sm" />
                         </div>
                     </div>
                     <div class="settings-field-help">
@@ -820,7 +820,7 @@ fn render_certificate_setting(
                 <div class="settings-field-control">
                     <textarea
                         aria-label={setting_name.to_string()} value={value}
-                        class="shadow appearance-none border rounded w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline"
+                        class="shadow-sm appearance-none border rounded-sm w-full py-2 px-3 text-gray-700 leading-tight focus:outline-hidden focus:shadow-outline"
                         oninput={oninput}
                     />
                 </div>
@@ -860,7 +860,7 @@ fn render_select_setting(
             <div class="settings-field-row">
                 <div class="settings-field-label">{ setting_name }</div>
                 <div class="settings-field-control">
-                    <select aria-label={setting_name.to_string()} onchange={onchange} class="shadow appearance-none border rounded w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline">
+                    <select aria-label={setting_name.to_string()} onchange={onchange} class="shadow-sm appearance-none border rounded-sm w-full py-2 px-3 text-gray-700 leading-tight focus:outline-hidden focus:shadow-outline">
                         { for options.iter().map(|(value, label)| html! {
                             <option value={value.to_string()} selected={*value == selected}>{ *label }</option>
                         }) }

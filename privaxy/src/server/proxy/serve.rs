@@ -427,6 +427,7 @@ pub(crate) async fn serve(
             None => &match_url,
         },
         request_type,
+        req.method().as_str(),
     );
 
     if statistics.should_collect() && broadcast_sender.receiver_count() > 0 {
@@ -444,7 +445,11 @@ pub(crate) async fn serve(
         // adblock-rust fuses many same-option patterns into one filter and
         // reports the union as the matched filter, which can be enormous; cap
         // it so debug logs stay readable.
-        let matched_filter = blocker_result.filter.as_deref().unwrap_or("<none>");
+        let matched_filter = blocker_result
+            .filter
+            .as_ref()
+            .and_then(|info| info.raw_line.as_deref())
+            .unwrap_or("<none>");
         let matched_filter = match matched_filter.char_indices().nth(200) {
             Some((idx, _)) => format!("{}… (truncated)", &matched_filter[..idx]),
             None => matched_filter.to_string(),
@@ -793,10 +798,10 @@ fn get_blocked_by_privaxy_response(blocker_result: BlockerResult) -> Response<Pr
         log::warn!("Unable to decode an adblock replacement resource");
     }
 
-    let filter_information = match blocker_result.filter {
-        Some(filter) => filter,
-        None => "No information".to_string(),
-    };
+    let filter_information = blocker_result
+        .filter
+        .and_then(|info| info.raw_line)
+        .unwrap_or_else(|| "No information".to_string());
 
     let mut response_body = String::from(include_str!("../../resources/head.html"));
     response_body += &include_str!("../../resources/blocked_by_privaxy.html")
@@ -966,7 +971,6 @@ mod tests {
             ("image/png", &[0, 255, 16][..]),
         ] {
             let result = BlockerResult {
-                matched: true,
                 important: false,
                 redirect: Some(format!(
                     "data:{mime};base64,{}",

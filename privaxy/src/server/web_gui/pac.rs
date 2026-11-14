@@ -23,11 +23,22 @@ struct PacContext<'a> {
     exclusions: Vec<String>,
 }
 
-pub(crate) fn create_routes(configuration_save_lock: Arc<Mutex<()>>) -> BoxedFilter<(impl Reply,)> {
+fn pac_template_engine() -> Tera {
     let mut tera = Tera::default();
+    // Tera 2 no longer includes JSON encoding among its built-in filters.
+    tera.register_filter(
+        "json_encode",
+        |value: tera::Value, _: tera::Kwargs, _: &tera::State| {
+            serde_json::to_string(&value).map_err(|error| tera::Error::message(error.to_string()))
+        },
+    );
     tera.add_raw_template("proxy.pac", PAC_TEMPLATE)
         .expect("proxy.pac template failed to parse");
-    let tera = Arc::new(tera);
+    tera
+}
+
+pub(crate) fn create_routes(configuration_save_lock: Arc<Mutex<()>>) -> BoxedFilter<(impl Reply,)> {
+    let tera = Arc::new(pac_template_engine());
 
     warp::path!("proxy.pac")
         .or(warp::path!("wpad.dat"))
@@ -135,7 +146,50 @@ fn not_found_response() -> Response<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::normalize_netmask;
+    use super::*;
+
+    #[test]
+    fn pac_template_renders_both_modes_with_json_escaped_patterns() {
+        let tera = pac_template_engine();
+        let ips = vec!["192.0.2.1".to_owned()];
+        let cidrs = BTreeMap::from([("192.0.2.0".to_owned(), "255.255.255.0".to_owned())]);
+        let fqdns = vec!["direct.example.test".to_owned()];
+        for include_only in [false, true] {
+            let data = PacContext {
+                proxy_host: "proxy.example.test:8100",
+                ips: &ips,
+                cidrs: &cidrs,
+                fqdns: &fqdns,
+                include_only,
+                inclusions: vec![
+                    "*.example.test".to_owned(),
+                    "quotes\"and\\slashes".to_owned(),
+                ],
+                exclusions: vec!["excluded.example.test".to_owned()],
+            };
+            let context = Context::from_serialize(&data).unwrap();
+            let body = tera.render("proxy.pac", &context).unwrap();
+            assert!(body.contains("return \"PROXY proxy.example.test:8100\";"));
+            assert!(body.contains("myIp === \"192.0.2.1\""));
+            assert!(body.contains("isInNet(host, \"192.0.2.0\", \"255.255.255.0\")"));
+            assert!(body.contains("\"direct.example.test\""));
+            for (name, patterns) in [
+                ("inclusions", data.inclusions),
+                ("exclusions", data.exclusions),
+            ] {
+                let prefix = format!("var {name} = ");
+                let encoded = body
+                    .lines()
+                    .find_map(|line| line.trim().strip_prefix(&prefix)?.strip_suffix(';'));
+                if include_only {
+                    let decoded: Vec<String> = serde_json::from_str(encoded.unwrap()).unwrap();
+                    assert_eq!(decoded, patterns);
+                } else {
+                    assert!(encoded.is_none());
+                }
+            }
+        }
+    }
 
     #[test]
     fn prefix_lengths_become_dotted_masks() {

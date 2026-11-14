@@ -270,15 +270,15 @@ impl Component for AccountSettings {
                         { password_field("New password", "new-password", &self.new_password, on_new) }
                         { password_field("Confirm new password", "new-password", &self.confirm_password, on_confirm) }
                         { if self.password_success {
-                            html! { <div class="p-3 rounded bg-green-50 border border-green-200 text-sm text-green-700">{"Password updated."}</div> }
+                            html! { <div class="p-3 rounded-sm bg-green-50 border border-green-200 text-sm text-green-700">{"Password updated."}</div> }
                         } else { html!{} } }
                         { if let Some(msg) = &self.password_error {
-                            html! { <div class="p-3 rounded bg-red-50 border border-red-200 text-sm text-red-700">{msg.clone()}</div> }
+                            html! { <div class="p-3 rounded-sm bg-red-50 border border-red-200 text-sm text-red-700">{msg.clone()}</div> }
                         } else { html!{} } }
                         <button
                             type="submit"
                             disabled={self.password_submitting}
-                            class="inline-flex justify-center py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed">
+                            class="inline-flex justify-center py-2 px-4 border border-transparent rounded-md shadow-xs text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 focus:outline-hidden focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed">
                             { if self.password_submitting { "Updating..." } else { "Update password" } }
                         </button>
                     </form>
@@ -296,11 +296,11 @@ impl Component for AccountSettings {
                             type="text"
                             readonly=true
                             value={api_key_display.clone()}
-                            class="font-mono text-sm shadow-sm border rounded w-full py-2 px-3 text-gray-700 bg-gray-50"
+                            class="font-mono text-sm shadow-xs border rounded-sm w-full py-2 px-3 text-gray-700 bg-gray-50"
                         />
                     </div>
                     { if let Some(msg) = &self.api_key_error {
-                        html! { <div role="alert" class="mt-3 p-3 rounded bg-red-50 border border-red-200 text-sm text-red-700">{msg.clone()}</div> }
+                        html! { <div role="alert" class="mt-3 p-3 rounded-sm bg-red-50 border border-red-200 text-sm text-red-700">{msg.clone()}</div> }
                     } else { html!{} } }
                     if self.api_key.is_none() && self.api_key_error.is_some() {
                         <button type="button" class="mt-3 mr-4 text-blue-600 underline" onclick={ctx.link().callback(|_| Message::LoadApiKey)}>{"Retry loading API key"}</button>
@@ -309,7 +309,7 @@ impl Component for AccountSettings {
                         type="button"
                         onclick={on_rotate}
                         disabled={self.api_key_busy}
-                        class="mt-3 inline-flex justify-center py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-red-600 hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500 disabled:opacity-50 disabled:cursor-not-allowed">
+                        class="mt-3 inline-flex justify-center py-2 px-4 border border-transparent rounded-md shadow-xs text-sm font-medium text-white bg-red-600 hover:bg-red-700 focus:outline-hidden focus:ring-2 focus:ring-offset-2 focus:ring-red-500 disabled:opacity-50 disabled:cursor-not-allowed">
                         { if self.api_key_busy { "Loading..." } else { "Rotate API key" } }
                     </button>
                     <p class="text-xs text-gray-400 mt-2">
@@ -337,7 +337,7 @@ fn password_field(
                 autocomplete={autocomplete.to_string()}
                 value={value.to_string()}
                 oninput={oninput}
-                class="shadow-sm appearance-none border rounded w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:ring-2 focus:ring-blue-500"
+                class="shadow-xs appearance-none border rounded-sm w-full py-2 px-3 text-gray-700 leading-tight focus:outline-hidden focus:ring-2 focus:ring-blue-500"
             />
         </div>
     }

@@ -167,15 +167,15 @@ impl Component for HistoryPage {
             if self.loading { <p role="status" class="mt-3 text-sm text-gray-500">{"Loading history…"}</p> }
             if let Some(snapshot) = &self.snapshot {
                 if !snapshot.status.active && snapshot.status.error.is_none() {
-                    <p role="status" class="mt-6 p-4 bg-white rounded-lg shadow text-gray-600">{"Persistent statistics are off or anonymous mode is selected. Enable history in Statistics settings to start collecting it."}</p>
+                    <p role="status" class="mt-6 p-4 bg-white rounded-lg shadow-sm text-gray-600">{"Persistent statistics are off or anonymous mode is selected. Enable history in Statistics settings to start collecting it."}</p>
                 } else if snapshot.status.active {
                     if snapshot.status.dropped_events > 0 { <p role="alert" class="mt-4 text-sm text-amber-700">{format!("{} events were not saved this session; history is incomplete. Check Statistics settings for storage errors.", snapshot.status.dropped_events)}</p> }
                     <dl class="mt-5 grid grid-cols-1 sm:grid-cols-3 gap-4">
                         {for [("Proxied requests", snapshot.totals.proxied_requests), ("Blocked requests", snapshot.totals.blocked_requests), ("Modified responses", snapshot.totals.modified_responses)].into_iter().map(|(label, count)| html! {
-                            <div class="p-5 bg-white rounded-lg shadow"><dt class="text-sm text-gray-600">{label}</dt><dd class="mt-2 text-2xl font-semibold text-blue-600">{count.to_formatted_string(&Locale::en)}</dd></div>
+                            <div class="p-5 bg-white rounded-lg shadow-sm"><dt class="text-sm text-gray-600">{label}</dt><dd class="mt-2 text-2xl font-semibold text-blue-600">{count.to_formatted_string(&Locale::en)}</dd></div>
                         })}
                     </dl>
-                    <div class="mt-5 p-5 bg-white rounded-lg shadow">
+                    <div class="mt-5 p-5 bg-white rounded-lg shadow-sm">
                         <h2 class="text-lg font-medium">{"Requests over time"}</h2>
                         {self.chart(snapshot)}
                     </div>
@@ -184,7 +184,7 @@ impl Component for HistoryPage {
                         {top_list("Top blocked domains", &snapshot.top_blocked_domains, None)}
                         {top_list("Top clients", &snapshot.top_clients, Some(&snapshot.client_names))}
                     </div>
-                    <div class="mt-5 p-4 sm:p-5 bg-white rounded-lg shadow">
+                    <div class="mt-5 p-4 sm:p-5 bg-white rounded-lg shadow-sm">
                         <div class="flex flex-wrap justify-between items-center gap-3 mb-4">
                             <h2 class="text-lg font-medium">{"Request history"}</h2>
                             <select aria-label="Request history filter" class="rounded-md border-gray-300 text-sm" onchange={on_filter}>
@@ -310,7 +310,7 @@ fn top_list(
     entries: &[(String, u64)],
     names: Option<&BTreeMap<String, String>>,
 ) -> Html {
-    html! {<section class="p-5 bg-white rounded-lg shadow min-w-0">
+    html! {<section class="p-5 bg-white rounded-lg shadow-sm min-w-0">
         <h2 class="text-lg font-medium mb-3">{title}</h2>
         if entries.is_empty() {<p class="text-sm text-gray-500">{"No visible data at this privacy level or in this window."}</p>}
         <ol class="divide-y divide-gray-100">{for entries.iter().take(10).map(|(label, count)| html! {
