@@ -18,7 +18,9 @@ mod filter_edit;
 mod filter_failures;
 mod filterlists;
 mod filters;
+mod footer;
 mod general;
+mod history;
 mod inclusions;
 mod live_stream;
 mod logs;
@@ -27,6 +29,7 @@ mod requests;
 mod save_button;
 mod settings;
 mod settings_textarea;
+mod statistics_settings;
 mod submit_banner;
 mod tls_failures;
 mod userscript_edit;
@@ -43,6 +46,8 @@ enum Route {
     Dashboard,
     #[at("/requests")]
     Requests,
+    #[at("/history")]
+    History,
     #[at("/settings/:s")]
     Settings,
     #[at("/exclude")]
@@ -71,6 +76,17 @@ fn not_found() -> Html {
         </div>
     </div>
      }
+}
+
+#[function_component(HistoryRedirect)]
+fn history_redirect() -> Html {
+    let navigator = use_navigator().unwrap();
+    use_effect_with((), move |_| {
+        // Replace the old URL so Back does not revisit the redirect.
+        navigator.replace(&Route::Dashboard);
+        || ()
+    });
+    Html::default()
 }
 
 fn switch(route: Route) -> Html {
@@ -129,6 +145,9 @@ fn switch(route: Route) -> Html {
         Route::Settings => {
             html! {<>{navigation} <div class={"container mt-4 mb-10 mx-auto px-4 sm:px-6 lg:px-8"}> <Switch<settings::SettingsRoute> render={settings::switch_settings} /> </div> </>}
         }
+        Route::History => {
+            html! { <HistoryRedirect /> }
+        }
         Route::Exclude => {
             set_title("Exclude host");
             html! { <>{navigation} <div class={"container mt-4 mb-10 mx-auto px-4 sm:px-6 lg:px-8"}> <exclude::ExcludePage /> </div></> }
@@ -144,9 +163,14 @@ fn switch(route: Route) -> Html {
 fn app() -> Html {
     html! {
         <auth::AuthGate>
-            <BrowserRouter>
-                <Switch<Route> render={switch} />
-            </BrowserRouter>
+            <div class="min-h-screen flex flex-col">
+                <div class="flex-1">
+                    <BrowserRouter>
+                        <Switch<Route> render={switch} />
+                    </BrowserRouter>
+                </div>
+                <footer::Footer />
+            </div>
         </auth::AuthGate>
     }
 }

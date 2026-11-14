@@ -19,6 +19,10 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  # cargo-generate-rpm 0.21.0 has prebuilts for both x86_64 and aarch64.
+  PACKAGING_TOOLS: cargo-deb@3.8.0,cargo-generate-rpm@0.21.0
+
 jobs:
   clippy_check:
     name: Run clippy check
@@ -34,15 +38,10 @@ jobs:
           components: clippy
 
       - name: Cache cargo + target
-        uses: actions/cache@v4
+        uses: Swatinem/rust-cache@v2
         with:
-          key: clippy-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            clippy-${{ runner.os }}-
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            ./target
+          workspaces: . -> target
+          key: clippy
 
       # Frontend dist/ must exist for the server's include_dir! to compile.
       # Reuses the artifact produced by the `build_frontend` job.
@@ -58,6 +57,7 @@ jobs:
 
   rustfmt:
     name: Check style
+    needs: [image_meta]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -69,17 +69,37 @@ jobs:
           components: rustfmt
 
       - name: Run cargo fmt
-        uses: actions-rs/cargo@v1
-        with:
-          command: fmt
-          args: --all -- --check
+        run: cargo fmt --all -- --check
   image_meta:
-    name: Compute image tag
+    name: Validate version and compute image tag
     runs-on: ubuntu-latest
     outputs:
       image_tag: ${{ steps.vars.outputs.image_tag }}
       image_name: ${{ steps.vars.outputs.image_name }}
+      package_version: ${{ steps.version.outputs.package_version }}
     steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Validate release version
+        id: version
+        run: |
+          python3 - <<'PY'
+          import os
+          import tomllib
+
+          with open("privaxy/Cargo.toml", "rb") as manifest:
+              version = tomllib.load(manifest)["package"]["version"]
+          ref = os.environ["GITHUB_REF"]
+          if ref.startswith("refs/tags/v"):
+              tag_version = ref.removeprefix("refs/tags/v")
+              if tag_version != version:
+                  print(f"::error::Release tag v{tag_version} does not match privaxy/Cargo.toml version {version}")
+                  raise SystemExit(1)
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              print(f"package_version={version}", file=output)
+          PY
+
       - name: Get image tag
         id: vars
         run: |
@@ -135,6 +155,7 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       - name: Log in to GitHub Container Registry
+        if: github.event_name == 'push'
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -147,7 +168,7 @@ jobs:
         with:
           images: ${{ needs.image_meta.outputs.image_name }}
 
-      - name: Build and push by digest
+      - name: Build image
         id: build
         uses: docker/build-push-action@v6
         with:
@@ -161,15 +182,18 @@ jobs:
           annotations: ${{ steps.meta.outputs.annotations }}
           cache-from: type=gha,scope=${{ matrix.cache_scope }}
           cache-to: type=gha,mode=max,scope=${{ matrix.cache_scope }}
-          outputs: type=image,name=${{ needs.image_meta.outputs.image_name }},push-by-digest=true,name-canonical=true,push=true
+          # PRs validate the image build without publishing to the registry.
+          outputs: ${{ github.event_name == 'push' && format('type=image,name={0},push-by-digest=true,name-canonical=true,push=true', needs.image_meta.outputs.image_name) || 'type=cacheonly' }}
 
       - name: Export digest
+        if: github.event_name == 'push'
         run: |
           mkdir -p /tmp/digests
           digest="${{ steps.build.outputs.digest }}"
           touch "/tmp/digests/${digest#sha256:}"
 
       - name: Upload digest
+        if: github.event_name == 'push'
         uses: actions/upload-artifact@v4
         with:
           name: image-digest-${{ matrix.cache_scope }}
@@ -180,6 +204,7 @@ jobs:
   image_merge:
     name: Merge multi-arch manifest
     needs: [image_meta, image_build]
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -237,7 +262,7 @@ jobs:
       - name: Cache cargo + wasm target
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: web_frontend -> target
+          workspaces: . -> target
           shared-key: build-frontend
 
       - name: Install node
@@ -315,18 +340,16 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Cache build artifacts
-        uses: actions/cache@v3
-        with:
-          key:  ${{ matrix.os }}-${{ matrix.target }}-artifacts
-          path: |
-            ./target
-            ~/.cargo
-
       - name: Install rust
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
+
+      - name: Cache build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: . -> target
+          key: native-${{ matrix.target }}
 
       - name: Install cross build dependencies
         if: matrix.target == 'aarch64-unknown-linux-gnu'
@@ -352,14 +375,21 @@ jobs:
           CC_x86_64_unknown_linux_musl: musl-gcc
           CC_aarch64_unknown_linux_musl: musl-gcc
         run: cargo build --release --target ${{ matrix.target }} --bin privaxy --target-dir target
+
+      - name: Install packaging tools
+        if: ${{ !endsWith(matrix.target, '-musl') }}
+        uses: taiki-e/install-action@v2
+        with:
+          tool: ${{ env.PACKAGING_TOOLS }}
+
       - name: Build packages
         if: ${{ !endsWith(matrix.target, '-musl') }}
         run: |
           # target/ is cached; discard packages from previous versions.
           rm -f target/${{ matrix.target }}/release/privaxy_*.deb \
                 target/${{ matrix.target }}/release/privaxy-*.rpm
-          cargo install cargo-deb && cargo deb -p privaxy --target ${{ matrix.target }} -o target/${{ matrix.target }}/release
-          cargo install cargo-generate-rpm && cargo generate-rpm -p privaxy --target ${{ matrix.target }} -o target/${{ matrix.target }}/release
+          cargo deb --no-build -p privaxy --target ${{ matrix.target }} -o target/${{ matrix.target }}/release
+          cargo generate-rpm -p privaxy --target ${{ matrix.target }} -o target/${{ matrix.target }}/release
       - uses: actions/upload-artifact@v4
         if: ${{ !endsWith(matrix.target, '-musl') }}
         with:
@@ -401,16 +431,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Cache build artifacts
-        uses: actions/cache@v3
-        with:
-          key:  ${{ matrix.os }}-${{ matrix.target }}-artifacts
-          path: |
-            ./target
-            ~/.cargo
-
       - name: Install rust
         uses: dtolnay/rust-toolchain@nightly
+
+      - name: Cache build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: . -> target
+          key: mips-${{ matrix.target }}-${{ hashFiles('Cross.toml') }}
 
       - name: Install cross
         uses: taiki-e/install-action@v2
@@ -432,6 +460,12 @@ jobs:
       - name: Build server
         run: cross build --release --target ${{ matrix.target }} --bin privaxy --target-dir target
 
+      - name: Install packaging tools
+        if: ${{ endsWith(matrix.target, '-linux-gnu') }}
+        uses: taiki-e/install-action@v2
+        with:
+          tool: ${{ env.PACKAGING_TOOLS }}
+
       - name: Build packages
         if: ${{ endsWith(matrix.target, '-linux-gnu') }}
         run: |
@@ -439,8 +473,8 @@ jobs:
           rm -f target/${{ matrix.target }}/release/privaxy_*.deb \
                 target/${{ matrix.target }}/release/privaxy-*.rpm
           variant=$(echo "${{ matrix.target }}" | cut -d- -f1)
-          cargo install cargo-deb && cargo deb --no-build --no-strip --variant "$variant" -p privaxy --target ${{ matrix.target }} -o target/${{ matrix.target }}/release
-          cargo install cargo-generate-rpm && cargo generate-rpm -p privaxy --target ${{ matrix.target }} -o target/${{ matrix.target }}/release
+          cargo deb --no-build --no-strip --variant "$variant" -p privaxy --target ${{ matrix.target }} -o target/${{ matrix.target }}/release
+          cargo generate-rpm -p privaxy --target ${{ matrix.target }} -o target/${{ matrix.target }}/release
 
       - uses: actions/upload-artifact@v4
         if: ${{ endsWith(matrix.target, '-linux-gnu') }}
@@ -462,7 +496,7 @@ jobs:
 
   release:
     name: Create GitHub Release
-    needs: [ci, ci_mips, image_merge]
+    needs: [image_meta, ci, ci_mips, image_merge]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
     permissions:
@@ -477,10 +511,9 @@ jobs:
           path: ./artifacts
           pattern: privaxy-*
           merge-multiple: false
-      - name: Set package version from tag
-        run: |
-          echo "PKG_VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_ENV
       - name: Flatten artifacts for release
+        env:
+          PKG_VERSION: ${{ needs.image_meta.outputs.package_version }}
         run: |
           mkdir ./release-assets
           for dir in ./artifacts/privaxy-*/; do

@@ -2176,6 +2176,7 @@ dependencies = [
  "futures",
  "futures-util",
  "getrandom 0.3.4",
+ "h2",
  "hex",
  "hmac",
  "http 1.4.2",
@@ -2192,9 +2193,11 @@ dependencies = [
  "once_cell",
  "openssl",
  "portable-atomic",
+ "redb",
  "regex",
  "reqwest",
  "rustls",
+ "semver",
  "serde",
  "serde-tuple-vec-map",
  "serde_json",
@@ -2208,6 +2211,7 @@ dependencies = [
  "tokio-stream",
  "tokio-util",
  "toml",
+ "tower-service",
  "uluru",
  "url",
  "warp",
@@ -2391,6 +2395,15 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.117",
+]
+
+[[package]]
+name = "redb"
+version = "4.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "de6c3b63e007e90ce536ec2ae4690826136a20ec8dbbbb400daef1bb999d2e36"
+dependencies = [
+ "libc",
 ]
 
 [[package]]
@@ -3657,6 +3670,7 @@ dependencies = [
  "gloo-net 0.6.0",
  "gloo-timers 0.4.0",
  "gloo-utils 0.3.0",
+ "js-sys",
  "log",
  "num-format",
  "readonly",

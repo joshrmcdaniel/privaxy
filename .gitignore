@@ -8,3 +8,6 @@ node_modules
 .vscode
 **/target/*
 testing/
+
+# Local opt-in request history can contain browsing metadata.
+statistics.redb

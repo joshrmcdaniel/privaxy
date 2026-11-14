@@ -49,10 +49,13 @@ impl SignedWithCaCert {
         // (ring) is installed once as the process default at startup.
         let private_key =
             PrivateKeyDer::try_from(private_key.private_key_to_der().unwrap()).unwrap();
-        let server_configuration = ServerConfig::builder()
+        let mut server_configuration = ServerConfig::builder()
             .with_no_client_auth()
             .with_single_cert(certs, private_key)
             .unwrap();
+        // The CONNECT service supports both versions. Advertise HTTP/2 so
+        // browsers can multiplex page resources on one intercepted session.
+        server_configuration.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
 
         Self {
             authority,
@@ -218,6 +221,9 @@ impl CertCache {
         cache.insert(certificate);
     }
 
+    /// `authority` is the TLS identity (DNS SNI for an IP CONNECT), not
+    /// necessarily the socket destination. Cache and SAN generation must use
+    /// that same identity so virtual hosts sharing an IP cannot share a leaf.
     pub async fn get(&self, authority: Authority) -> SignedWithCaCert {
         let mut cache = self.cache.lock().await;
 

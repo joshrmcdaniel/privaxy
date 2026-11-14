@@ -3,6 +3,7 @@ name = "privaxy"
 description = "Next generation tracker and advertisement blocker"
 version = "0.8.0"
 edition = "2021"
+repository = "https://github.com/joshrmcdaniel/privaxy"
 authors = [
   "Pierre Barre <pierre@barre.sh>",
   "Josh McDaniel <80354972+joshrmcdaniel@users.noreply.github.com>"
@@ -64,10 +65,12 @@ hyper-util = { version = "0.1", features = [
 http-body-util = "0.1"
 tokio = { version = "1.22.0", features = ["full"] }
 serde_json = "1.0.89"
+semver = "1"
 toml = "1"
 serde = { version = "1.0.148", features = ["derive"] }
 tokio-util = { version = "0.7.4", features = ["full"] }
 tokio-stream = "0.1"
+tower-service = "0.3"
 bytes = "1"
 socket2 = "0.5"
 # default-features = false only to drop `single-thread`: the multi-thread
@@ -137,6 +140,13 @@ tera = { version = "1", default-features = false }
 argon2 = { version = "0.5", features = ["std"] }
 hmac = "0.12"
 filterlists-api = { path = "../filterlists-api", features = ["reqwest"] }
+# redb 4.3+ unconditionally imports libc::flock64 on GNU/Linux, but libc
+# does not expose that type on MIPS. Keep the last compatible release until
+# upstream fixes the range-lock backend; 4.2 retains the v3 database format.
+redb = "=4.2.0"
+
+[dev-dependencies]
+h2 = "0.4"
 
 # getrandom 0.3 (pulled in via warp -> tokio-tungstenite -> rand) selects a
 # backend that calls the libc `getrandom()` wrapper on mips{,el}-unknown-linux-gnu,
