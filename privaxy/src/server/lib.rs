@@ -28,6 +28,7 @@ mod blocker_utils;
 mod ca;
 mod cert;
 pub mod configuration;
+mod filter_list;
 pub mod logging;
 mod proxy;
 pub mod statistics;

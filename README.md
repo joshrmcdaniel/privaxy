@@ -91,6 +91,34 @@ blocker more than it strictly replaces one.
 - [filterlists.com](https://filterlists.com) integration
 - Ability to add custom filters
 
+Privaxy uses the combined uBlock Origin CDN lists for Ads, Badware risks,
+Privacy, Quick fixes, and Unbreak. Existing source-list subscriptions migrate
+automatically, preserving their enabled state. An already configured CDN
+subscription takes precedence over its old source-list duplicate. Separate
+mobile and resource-abuse subscriptions are retained for existing choices,
+although their rules are also included in the combined Ads and Privacy lists.
+
+Filter-list `!#if`, `!#else`, and `!#endif` directives use a portable uBO syntax
+profile (`ext_ublock` enabled, browser-specific flags and unsupported capabilities
+disabled). This selects scriptlet fallbacks for `!cap_html_filtering`; proxy HTML
+injection does not implement uBO's HTML-filtering or `$replace` syntax. Unknown
+conditions retain both branches, matching uBO, and are reported in the logs.
+Active `!#include` directives load relative sub-lists from the same directory or
+its descendants, following uBO's subscription format. Includes are expanded
+before caching; inactive branches are not downloaded. Failed downloads,
+malformed conditions, cycles, and includes outside the permitted source leave
+the previous complete cache untouched. Downloads are limited to 64 files,
+16 include levels, and 64 MiB per subscription. Custom filters have no source URL
+and cannot use includes.
+
+Bundled scriptlets come from uBlock Origin 1.76.2. Scriptlets marked
+`requiresTrust` are available to the official uBO filter repositories and manually
+entered Custom filters, but not arbitrary remote subscriptions. Unsupported
+filter rules are counted by rejection reason alongside the number loaded. These
+warnings do not mean the whole list failed to load. Filter syntax and browser
+integration still differ from the uBO extension, so list compatibility does not
+guarantee identical results on every video site.
+
 ## Installation
 
 You can either utilize the docker image, binary, or the deb avaiable in releases.

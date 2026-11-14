@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- Use the combined uBlock Origin CDN lists for Ads, Badware risks, Privacy, Quick
+  fixes, and Unbreak. Migrate existing subscriptions without changing enabled
+  states, and retain an existing CDN subscription when an old source duplicates it.
+- Update bundled uBO scriptlets to 1.76.2, including JSON-edit and newer video
+  response hooks. Preserve shared dependencies and all scriptlet arguments,
+  isolate helpers from page globals, and honor trusted-scriptlet permissions.
+- Evaluate nested filter-list conditions before rule parsing using a portable
+  capability profile. Expand active relative `!#include` sub-lists, including the
+  uBO-specific rules in EasyList Cookie and Fanboy's Annoyance. Bound downloads,
+  reject cycles and paths outside the permitted source, and preserve the last
+  complete cache if a sub-list fails. Report malformed directives and unknown
+  conditions; log loaded-rule counts and reasons for unsupported or invalid rules.
 - Add a shared footer with the running server version linked to the project.
   Check for stable releases automatically when opened and hourly thereafter,
   showing an "Update available" release link only when a newer version is found.

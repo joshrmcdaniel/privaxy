@@ -1,11 +1,12 @@
 use crate::blocker_utils::{build_resource_from_file_contents, read_redirectable_resource_mapping};
+use crate::filter_list::{preprocess, FilterList, TRUSTED_SCRIPTLETS};
 use adblock::lists::FilterSet;
 use adblock::request::Request;
 use adblock::resources::Resource;
 use adblock::Engine;
 use include_dir::{include_dir, Dir};
 use lazy_static::lazy_static;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 
 #[derive(Debug, Clone)]
@@ -101,13 +102,74 @@ fn unmatched_result() -> adblock::blocker::BlockerResult {
 
 /// Build an engine from raw filter lists. CPU-heavy — seconds for full-size
 /// lists — so callers must not run it on an async task directly.
-fn build_engine(filters: Vec<String>) -> Engine {
+fn build_engine(filters: Vec<FilterList>) -> Engine {
     log::debug!("Configuring blocking engine.");
 
     let mut filter_set = FilterSet::new(true);
 
     for filter in filters {
-        filter_set.add_filter_list(&filter, adblock::lists::ParseOptions::default());
+        let parsed = match preprocess(&filter.contents) {
+            Ok(parsed) => parsed,
+            Err(error) => {
+                log::warn!("Skipping filter list '{}': {error}", filter.name);
+                continue;
+            }
+        };
+        if parsed.unknown_conditions > 0 {
+            log::warn!(
+                "Filter list '{}': {} unknown conditions left unfiltered",
+                filter.name,
+                parsed.unknown_conditions
+            );
+        }
+        let options = adblock::lists::ParseOptions {
+            permissions: if filter.trusted {
+                TRUSTED_SCRIPTLETS
+            } else {
+                Default::default()
+            },
+            ..Default::default()
+        };
+        let mut supported = 0;
+        let mut unsupported = 0;
+        let mut rejection_reasons = BTreeMap::<String, usize>::new();
+        for line in parsed.lines {
+            if line.is_empty()
+                || line.starts_with('!')
+                || line.starts_with("[Adblock")
+                || line
+                    .strip_prefix('#')
+                    .is_some_and(|rest| rest.is_empty() || rest.starts_with(char::is_whitespace))
+            {
+                continue;
+            }
+            match filter_set.add_filter(line, options) {
+                Ok(()) => supported += 1,
+                Err(error) => {
+                    unsupported += 1;
+                    // Regex errors may contain the full rule. Keep diagnostics
+                    // useful without logging custom URLs or query parameters.
+                    let reason = match error {
+                        adblock::lists::FilterParseError::Network(
+                            adblock::filters::network::NetworkFilterError::RegexParsingError(_),
+                        ) => "network filter error: invalid regular expression".to_owned(),
+                        error => error.to_string(),
+                    };
+                    *rejection_reasons.entry(reason).or_default() += 1;
+                }
+            }
+        }
+        if unsupported > 0 {
+            let reasons = rejection_reasons
+                .iter()
+                .map(|(reason, count)| format!("{count} {reason}"))
+                .collect::<Vec<_>>()
+                .join("; ");
+            log::warn!(
+                "Filter list '{}': loaded {supported} rules; skipped {unsupported} unsupported or invalid rules ({reasons})",
+                filter.name
+            );
+        }
     }
 
     let mut adblock_engine = Engine::from_filter_set(filter_set, true);
@@ -198,7 +260,7 @@ impl AdblockRequester {
         self.engine.read().unwrap().clone()
     }
 
-    pub(crate) async fn replace_engine(&self, filters: Vec<String>) {
+    pub(crate) async fn replace_engine(&self, filters: Vec<FilterList>) {
         let new_engine = tokio::task::spawn_blocking(move || build_engine(filters))
             .await
             .expect("engine build task panicked");
@@ -271,6 +333,72 @@ impl AdblockRequester {
 mod tests {
     use super::*;
 
+    fn list(contents: &str) -> FilterList {
+        FilterList {
+            name: "Test list".to_owned(),
+            contents: contents.to_owned(),
+            trusted: false,
+        }
+    }
+
+    #[test]
+    fn conditional_blocks_affect_matching_and_do_not_leak_between_lists() {
+        let engine = build_engine(vec![
+            list("!#if cap_html_filtering\n||html.example^\n!#else\n||fallback.example^\n!#endif"),
+            list("||other.example^"),
+        ]);
+        for (host, expected) in [
+            ("html.example", false),
+            ("fallback.example", true),
+            ("other.example", true),
+        ] {
+            let request = Request::new(
+                &format!("https://{host}/ad.js"),
+                "https://site.example/",
+                "script",
+            )
+            .unwrap();
+            assert_eq!(engine.check_network_request(&request).matched, expected);
+        }
+    }
+
+    #[test]
+    fn modern_json_edit_scriptlets_include_their_shared_dependencies() {
+        let engine = build_engine(vec![list("m.youtube.com##+js(json-edit-fetch-response, ..itemSectionRenderer.contents.*[?.adSlotRenderer], propsToMatch, /get_watch)")]);
+        let result = cosmetic_response(&engine, "https://m.youtube.com/");
+        let script = result.injected_script.unwrap();
+        assert!(script.contains("function jsonEditFetchResponse("));
+        assert!(script.contains("class JSONPath"));
+        assert!(script.contains("function safeSelf("));
+        assert!(script.contains("jsonEditFetchResponse(\"..itemSectionRenderer.contents.*[?.adSlotRenderer]\", \"propsToMatch\", \"/get_watch\")"));
+    }
+
+    #[test]
+    fn trusted_scriptlets_require_trusted_list_permissions() {
+        let rules =
+            "example.com##+js(trusted-replace-fetch-response, adPlacements, no_ads, player?)";
+        let engine = build_engine(vec![list(rules)]);
+        assert!(cosmetic_response(&engine, "https://example.com/")
+            .injected_script
+            .is_none());
+        let mut trusted = list(rules);
+        trusted.trusted = true;
+        let engine = build_engine(vec![trusted]);
+        assert!(cosmetic_response(&engine, "https://example.com/")
+            .injected_script
+            .is_some());
+    }
+
+    #[test]
+    fn scriptlets_receive_more_than_nine_arguments_and_no_literal_placeholders() {
+        let engine = build_engine(vec![list("example.com##+js(json-prune-fetch-response, ads, , propsToMatch, player, log, 1, stackToMatch, test, extra, tenth, eleventh)")]);
+        let script = cosmetic_response(&engine, "https://example.com/")
+            .injected_script
+            .unwrap();
+        assert!(script.contains("\"tenth\", \"eleventh\")"));
+        assert!(!script.contains("{{1}}"));
+    }
+
     fn requester() -> AdblockRequester {
         AdblockRequester::new(BlockingDisabledStore(Arc::new(RwLock::new(false))))
     }
@@ -291,7 +419,7 @@ mod tests {
     async fn replace_engine_applies_network_filters() {
         let requester = requester();
         requester
-            .replace_engine(vec![String::from("||ads.example.com^")])
+            .replace_engine(vec![list("||ads.example.com^")])
             .await;
 
         let (blocked, result) = requester.is_network_url_blocked(
@@ -316,7 +444,7 @@ mod tests {
     async fn disabling_blocking_bypasses_matching() {
         let requester = requester();
         requester
-            .replace_engine(vec![String::from("||ads.example.com^")])
+            .replace_engine(vec![list("||ads.example.com^")])
             .await;
         requester.blocking_disabled.set(false);
 
@@ -338,9 +466,7 @@ mod tests {
     async fn cosmetic_lookup_splits_url_scoped_and_generic_selectors() {
         let requester = requester();
         requester
-            .replace_engine(vec![String::from(
-                "example.com###site-ad\n##.generic-ad-class",
-            )])
+            .replace_engine(vec![list("example.com###site-ad\n##.generic-ad-class")])
             .await;
 
         // The URL-scoped lookup carries the specific selector but not the

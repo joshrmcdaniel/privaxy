@@ -6,6 +6,10 @@ use std::path::{Path, PathBuf};
 use tokio::fs;
 use url::Url;
 
+use crate::filter_list::{is_trusted_source, preprocess, FilterList};
+
+mod download;
+
 use serde_with::{serde_as, DisplayFromStr};
 pub(crate) const FILTERS_DIRECTORY_NAME: &str = "filters";
 
@@ -121,13 +125,13 @@ impl DefaultFilters {
 
     fn get_default_filters() -> Vec<DefaultFilter> {
         vec![
-            ("https://raw.githubusercontent.com/uBlockOrigin/uAssets/master/filters/filters.txt", "uBlock filters", FilterGroup::Default, true),
+            ("https://raw.githubusercontent.com/uBlockOrigin/uAssetsCDN/main/filters/filters.min.txt", "uBlock Origin filters - Ads", FilterGroup::Default, true),
             ("https://raw.githubusercontent.com/uBlockOrigin/uAssets/master/filters/filters-mobile.txt", "uBlock mobile filters", FilterGroup::Default, true),
-            ("https://raw.githubusercontent.com/uBlockOrigin/uAssets/master/filters/badware.txt", "uBlock filters - Badware risks", FilterGroup::Default, true),
-            ("https://raw.githubusercontent.com/uBlockOrigin/uAssets/master/filters/privacy.txt", "uBlock filters - Privacy", FilterGroup::Default, true),
+            ("https://raw.githubusercontent.com/uBlockOrigin/uAssetsCDN/main/filters/badware.min.txt", "uBlock Origin filters - Badware risks", FilterGroup::Default, true),
+            ("https://raw.githubusercontent.com/uBlockOrigin/uAssetsCDN/main/filters/privacy.min.txt", "uBlock Origin filters - Privacy", FilterGroup::Default, true),
             ("https://raw.githubusercontent.com/uBlockOrigin/uAssets/master/filters/resource-abuse.txt", "uBlock filters - Resource abuse", FilterGroup::Default, true),
-            ("https://raw.githubusercontent.com/uBlockOrigin/uAssets/master/filters/unbreak.txt", "uBlock filters - Unbreak", FilterGroup::Default, true),
-            ("https://raw.githubusercontent.com/uBlockOrigin/uAssets/master/filters/quick-fixes.txt", "uBlock filters - Quick Fixes", FilterGroup::Default, true),
+            ("https://raw.githubusercontent.com/uBlockOrigin/uAssetsCDN/main/filters/unbreak.min.txt", "uBlock Origin filters - Unbreak", FilterGroup::Default, true),
+            ("https://raw.githubusercontent.com/uBlockOrigin/uAssetsCDN/main/filters/quick-fixes.min.txt", "uBlock Origin filters - Quick fixes", FilterGroup::Default, true),
         ]
         .into_iter()
         .filter_map(|(url, title, group, enabled_by_default)| Self::parse_filter(url, title, group, enabled_by_default))
@@ -257,6 +261,58 @@ pub(crate) fn calculate_sha256_hex(input: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(input);
     hex::encode(hasher.finalize())
+}
+
+/// Upgrade only the five known source subscriptions. Existing CDN entries take
+/// precedence, including their enabled state; unrelated lists are untouched.
+/// A new filename forces a download of the complete bundle instead of reusing
+/// the old source fragment. Old cache files remain available for rollback.
+pub(crate) fn migrate_ublock_sources(filters: &mut Vec<Filter>) -> bool {
+    let mut changed = false;
+    let defaults = DefaultFilters::new();
+    for name in ["filters", "badware", "privacy", "quick-fixes", "unbreak"] {
+        let legacy = format!(
+            "https://raw.githubusercontent.com/uBlockOrigin/uAssets/master/filters/{name}.txt"
+        );
+        let legacy_ref = format!("https://raw.githubusercontent.com/uBlockOrigin/uAssets/refs/heads/master/filters/{name}.txt");
+        let canonical = format!(
+            "https://raw.githubusercontent.com/uBlockOrigin/uAssetsCDN/main/filters/{name}.min.txt"
+        );
+        let is_legacy =
+            |filter: &Filter| filter.url.as_str() == legacy || filter.url.as_str() == legacy_ref;
+        if !filters.iter().any(is_legacy) {
+            continue;
+        }
+        if filters
+            .iter()
+            .any(|filter| filter.url.as_str() == canonical)
+        {
+            filters.retain(|filter| !is_legacy(filter));
+        } else {
+            let replacement = defaults
+                .0
+                .iter()
+                .find(|filter| filter.url.as_str() == canonical)
+                .unwrap();
+            // Both spellings may be present. Keep the first entry's settings.
+            let mut migrated = false;
+            filters.retain_mut(|filter| {
+                if !is_legacy(filter) {
+                    return true;
+                }
+                if migrated {
+                    return false;
+                }
+                filter.url = replacement.url.clone();
+                filter.file_name = replacement.file_name.clone();
+                filter.title = replacement.title.clone();
+                migrated = true;
+                true
+            });
+        }
+        changed = true;
+    }
+    changed
 }
 
 pub(crate) fn calc_filter_filename(filename: &str) -> String {
@@ -460,6 +516,9 @@ fn validate_filter_content_type(
 
 /// Verifies at least one rule is present.
 fn validate_filter_rules(filter: &Filter, contents: &str) -> super::ConfigurationResult<()> {
+    preprocess(contents).map_err(|error| {
+        super::ConfigurationError::FilterValidationError(format!("{}: {error}", filter.title))
+    })?;
     // Validation also runs on cache hits. Stop at the first usable rule rather
     // than parsing every list twice before building the blocking engine.
     let has_rule = contents.lines().any(|line| {
@@ -479,24 +538,7 @@ pub(crate) async fn get_filter(
     filter: &mut Filter,
     http_client: &reqwest::Client,
 ) -> super::ConfigurationResult<String> {
-    let response = http_client.get(filter.url.as_str()).send().await?;
-    if response.status().is_success() {
-        validate_filter_content_type(filter, &response)?;
-        let content = response.text().await?;
-        validate_filter_rules(filter, &content)?;
-        Ok(content)
-    } else {
-        log::error!(
-            "Failed to fetch filter content for {}: {}",
-            filter.title,
-            response.status()
-        );
-        Err(super::ConfigurationError::FilterError(format!(
-            "Failed to fetch filter content for {}: {}",
-            filter.title,
-            response.status()
-        )))
-    }
+    download::get_filter(filter, http_client).await
 }
 
 fn get_filter_directory() -> PathBuf {
@@ -512,7 +554,7 @@ pub(crate) async fn get_filters_content(
     configuration: &mut super::Configuration,
     http_client: &reqwest::Client,
     filter_failure_store: &super::FilterFailureStore,
-) -> Vec<String> {
+) -> Vec<FilterList> {
     let mut filters = Vec::new();
     let enabled_count = configuration
         .filters
@@ -538,7 +580,11 @@ pub(crate) async fn get_filters_content(
                     filter.title,
                     filter_content.len()
                 );
-                filters.push(filter_content);
+                filters.push(FilterList {
+                    name: filter.title.clone(),
+                    contents: filter_content,
+                    trusted: is_trusted_source(&filter.url),
+                });
             }
             // A fetch failure here includes a filter whose URL has stopped serving a
             // `text/plain` list (see `validate_filter_content_type`); we record it for the
@@ -561,10 +607,15 @@ pub(crate) async fn get_filters_content(
         log::error!("No enabled filter lists could be loaded; only custom rules are available");
     }
 
-    filters.extend(configuration.custom_filters.iter().cloned());
-    filters.sort_unstable();
-    // Filter out duplicate lines, if present
-    filters.dedup();
+    // Custom rules are explicitly supplied by the operator. Keep their order
+    // and scope together so conditional blocks can span multiple lines.
+    if !configuration.custom_filters.is_empty() {
+        filters.push(FilterList {
+            name: "Custom filters".to_owned(),
+            contents: configuration.custom_filters.join("\n"),
+            trusted: true,
+        });
+    }
     filters
 }
 
@@ -572,10 +623,91 @@ pub(crate) async fn get_filters_content(
 mod tests {
     use super::*;
 
-    struct TestCache(PathBuf);
+    pub(super) fn test_client() -> reqwest::Client {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        reqwest::Client::builder().no_proxy().build().unwrap()
+    }
+
+    pub(super) fn subscription(url: &str, enabled: bool) -> Filter {
+        Filter {
+            enabled,
+            title: "Existing subscription".to_owned(),
+            group: FilterGroup::Default,
+            file_name: calc_filter_filename(url),
+            url: Url::parse(url).unwrap(),
+        }
+    }
+
+    #[test]
+    fn source_migration_preserves_settings_and_uses_new_cache_names() {
+        let mut filters: Vec<_> = ["filters", "badware", "privacy", "quick-fixes", "unbreak"]
+            .iter().enumerate().map(|(index, name)| subscription(
+                &format!("https://raw.githubusercontent.com/uBlockOrigin/uAssets/master/filters/{name}.txt"),
+                index % 2 == 0,
+            )).collect();
+        let unchanged = subscription("https://example.test/custom.txt", false);
+        let mobile = subscription("https://raw.githubusercontent.com/uBlockOrigin/uAssets/master/filters/filters-mobile.txt", false);
+        filters.extend([unchanged.clone(), mobile.clone()]);
+        let old = filters.clone();
+        assert!(migrate_ublock_sources(&mut filters));
+        assert_eq!(filters.len(), old.len());
+        for (before, after) in old[..5].iter().zip(&filters[..5]) {
+            assert_eq!(before.enabled, after.enabled);
+            assert_eq!(before.group, after.group);
+            assert_ne!(before.file_name, after.file_name);
+            assert_eq!(after.file_name, calc_filter_filename(after.url.as_str()));
+            assert!(DefaultFilters::new()
+                .file_names()
+                .contains(&after.file_name));
+        }
+        assert_eq!(filters[5..], [unchanged, mobile]);
+        let migrated = filters.clone();
+        assert!(!migrate_ublock_sources(&mut filters));
+        assert_eq!(filters, migrated);
+    }
+
+    #[test]
+    fn existing_cdn_subscription_wins_over_legacy_duplicates() {
+        let cdn = "https://raw.githubusercontent.com/uBlockOrigin/uAssetsCDN/main/filters/filters.min.txt";
+        for enabled in [true, false] {
+            let mut canonical = subscription(cdn, enabled);
+            canonical.title = "My CDN subscription".to_owned();
+            let mut filters = vec![
+                subscription("https://raw.githubusercontent.com/uBlockOrigin/uAssets/master/filters/filters.txt", !enabled),
+                canonical.clone(),
+                subscription("https://raw.githubusercontent.com/uBlockOrigin/uAssets/refs/heads/master/filters/filters.txt", !enabled),
+            ];
+            assert!(migrate_ublock_sources(&mut filters));
+            assert_eq!(filters, [canonical]);
+        }
+    }
+
+    #[test]
+    fn migration_recognizes_explicit_branch_refs_without_adding_absent_lists() {
+        let mut filters = vec![subscription("https://raw.githubusercontent.com/uBlockOrigin/uAssets/refs/heads/master/filters/privacy.txt", false)];
+        assert!(migrate_ublock_sources(&mut filters));
+        assert_eq!(filters.len(), 1);
+        assert!(!filters[0].enabled);
+        assert!(filters[0]
+            .url
+            .as_str()
+            .ends_with("uAssetsCDN/main/filters/privacy.min.txt"));
+        let mut empty = Vec::new();
+        assert!(!migrate_ublock_sources(&mut empty));
+        assert!(empty.is_empty());
+    }
+
+    #[test]
+    fn malformed_conditional_lists_are_not_accepted_into_the_cache() {
+        let filter = cached_filter();
+        assert!(validate_filter_rules(&filter, "!#if false\n||ads.example.com^").is_err());
+        assert!(validate_filter_rules(&filter, "!#if false\n||ads.example.com^\n!#endif").is_ok());
+    }
+
+    pub(super) struct TestCache(pub(super) PathBuf);
 
     impl TestCache {
-        fn new() -> Self {
+        pub(super) fn new() -> Self {
             let directory = std::env::temp_dir().join(format!(
                 "privaxy-filter-cache-{}",
                 super::super::generate_random_hex(8)
@@ -612,7 +744,7 @@ mod tests {
         let alternate = path.with_extension("");
         let rules = "||ads.example.com^\nexample.com##.banner\n";
         fs::write(&alternate, rules).await.unwrap();
-        let client = reqwest::Client::new();
+        let client = test_client();
 
         for invalid in [
             None,
@@ -646,7 +778,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             filter
-                .get_contents_in_directory(&reqwest::Client::new(), &cache.0)
+                .get_contents_in_directory(&test_client(), &cache.0)
                 .await
                 .unwrap(),
             rules
@@ -663,7 +795,7 @@ mod tests {
             .await
             .unwrap();
         let error = filter
-            .get_contents_in_directory(&reqwest::Client::new(), &cache.0)
+            .get_contents_in_directory(&test_client(), &cache.0)
             .await
             .unwrap_err();
         assert!(matches!(
