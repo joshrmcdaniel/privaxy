@@ -12,7 +12,7 @@ use std::{
     sync::{mpsc, Arc, Mutex, RwLock},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
-use tokio::sync::oneshot;
+use tokio::sync::{oneshot, watch};
 
 const REQUESTS: TableDefinition<u64, &[u8]> = TableDefinition::new("requests_v1");
 const MODIFIED: TableDefinition<u64, u64> = TableDefinition::new("modified_hours_v1");
@@ -60,7 +60,7 @@ pub struct Counts {
     pub modified_responses: u64,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct HistoryQuery {
     pub hours: Option<u16>,
@@ -109,10 +109,11 @@ enum Event {
 enum Command {
     Event(u64, Event),
     Configure(StatisticsConfig, u64, oneshot::Sender<Result<(), String>>),
-    Query(
-        HistoryQuery,
-        oneshot::Sender<Result<HistorySnapshot, String>>,
-    ),
+    Query {
+        query: HistoryQuery,
+        flush: bool,
+        reply: oneshot::Sender<Result<HistorySnapshot, String>>,
+    },
     Clear(u64, oneshot::Sender<Result<(), String>>),
     Shutdown(oneshot::Sender<Result<(), String>>),
 }
@@ -124,11 +125,13 @@ pub struct HistoryStore {
     status: Arc<Mutex<HistoryStatus>>,
     dropped: Arc<AtomicU64>,
     operations: Arc<tokio::sync::Mutex<()>>,
+    updates: watch::Receiver<()>,
 }
 
 impl HistoryStore {
     pub async fn start(path: PathBuf, config: StatisticsConfig) -> Self {
         let (sender, receiver) = mpsc::sync_channel(QUEUE_CAPACITY);
+        let (updates, subscriber) = watch::channel(());
         let status = Arc::new(Mutex::new(HistoryStatus::default()));
         let dropped = Arc::new(AtomicU64::new(0));
         let store = Self {
@@ -137,6 +140,7 @@ impl HistoryStore {
             status: status.clone(),
             dropped: dropped.clone(),
             operations: Arc::new(tokio::sync::Mutex::new(())),
+            updates: subscriber,
         };
         let worker = Worker {
             path,
@@ -150,6 +154,7 @@ impl HistoryStore {
             last_flush: Instant::now(),
             last_compaction: Instant::now(),
             last_prune: Instant::now() - Duration::from_secs(60),
+            updates,
         };
         match std::thread::Builder::new()
             .name("statistics".into())
@@ -280,9 +285,33 @@ impl HistoryStore {
     }
 
     pub async fn query(&self, query: HistoryQuery) -> Result<HistorySnapshot, String> {
+        self.read(query, true).await
+    }
+
+    /// Live subscribers read committed batches without forcing extra disk writes.
+    pub(crate) async fn query_committed(
+        &self,
+        query: HistoryQuery,
+    ) -> Result<HistorySnapshot, String> {
+        self.read(query, false).await
+    }
+
+    pub(crate) fn subscribe(&self) -> watch::Receiver<()> {
+        self.updates.clone()
+    }
+
+    async fn read(&self, query: HistoryQuery, flush: bool) -> Result<HistorySnapshot, String> {
         query.validate()?;
         let (tx, rx) = oneshot::channel();
-        self.send(Command::Query(query, tx), rx).await
+        self.send(
+            Command::Query {
+                query,
+                flush,
+                reply: tx,
+            },
+            rx,
+        )
+        .await
     }
 
     pub async fn clear(&self) -> Result<(), String> {
@@ -319,6 +348,7 @@ struct Worker {
     last_flush: Instant,
     last_compaction: Instant,
     last_prune: Instant,
+    updates: watch::Sender<()>,
 }
 
 impl Worker {
@@ -340,11 +370,15 @@ impl Worker {
                         .configure(config, generation)
                         .map_err(|e| e.to_string());
                     self.report(&result);
+                    self.updates.send_replace(());
                     let _ = reply.send(result);
                 }
-                Ok(Command::Query(query, reply)) => {
-                    let result = self
-                        .flush()
+                Ok(Command::Query {
+                    query,
+                    flush,
+                    reply,
+                }) => {
+                    let result = (if flush { self.flush() } else { Ok(()) })
                         .and_then(|()| self.query(query))
                         .map_err(|e| e.to_string());
                     if let Err(ref error) = result {
@@ -358,6 +392,7 @@ impl Worker {
                     self.database = None;
                     let result = self.clear().map_err(|e| e.to_string());
                     self.report(&result);
+                    self.updates.send_replace(());
                     let _ = reply.send(result);
                 }
                 Ok(Command::Shutdown(reply)) => {
@@ -385,6 +420,7 @@ impl Worker {
 
     fn fail(&mut self, error: String) {
         let mut status = self.status.lock().unwrap();
+        let changed = status.active || status.error.as_ref() != Some(&error);
         if status.error.as_ref() != Some(&error) {
             log::error!("Persistent statistics paused: {error}");
         }
@@ -393,6 +429,9 @@ impl Worker {
         self.dropped
             .fetch_add(self.pending.len() as u64, Ordering::Relaxed);
         self.pending.clear();
+        if changed {
+            self.updates.send_replace(());
+        }
     }
 
     fn report(&mut self, result: &Result<(), String>) {
@@ -571,6 +610,7 @@ impl Worker {
         let mut status = self.status.lock().unwrap();
         status.stored_requests = stored;
         status.database_bytes = std::fs::metadata(&self.path)?.len();
+        self.updates.send_replace(());
         Ok(())
     }
 

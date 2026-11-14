@@ -36,6 +36,82 @@ async fn snapshot(store: &HistoryStore) -> HistorySnapshot {
 }
 
 #[tokio::test]
+async fn live_subscribers_receive_committed_batches_without_polling() {
+    let fixture = Fixture::new();
+    let store = HistoryStore::start(fixture.database(), enabled(StatisticsPrivacy::Full)).await;
+    let mut updates = store.subscribe();
+    updates.borrow_and_update();
+    store.request(Some("allowed.example.test"), client(), false);
+    store.request(Some("blocked.example.test"), client(), true);
+    store.modified();
+
+    // No query is used to force a flush: the normal batching timer wakes viewers.
+    tokio::time::timeout(Duration::from_secs(10), updates.changed())
+        .await
+        .unwrap()
+        .unwrap();
+    let data = store
+        .query_committed(HistoryQuery::default())
+        .await
+        .unwrap();
+    assert_eq!(data.totals.proxied_requests, 1);
+    assert_eq!(data.totals.blocked_requests, 1);
+    assert_eq!(data.totals.modified_responses, 1);
+    assert_eq!(data.requests.len(), 2);
+    // Reading a snapshot must not trigger another update loop.
+    assert!(!updates.has_changed().unwrap());
+    store.shutdown().await.unwrap();
+    assert!(updates.changed().await.is_err());
+}
+
+#[tokio::test]
+async fn live_subscribers_see_privacy_changes_clears_and_disabled_history() {
+    let fixture = Fixture::new();
+    let store = HistoryStore::start(fixture.database(), enabled(StatisticsPrivacy::Full)).await;
+    store.request(Some("private.example.test"), client(), true);
+    snapshot(&store).await;
+    let mut updates = store.subscribe();
+    updates.borrow_and_update();
+
+    store
+        .configure(enabled(StatisticsPrivacy::HideDomainsAndClients))
+        .await
+        .unwrap();
+    assert!(updates.has_changed().unwrap());
+    updates.borrow_and_update();
+    let data = store
+        .query_committed(HistoryQuery::default())
+        .await
+        .unwrap();
+    assert!(data.requests[0].domain.is_none());
+    assert!(data.requests[0].client.is_none());
+    assert!(data.top_domains.is_empty());
+    assert!(data.top_clients.is_empty());
+
+    store.clear().await.unwrap();
+    assert!(updates.has_changed().unwrap());
+    updates.borrow_and_update();
+    let data = store
+        .query_committed(HistoryQuery::default())
+        .await
+        .unwrap();
+    assert_eq!(data.totals.blocked_requests, 0);
+    assert!(data.requests.is_empty());
+
+    store.configure(StatisticsConfig::default()).await.unwrap();
+    assert!(updates.has_changed().unwrap());
+    assert!(
+        !store
+            .query_committed(HistoryQuery::default())
+            .await
+            .unwrap()
+            .status
+            .active
+    );
+    store.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn disabled_and_anonymous_do_not_create_databases_or_retroactively_collect() {
     for config in [
         StatisticsConfig::default(),
@@ -340,6 +416,7 @@ fn a_full_queue_drops_events_without_blocking_requests() {
         status: Arc::new(Mutex::new(HistoryStatus::default())),
         dropped: Arc::new(AtomicU64::new(0)),
         operations: Arc::new(tokio::sync::Mutex::new(())),
+        updates: watch::channel(()).1,
     };
     store.request(Some("private.example.test"), client(), true);
     store.request(Some("private.example.test"), client(), true);
@@ -401,6 +478,7 @@ fn disk_full_pauses_recording_and_preserves_committed_history() {
         last_flush: Instant::now(),
         last_compaction: Instant::now(),
         last_prune: Instant::now(),
+        updates: watch::channel(()).0,
     };
     worker.open().unwrap();
     let event = || {

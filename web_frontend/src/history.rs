@@ -1,11 +1,10 @@
 use crate::button::{get_css, ButtonColor};
 use crate::dashboard::DashboardHeader;
-use crate::{api, statistics_settings::HistoryStatus};
-use gloo_timers::callback::Interval;
+use crate::{live_stream, statistics_settings::HistoryStatus};
+use futures::future::AbortHandle;
 use num_format::{Locale, ToFormattedString};
 use serde::Deserialize;
 use std::collections::BTreeMap;
-use wasm_bindgen_futures::spawn_local;
 use web_sys::HtmlSelectElement;
 use yew::prelude::*;
 
@@ -37,10 +36,17 @@ pub struct Snapshot {
     next_before: Option<u64>,
 }
 
+#[derive(Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum HistoryUpdate {
+    Snapshot { snapshot: Snapshot },
+    Error { error: String },
+}
+
 pub enum Message {
     Load,
-    Poll,
     Loaded(u64, Result<Snapshot, String>),
+    Connection(u64, bool),
     Hours(String),
     Filter(String),
     Older,
@@ -55,7 +61,8 @@ pub struct HistoryPage {
     loading: bool,
     error: Option<String>,
     generation: u64,
-    _interval: Interval,
+    stream: Option<AbortHandle>,
+    connected: bool,
 }
 
 impl Component for HistoryPage {
@@ -63,7 +70,6 @@ impl Component for HistoryPage {
     type Properties = ();
     fn create(ctx: &Context<Self>) -> Self {
         ctx.link().send_message(Message::Load);
-        let link = ctx.link().clone();
         Self {
             snapshot: None,
             hours: 24,
@@ -72,15 +78,21 @@ impl Component for HistoryPage {
             loading: false,
             error: None,
             generation: 0,
-            _interval: Interval::new(30_000, move || link.send_message(Message::Poll)),
+            stream: None,
+            connected: false,
         }
     }
 
     fn update(&mut self, ctx: &Context<Self>, message: Message) -> bool {
         match message {
-            Message::Poll if self.loading || self.before.is_some() => return false,
-            Message::Load | Message::Poll => {
+            Message::Load => {
                 self.load(ctx);
+            }
+            Message::Connection(generation, connected) => {
+                if generation != self.generation || self.connected == connected {
+                    return false;
+                }
+                self.connected = connected;
             }
             Message::Loaded(generation, result) => {
                 if generation != self.generation {
@@ -121,6 +133,12 @@ impl Component for HistoryPage {
         true
     }
 
+    fn destroy(&mut self, _ctx: &Context<Self>) {
+        if let Some(stream) = self.stream.take() {
+            stream.abort();
+        }
+    }
+
     fn view(&self, ctx: &Context<Self>) -> Html {
         let on_hours = ctx.link().callback(|e: Event| {
             Message::Hours(e.target_unchecked_into::<HtmlSelectElement>().value())
@@ -129,16 +147,18 @@ impl Component for HistoryPage {
             Message::Filter(e.target_unchecked_into::<HtmlSelectElement>().value())
         });
         html! { <>
-            <DashboardHeader />
+            <DashboardHeader connected={self.connected} />
             <div class="mt-5 flex flex-wrap items-center gap-3">
                 <label for="history-range" class="text-sm text-gray-600">{"Time range"}</label>
                 <select id="history-range" class="rounded-md border-gray-300 text-sm" onchange={on_hours}>
                     {for [(24, "Last 24 hours"), (168, "Last 7 days"), (720, "Last 30 days"), (8760, "All retained history")].into_iter().map(|(hours, label)| html!{<option value={hours.to_string()} selected={self.hours == hours}>{label}</option>})}
                 </select>
-                <button type="button" disabled={self.loading} onclick={ctx.link().callback(|_| Message::Load)} class={classes!(get_css(ButtonColor::Gray), "disabled:opacity-50", "disabled:cursor-not-allowed")}>{"Refresh"}</button>
                 <a href="/settings/statistics" class={get_css(ButtonColor::Blue)}>{"Statistics settings"}</a>
             </div>
-            <p class="mt-3 text-sm text-gray-600">{"Saved statistics survive restarts. Totals and top lists cover retained requests in this window; the request filter and pagination only affect the log. Times are UTC. The latest page refreshes every 30 seconds."}</p>
+            <p class="mt-3 text-sm text-gray-600">{"Saved statistics survive restarts. Totals and top lists cover retained requests in this window; the request filter and pagination only affect the log. Times are UTC. Updates appear automatically as requests are saved."}</p>
+            if !self.connected {
+                <p role="status" class="mt-3 text-sm text-gray-600">{"Connecting to live statistics… Retrying automatically. Displayed data may be out of date."}</p>
+            }
             if let Some(error) = &self.error { <p role="alert" class="mt-4 text-red-700 text-sm">{format!("Could not load or save history: {error}")}</p> }
             if self.loading { <p role="status" class="mt-3 text-sm text-gray-500">{"Loading history…"}</p> }
             if let Some(snapshot) = &self.snapshot {
@@ -169,6 +189,9 @@ impl Component for HistoryPage {
                                 <option value="false" selected={self.filter == "false"}>{"Proxied only"}</option>
                             </select>
                         </div>
+                        if self.before.is_some() {
+                            <p class="mb-3 text-sm text-gray-500">{"Viewing older requests. Totals and charts continue updating; select Newest requests to follow new activity."}</p>
+                        }
                         if snapshot.requests.is_empty() { <p class="py-4 text-sm text-gray-500">{"No saved requests in this window."}</p> }
                         <div class="overflow-x-auto">
                             <table class="w-full text-sm text-left" style="min-width: 640px">
@@ -196,21 +219,35 @@ impl Component for HistoryPage {
 
 impl HistoryPage {
     fn load(&mut self, ctx: &Context<Self>) {
+        if let Some(stream) = self.stream.take() {
+            stream.abort();
+        }
         self.loading = true;
+        self.connected = false;
         self.error = None;
         self.generation += 1;
         let generation = self.generation;
-        let mut url = format!("/api/history?hours={}&limit=50", self.hours);
+        let mut url = format!("/api/history/live?hours={}&limit=50", self.hours);
         if let Some(before) = self.before {
             url.push_str(&format!("&before={before}"));
         }
         if !self.filter.is_empty() {
             url.push_str(&format!("&blocked={}", self.filter));
         }
-        let link = ctx.link().clone();
-        spawn_local(async move {
-            link.send_message(Message::Loaded(generation, api::get_json(&url).await));
-        });
+        self.stream = Some(live_stream::subscribe(
+            url,
+            ctx.link().callback(move |update| {
+                Message::Loaded(
+                    generation,
+                    match update {
+                        HistoryUpdate::Snapshot { snapshot } => Ok(snapshot),
+                        HistoryUpdate::Error { error } => Err(error),
+                    },
+                )
+            }),
+            ctx.link()
+                .callback(move |connected| Message::Connection(generation, connected)),
+        ));
     }
 
     fn chart(&self, snapshot: &Snapshot) -> Html {
