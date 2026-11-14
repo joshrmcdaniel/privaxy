@@ -43,13 +43,13 @@ pub struct Snapshot {
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum HistoryUpdate {
-    Snapshot { snapshot: Snapshot },
+    Snapshot { snapshot: Box<Snapshot> },
     Error { error: String },
 }
 
 pub enum Message {
     Load,
-    Loaded(u64, Result<Snapshot, String>),
+    Loaded(u64, Result<Box<Snapshot>, String>),
     Connection(u64, bool),
     Hours(String),
     Filter(String),
@@ -58,7 +58,7 @@ pub enum Message {
 }
 
 pub struct HistoryPage {
-    snapshot: Option<Snapshot>,
+    snapshot: Option<Box<Snapshot>>,
     hours: u16,
     filter: String,
     before: Option<u64>,
