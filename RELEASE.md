@@ -1,75 +1,73 @@
-# Privaxy v0.8.0
+# v0.8.1
 
-Privaxy v0.8.0 adds userscripts, filtering for selected hosts, and broader HTTP
-CONNECT support. It also improves streaming performance, filter-list recovery,
-and the tools for diagnosing sites that break under interception.
+Privaxy v0.8.1 improves uBlock Origin filter-list compatibility, adds optional
+persistent statistics, and fixes HTTP/2 failures and page-loading delays.
 
 ## Highlights
 
-- **Userscripts managed from the web UI.** Install by URL or paste, edit source,
-  enable or disable individual scripts, and check for updates. Supports common
-  Greasemonkey/Tampermonkey metadata and APIs, persistent storage, resources,
-  menu commands, and server-side requests controlled by each script's
-  `@connect` rules. URL-installed scripts also check for updates automatically.
-- **Filter only selected hosts.** Inclusion mode intercepts the hosts you
-  select and tunnels everything else. Exclusions always take precedence, and
-  an empty inclusion list bypasses all hosts. The same policy applies to
-  HTTP, HTTPS, and PAC files; existing configurations keep their previous mode.
-- **HTTP CONNECT and incoming proxy chaining.** Compatible HTTP proxies and
-  adapters can send both plain HTTP and HTTPS through CONNECT to Privaxy,
-  including on nonstandard ports. Traffic uses the existing filtering,
-  injection, and inclusion/exclusion policies. The README includes tun2proxy
-  as one example, with routing configured by the user.
-- **Better filter-list management.** Refresh all enabled lists on demand, see
-  download failures and their causes, and edit or remove user-added lists.
-  Empty or invalid caches are recovered or downloaded again, and atomic
-  replacement prevents failed writes from truncating a working list.
-- **Easier interception troubleshooting.** Proxy error pages link to an
-  exclusion confirmation page. The UI also lists recent TLS interception
-  failures, with actions to exclude or ignore a host. A configurable GUI URL
-  keeps these links usable behind reverse proxies and Docker NAT.
+- **Updated uBlock Origin filtering.** Use the combined official CDN lists for
+  Ads, Badware risks, Privacy, Quick fixes, and Unbreak. Bundled scriptlets are
+  updated to uBO 1.76.2, including newer JSON-edit and video-response hooks,
+  shared helpers, and trusted-scriptlet permissions.
+- **Conditional rules and sub-lists.** Evaluate nested filter-list conditions
+  and download active relative `!#include` files. This fixes updates for EasyList
+  Cookie and Fanboy's Annoyance and loads their uBO-specific rules. Failed
+  sub-list downloads preserve the previous complete cache. Logs now show how
+  many rules loaded and why individual rules were rejected.
+- **Persistent statistics on the Dashboard.** Optional history provides time
+  ranges, trends, top domains and clients, and paginated requests. Settings
+  control privacy, retention, storage limits, exclusions, and clearing history.
+  With persistence off or Anonymous mode selected, the Dashboard retains its
+  original live layout. Old `/history` bookmarks redirect to the Dashboard.
+  Request history shows paths separately from domains, truncating long values
+  with the full path available on hover. Paths are stored without the first `/`,
+  which is restored in the UI. Domains, endpoints, and clients are stored once
+  and shared across request records to reduce repeated data. Assign friendly
+  client names or exclude client IPs from statistics and the live Requests log
+  in Statistics settings; excluded clients still receive normal filtering.
+- **More reliable live views and settings.** Dashboard statistics, Requests,
+  and logs show connection status and reconnect automatically. Settings retain
+  unsaved edits after errors, report save results accurately, and fit smaller
+  screens more comfortably.
+- **Version and update status.** The footer links the running Privaxy version
+  to the project and automatically shows an update link when a newer stable
+  release is detected.
 
 ## Reliability and performance
 
-- HTML responses stream as they are rewritten, allowing browsers to start
-  rendering before the complete document arrives. Bounded buffering limits
-  memory use when downstream clients are slow.
-- Larger WebSocket buffers, a shared adblock engine, and fewer repeated
-  cosmetic lookups reduce overhead. Filter updates replace the engine without
-  pausing requests for the full rebuild.
-- The proxy waits for initial filter loading before accepting traffic. The
-  web UI remains available during loading and reports list failures.
-- Invalid configuration edits retain the last working configuration. Reloads
-  no longer race for the web UI listener, and bind failures retry.
-- Fixes cover filtering on upgraded requests, WebSocket/MMTLS handling,
-  truncated upstream responses, replacement-resource decoding, IPv6
-  certificates, and CSP compatibility for injected content.
-- PAC files are also served at `/wpad.dat`, and CIDR bypass rules now render
-  valid subnet masks.
-- The HTTP/TLS stack and frontend dependencies have been updated. Docker
-  examples include log rotation to limit disk usage.
+- Larger HTTP/2 header limits fix 502 protocol errors on responses with large
+  CSP or Set-Cookie headers. Intercepted TLS connections advertise HTTP/2 so
+  browsers can multiplex requests; adaptive flow control and TCP_NODELAY reduce
+  delays. Known-empty requests can recover from retryable HTTP/2 failures.
+- IP-address CONNECT requests use TLS ClientHello SNI for certificates,
+  hostname policy, and upstream TLS verification while retaining the original
+  destination IP. Protocol detection and TLS handshakes have bounded timeouts.
+  CONNECT traffic to port 853 tunnels DNS-over-TLS without interception.
+- Proxy error pages and logs include underlying DNS, TLS, socket, and HTTP/2
+  failure causes. HTML modification counts no longer double-count a response
+  that receives both scripts and cosmetic styles.
+- CI validates release tags against the package version, avoids stale package
+  assets, improves build caches, and keeps pull-request Docker checks separate
+  from image publishing.
 
 ## Upgrading and compatibility
 
-- Existing configuration files remain supported. For v0.7.1 configurations,
-  inclusion mode defaults off and no userscripts are installed automatically.
-- If upgrading from a development build with userscripts, **reload open pages**
-  after upgrading. Userscript endpoints now use tokens bound to each script
-  and matched page; disabling a script or changing its match rules revokes
-  access.
-- Installed userscripts run on matching pages for every client behind the
-  proxy, in the page's main JavaScript world. This is a subset of browser
-  userscript-manager functionality; see the changelog for supported APIs and
-  known limitations. Requests to private networks remain disabled by default.
-- For incoming proxy chains, preserve destination hostnames in CONNECT so
-  domain filtering and HTTPS certificates work correctly. Clients still need
-  to trust Privaxy's CA. This release does not add configuration for routing
-  Privaxy's outbound traffic through another upstream proxy. TUN setup,
-  routing, and UDP/QUIC handling remain the user's responsibility.
-- To pin this release in Docker, use `ghcr.io/joshrmcdaniel/privaxy:0.8.0`.
-  Existing containers need to be recreated to adopt the log-rotation options
-  shown in the README.
+- Existing configurations remain supported. Persistent statistics stay off
+  until enabled in Settings. Endpoints follow domain privacy settings; query
+  strings, URL credentials, headers, and bodies are never saved in statistics.
+  Existing history migrates to statistics storage version 3 when opened;
+  earlier builds that only support versions 1 or 2 cannot read the upgraded
+  database. Client names stay in configuration when saved history is cleared.
+- Legacy subscriptions for the five updated uBO lists migrate automatically
+  while preserving enabled states. An existing CDN subscription takes
+  precedence over its old source-list duplicate. Refresh enabled lists and
+  reload open pages after upgrading to use the latest rules and scriptlets.
+- Filter syntax and browser integration still differ from the uBO extension.
+  Unsupported-rule warnings describe individual skipped rules, not failed
+  subscription downloads, and this update does not guarantee identical video
+  ad blocking on every site.
+- To pin this release in Docker, use `ghcr.io/joshrmcdaniel/privaxy:0.8.1`.
 
-See the [full changelog](https://github.com/joshrmcdaniel/privaxy/blob/v0.8.0/CHANGELOG.md)
-and [proxy-chaining setup](https://github.com/joshrmcdaniel/privaxy/blob/v0.8.0/README.md#6-http-connect-and-proxy-chaining)
+See the [full changelog](https://github.com/joshrmcdaniel/privaxy/blob/v0.8.1/CHANGELOG.md)
+and [setup documentation](https://github.com/joshrmcdaniel/privaxy/blob/v0.8.1/README.md#setup)
 for details.

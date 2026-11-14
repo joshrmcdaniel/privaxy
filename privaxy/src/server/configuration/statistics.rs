@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::{collections::BTreeMap, net::IpAddr};
 
 /// These levels describe collected data, not just what the UI displays.
 #[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -19,6 +20,8 @@ pub struct StatisticsConfig {
     pub retention_days: u16,
     pub max_entries: u32,
     pub excluded_domains: Vec<String>,
+    pub excluded_clients: Vec<IpAddr>,
+    pub client_names: BTreeMap<IpAddr, String>,
 }
 
 impl Default for StatisticsConfig {
@@ -29,12 +32,29 @@ impl Default for StatisticsConfig {
             retention_days: 7,
             max_entries: 100_000,
             excluded_domains: Vec::new(),
+            excluded_clients: Vec::new(),
+            client_names: BTreeMap::new(),
         }
     }
 }
 
 impl StatisticsConfig {
     pub fn validate(&self) -> Result<(), String> {
+        if self.excluded_clients.len() > 1000 {
+            return Err("Use at most 1,000 client IP exclusions".into());
+        }
+        if self.client_names.len() > 1000
+            || self.client_names.values().any(|name| {
+                name.trim().is_empty()
+                    || name.chars().count() > 64
+                    || name.chars().any(char::is_control)
+            })
+        {
+            return Err(
+                "Use at most 1,000 client names, each 1–64 characters without control characters"
+                    .into(),
+            );
+        }
         if self.excluded_domains.len() > 1000
             || self.excluded_domains.iter().any(|pattern| {
                 let pattern = pattern.trim();

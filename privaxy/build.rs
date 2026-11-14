@@ -132,7 +132,11 @@ fn build_scriptlet_resources(manifest_dir: &Path, out_dir: &Path) {
     let builder = manifest_dir.join("build-scriptlets.mjs");
     let out_path = out_dir.join("scriptlets-resources.json");
 
-    println!("cargo:rerun-if-changed={}", scriptlets_src.display());
+    // The entry point imports the pinned modules and shared parser helpers.
+    println!(
+        "cargo:rerun-if-changed={}",
+        manifest_dir.join("src/resources/vendor/ublock").display()
+    );
     println!("cargo:rerun-if-changed={}", builder.display());
 
     // Allow cross-compile environments without Node (e.g. the cross-rs MIPS
