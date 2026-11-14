@@ -405,7 +405,7 @@ impl UserScriptsPage {
         html! {
             <div class="mb-6 rounded-md bg-amber-50 border border-amber-200 p-4">
                 <div class="flex">
-                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-amber-500 flex-shrink-0"
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-amber-500 shrink-0"
                         fill="none" viewBox="0 0 24 24" stroke="currentColor">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                             d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
@@ -474,7 +474,7 @@ impl UserScriptsPage {
                                     onclick={on_toggle}
                                     disabled={self.submitting}
                                     type="checkbox"
-                                    class="focus:ring-blue-500 h-4 w-4 text-blue-600 border-gray-300 rounded" />
+                                    class="focus:ring-blue-500 h-4 w-4 text-blue-600 border-gray-300 rounded-sm" />
                             </div>
                         </div>
                         <div class="settings-field-help">
@@ -514,7 +514,7 @@ impl UserScriptsPage {
                             onclick={on_toggle}
                             disabled={self.submitting}
                             type="checkbox"
-                            class="focus:ring-blue-500 h-4 w-4 text-blue-600 border-gray-300 rounded" />
+                            class="focus:ring-blue-500 h-4 w-4 text-blue-600 border-gray-300 rounded-sm" />
                     </div>
                 </div>
                 <div class="settings-field-help">
@@ -531,7 +531,7 @@ impl UserScriptsPage {
     fn render_add_button(&self, ctx: &Context<Self>) -> Html {
         html! {
             <button onclick={ctx.link().callback(|_| Message::OpenAdd)} type="button"
-                class="mt-5 inline-flex items-center justify-center focus:ring-green-500 bg-green-600 hover:bg-green-700 px-4 py-2 border transition ease-in-out duration-150 border-transparent text-sm font-medium rounded-md shadow-sm text-white focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-gray-100">
+                class="mt-5 inline-flex items-center justify-center focus:ring-green-500 bg-green-600 hover:bg-green-700 px-4 py-2 border transition ease-in-out duration-150 border-transparent text-sm font-medium rounded-md shadow-xs text-white focus:outline-hidden focus:ring-2 focus:ring-offset-2 focus:ring-offset-gray-100">
                 <svg xmlns="http://www.w3.org/2000/svg" class="-ml-0.5 mr-2 h-5 w-5" fill="none"
                     viewBox="0 0 24 24" stroke="currentColor">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
@@ -546,7 +546,7 @@ impl UserScriptsPage {
             <button onclick={ctx.link().callback(|_| Message::RefreshAll)} type="button"
                 disabled={self.submitting}
                 title="Re-fetch every userscript installed from a URL"
-                class="mt-5 inline-flex items-center justify-center px-4 py-2 border border-gray-300 transition ease-in-out duration-150 text-sm font-medium rounded-md shadow-sm text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50">
+                class="mt-5 inline-flex items-center justify-center px-4 py-2 border border-gray-300 transition ease-in-out duration-150 text-sm font-medium rounded-md shadow-xs text-gray-700 bg-white hover:bg-gray-50 focus:outline-hidden focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50">
                 <svg xmlns="http://www.w3.org/2000/svg" class="-ml-0.5 mr-2 h-5 w-5" fill="none"
                     viewBox="0 0 24 24" stroke="currentColor">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
@@ -685,7 +685,7 @@ impl UserScriptsPage {
                     <input checked={script.enabled} onchange={on_toggle}
                         disabled={self.submitting}
                         name={script.file_name.clone()} type="checkbox"
-                        class="focus:ring-blue-500 h-4 w-4 text-blue-600 border-gray-300 rounded" />
+                        class="focus:ring-blue-500 h-4 w-4 text-blue-600 border-gray-300 rounded-sm" />
                 </div>
             </div>
         }
@@ -713,7 +713,7 @@ impl UserScriptsPage {
                         <div>
                             <label class="font-bold text-sm">{ "Install from URL" }</label>
                             <input type="text" placeholder="https://example.com/script.user.js"
-                                class="mt-1 w-full bg-white border border-gray-300 text-gray-700 py-2 px-4 rounded leading-tight focus:outline-none focus:border-gray-500"
+                                class="mt-1 w-full bg-white border border-gray-300 text-gray-700 py-2 px-4 rounded-sm leading-tight focus:outline-hidden focus:border-gray-500"
                                 value={self.add_url.clone()} oninput={on_url_input} />
                             <p class="text-gray-400 text-xs mt-1">
                                 { "Re-fetched with the other remote lists so upstream updates are picked up." }
@@ -724,7 +724,7 @@ impl UserScriptsPage {
                             <label class="font-bold text-sm">{ "Paste the script" }</label>
                             <textarea rows="14"
                                 placeholder="// ==UserScript==\n// @name    My script\n// @match   https://example.com/*\n// ==/UserScript==="
-                                class="mt-1 w-full font-mono text-xs bg-white border border-gray-300 text-gray-700 py-2 px-4 rounded leading-tight focus:outline-none focus:border-gray-500"
+                                class="mt-1 w-full font-mono text-xs bg-white border border-gray-300 text-gray-700 py-2 px-4 rounded-sm leading-tight focus:outline-hidden focus:border-gray-500"
                                 value={self.add_body.clone()} oninput={on_body_input} />
                             <p class="text-gray-400 text-xs mt-1">
                                 { "Must contain a " }
@@ -739,11 +739,11 @@ impl UserScriptsPage {
                         <div class="flex space-x-4">
                             <button onclick={ctx.link().callback(|_| Message::SubmitAdd)}
                                 disabled={self.submitting}
-                                class="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded z-60 disabled:opacity-50">
+                                class="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-sm z-60 disabled:opacity-50">
                                 { if self.submitting { "Installing..." } else { "Install" } }
                             </button>
                             <button onclick={ctx.link().callback(|_| Message::CloseAdd)}
-                                class="bg-gray-500 hover:bg-gray-700 text-white font-bold py-2 px-4 rounded z-60">
+                                class="bg-gray-500 hover:bg-gray-700 text-white font-bold py-2 px-4 rounded-sm z-60">
                                 { "Cancel" }
                             </button>
                         </div>

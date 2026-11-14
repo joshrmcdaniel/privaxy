@@ -497,61 +497,63 @@ impl Rewriter {
         let head_statistics = statistics.clone();
 
         let mut rewriter = HtmlRewriter::new(
-            Settings {
-                element_content_handlers: vec![
-                    element!("*", move |element| {
-                        if let Some(id) = element.get_attribute("id") {
-                            ids_clone.borrow_mut().insert(id);
+            [
+                element!("*", move |element| {
+                    if let Some(id) = element.get_attribute("id") {
+                        ids_clone.borrow_mut().insert(id);
+                    }
+                    if let Some(class) = element.get_attribute("class") {
+                        classes_clone
+                            .borrow_mut()
+                            .extend(class.split_whitespace().map(String::from));
+                    }
+                    Ok(())
+                }),
+                // Strip meta-tag CSP. Header CSP gets nonce-augmented by the
+                // proxy; meta CSP would intersect with that and re-block our
+                // injected <style>/<script>, so it has to go.
+                element!("meta", |element| {
+                    if let Some(http_equiv) = element.get_attribute("http-equiv") {
+                        let name = http_equiv.trim().to_ascii_lowercase();
+                        if name == "content-security-policy"
+                            || name == "content-security-policy-report-only"
+                            || name == "x-content-security-policy"
+                            || name == "x-webkit-csp"
+                        {
+                            element.remove();
                         }
-                        if let Some(class) = element.get_attribute("class") {
-                            classes_clone
-                                .borrow_mut()
-                                .extend(class.split_whitespace().map(String::from));
-                        }
+                    }
+                    Ok(())
+                }),
+                element!("html, body", |element| {
+                    let handler: lol_html::EndTagHandler<'static> = Box::new(|end| {
+                        end.remove();
                         Ok(())
-                    }),
-                    // Strip meta-tag CSP. Header CSP gets nonce-augmented by the
-                    // proxy; meta CSP would intersect with that and re-block our
-                    // injected <style>/<script>, so it has to go.
-                    element!("meta", |element| {
-                        if let Some(http_equiv) = element.get_attribute("http-equiv") {
-                            let name = http_equiv.trim().to_ascii_lowercase();
-                            if name == "content-security-policy"
-                                || name == "content-security-policy-report-only"
-                                || name == "x-content-security-policy"
-                                || name == "x-webkit-csp"
-                            {
-                                element.remove();
-                            }
-                        }
-                        Ok(())
-                    }),
-                    element!("html, body", |element| {
-                        if let Some(handlers) = element.end_tag_handlers() {
-                            handlers.push(Box::new(move |end| {
-                                end.remove();
-                                Ok(())
-                            }))
-                        }
-                        Ok(())
-                    }),
-                    // Prepend the uBO scriptlet payload and any matched
-                    // userscripts to <head> so they run before any of the
-                    // page's own scripts. Late-injection at </body> would miss
-                    // things like `setTimeout`-boosting scriptlets, whose Proxy
-                    // replacement has to be in place before the page schedules
-                    // its timers, as well as `@run-at document-start`
-                    // userscripts.
-                    element!("head", move |element| {
-                        if let Some(html) = pending_script.borrow_mut().take() {
-                            element.prepend(&html, ContentType::Html);
-                            head_statistics.increment_modified_responses();
-                        }
-                        Ok(())
-                    }),
-                ],
-                ..Settings::default()
-            },
+                    });
+                    if let Some(handlers) = element.end_tag_handlers() {
+                        handlers.push(handler);
+                    }
+                    Ok(())
+                }),
+                // Prepend the uBO scriptlet payload and any matched
+                // userscripts to <head> so they run before any of the
+                // page's own scripts. Late-injection at </body> would miss
+                // things like `setTimeout`-boosting scriptlets, whose Proxy
+                // replacement has to be in place before the page schedules
+                // its timers, as well as `@run-at document-start`
+                // userscripts.
+                element!("head", move |element| {
+                    if let Some(html) = pending_script.borrow_mut().take() {
+                        element.prepend(&html, ContentType::Html);
+                        head_statistics.increment_modified_responses();
+                    }
+                    Ok(())
+                }),
+            ]
+            .into_iter()
+            .fold(Settings::new(), |settings, handler| {
+                settings.append_element_content_handler(handler)
+            }),
             move |c: &[u8]| {
                 if sink_sender
                     .blocking_send(Ok((Bytes::copy_from_slice(c), None)))

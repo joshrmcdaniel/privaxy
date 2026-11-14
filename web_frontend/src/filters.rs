@@ -225,9 +225,9 @@ impl Component for AddFilterComponent {
             "text-sm",
             "font-medium",
             "rounded-md",
-            "shadow-sm",
+            "shadow-xs",
             "text-white",
-            "focus:outline-none",
+            "focus:outline-hidden",
             "focus:ring-2",
             "focus:ring-offset-2",
             "focus:ring-offset-gray-100",
@@ -289,7 +289,7 @@ impl Component for AddFilterComponent {
                                         <div class="w-32">
                                             <label class="font-bold">{"Category"}</label>
                                         </div>
-                                        <select class="min-w-0 flex-1 bg-white border border-gray-300 text-gray-700 py-2 px-4 pr-8 rounded leading-tight focus:outline-none focus:bg-white focus:border-gray-500"
+                                        <select class="min-w-0 flex-1 bg-white border border-gray-300 text-gray-700 py-2 px-4 pr-8 rounded-sm leading-tight focus:outline-hidden focus:bg-white focus:border-gray-500"
                                             onchange={_ctx.link().callback(|e: Event| {
                                                 let select = e.target_dyn_into::<HtmlSelectElement>().expect("event target should be a select element");
                                                 let value = select.value();
@@ -305,7 +305,7 @@ impl Component for AddFilterComponent {
                                         </div>
                                         <input
                                             type="text"
-                                            class="min-w-0 flex-1 bg-white border border-gray-300 text-gray-700 py-2 px-4 rounded leading-tight focus:outline-none focus:bg-white focus:border-gray-500"
+                                            class="min-w-0 flex-1 bg-white border border-gray-300 text-gray-700 py-2 px-4 rounded-sm leading-tight focus:outline-hidden focus:bg-white focus:border-gray-500"
                                             value={self.title.clone()}
                                             oninput={_ctx.link().callback(|e: InputEvent| {
                                                 let input = e.target_dyn_into::<HtmlInputElement>().expect("event target should be an input element");
@@ -319,7 +319,7 @@ impl Component for AddFilterComponent {
                                         </div>
                                         <input
                                             type="text"
-                                            class="min-w-0 flex-1 bg-white border border-gray-300 text-gray-700 py-2 px-4 rounded leading-tight focus:outline-none focus:bg-white focus:border-gray-500"
+                                            class="min-w-0 flex-1 bg-white border border-gray-300 text-gray-700 py-2 px-4 rounded-sm leading-tight focus:outline-hidden focus:bg-white focus:border-gray-500"
                                             value={self.url.clone()}
                                             oninput={_ctx.link().callback(|e: InputEvent| {
                                                 let input = e.target_dyn_into::<HtmlInputElement>().expect("event target should be an input element");
@@ -328,8 +328,8 @@ impl Component for AddFilterComponent {
                                         />
                                     </div>
                                     <div class="flex space-x-4">
-                                        <button onclick={_ctx.link().callback(move |_| AddFilterMessage::Save(url.clone(), title.clone(), category))} class="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded z-60">{"Save"}</button>
-                                        <button onclick={_ctx.link().callback(|_| AddFilterMessage::Close)} class="bg-gray-500 hover:bg-gray-700 text-white font-bold py-2 px-4 rounded z-60">{"Cancel"}</button>
+                                        <button onclick={_ctx.link().callback(move |_| AddFilterMessage::Save(url.clone(), title.clone(), category))} class="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-sm z-60">{"Save"}</button>
+                                        <button onclick={_ctx.link().callback(|_| AddFilterMessage::Close)} class="bg-gray-500 hover:bg-gray-700 text-white font-bold py-2 px-4 rounded-sm z-60">{"Cancel"}</button>
                                     </div>
                                 </fieldset>
                             </div>
@@ -663,7 +663,7 @@ impl Component for Filters {
                 <div class="ml-3 flex items-center h-5">
                     { edit_button }
                     <input disabled={self.saving || self.loading || self.refreshing} id={filter.file_name.clone()} checked={filter.enabled} onchange={checkbox_callback} name={filter.file_name.clone()} type="checkbox"
-                        class="focus:ring-blue-500 h-4 w-4 text-blue-600 border-gray-300 rounded" />
+                        class="focus:ring-blue-500 h-4 w-4 text-blue-600 border-gray-300 rounded-sm" />
                 </div>
             </div>
             }

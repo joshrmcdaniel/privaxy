@@ -119,7 +119,7 @@ fn switch(route: Route) -> Html {
         <nav class="bg-gray-800">
       <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div class="flex flex-wrap items-center justify-between gap-2 py-3">
-            <div class="flex-shrink-0">
+            <div class="shrink-0">
               <img class="h-8 w-auto text-white" src="/logo.svg" alt="Logo" />
             </div>
               <div class="order-last flex w-full justify-between sm:order-none sm:ml-4 sm:mr-auto sm:w-auto sm:justify-start sm:space-x-4">

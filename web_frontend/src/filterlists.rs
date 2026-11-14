@@ -366,7 +366,7 @@ impl Component for SearchFilterList {
                                     <button
                                         type="button"
                                         aria-label="Close"
-                                        class="text-gray-400 hover:text-gray-700 rounded p-1 focus:outline-none focus:ring-2 focus:ring-gray-300"
+                                        class="text-gray-400 hover:text-gray-700 rounded-sm p-1 focus:outline-hidden focus:ring-2 focus:ring-gray-300"
                                         onclick={self.link.callback(|_| SearchFilterMessage::Close)}
                                     >
                                         <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
@@ -374,16 +374,16 @@ impl Component for SearchFilterList {
                                         </svg>
                                     </button>
                                 </div>
-                                <div class="flex flex-col flex-grow px-6 py-4 space-y-3 overflow-hidden">
+                                <div class="flex flex-col grow px-6 py-4 space-y-3 overflow-hidden">
                                     { failure_banner }
-                                    <input type="text" placeholder="Search by name" class="border border-gray-300 p-2 rounded focus:outline-none focus:ring-2 focus:ring-blue-300"
+                                    <input type="text" placeholder="Search by name" class="border border-gray-300 p-2 rounded-sm focus:outline-hidden focus:ring-2 focus:ring-blue-300"
                                         value={self.filter_query.clone()}
                                         oninput={_ctx.link().callback(|e: InputEvent| {
                                             let input = e.target_dyn_into::<HtmlInputElement>().expect("input element");
                                             SearchFilterMessage::FilterChanged(input.value())
                                         })}
                                     />
-                                    <div class="overflow-auto border border-gray-200 rounded" style="height: 60vh;">
+                                    <div class="overflow-auto border border-gray-200 rounded-sm" style="height: 60vh;">
                                         { if self.loading {
                                             html! {
                                                 <div class="flex items-center justify-center h-full text-gray-500 text-sm">

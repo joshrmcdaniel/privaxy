@@ -380,7 +380,7 @@ impl Component for StatisticsSettingsPage {
                 <div class="settings-field">
                     <div class="settings-field-row">
                         <label for="history-enabled" class="settings-field-label">{"Enable persistent statistics"}</label>
-                        <div class="settings-field-control"><input id="history-enabled" type="checkbox" checked={config.enabled} onchange={on_enabled} class="h-4 w-4 rounded text-blue-600 border-gray-300" /></div>
+                        <div class="settings-field-control"><input id="history-enabled" type="checkbox" checked={config.enabled} onchange={on_enabled} class="h-4 w-4 rounded-sm text-blue-600 border-gray-300" /></div>
                     </div>
                     <p class="settings-field-help text-sm text-gray-500">{"Disabling stops recording. Previously saved history remains until you delete it or re-enable recording and retention removes it."}</p>
                 </div>

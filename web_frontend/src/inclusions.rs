@@ -206,13 +206,13 @@ impl Component for Inclusions {
                 <>
                     <label class="mt-5 flex items-center gap-2 text-gray-900" for="include-only">
                         <input id="include-only" type="checkbox" checked={form.include_only} onchange={on_toggle} disabled={self.saving}
-                            class="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500" />
+                            class="h-4 w-4 rounded-sm border-gray-300 text-blue-600 focus:ring-blue-500" />
                         {"Only filter included hosts"}
                     </label>
                     <label for="inclusions" class="block mt-5 text-sm font-medium text-gray-700">{"Included hosts — one per line"}</label>
                     <textarea id="inclusions" name="inclusions" rows="6" value={form.hosts.clone()} oninput={on_hosts} disabled={self.saving}
                         placeholder={"example.com\n*.example.com"}
-                        class="mt-2 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm" />
+                        class="mt-2 block w-full rounded-md border-gray-300 shadow-xs focus:border-blue-500 focus:ring-blue-500 sm:text-sm" />
                     <p class="mt-2 text-sm text-gray-500">{"Use example.com for that host and *.example.com for its subdomains. Exclusions always take precedence. Third-party hosts must be included separately."}</p>
                     if form.include_only && form.hosts.trim().is_empty() {
                         <p class="mt-2 text-sm text-gray-700">{"The list is empty: all hosts will bypass filtering."}</p>

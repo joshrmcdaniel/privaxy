@@ -1,3 +1,6 @@
+// Warp's composed routes need additional trait-solving depth on current nightly.
+#![recursion_limit = "256"]
+
 use crate::blocker::AdblockRequester;
 use crate::configuration::{FilterFailureStore, NetworkConfig};
 use crate::proxy::exclusions::LocalExclusionStore;
@@ -39,7 +42,7 @@ pub const WEBAPP_FRONTEND_DIR: Dir<'_> = include_dir!("web_frontend/dist");
 /// Custom `getrandom` backend for the `mips{,el}-unknown-linux-gnu` cross
 /// targets.
 ///
-/// getrandom 0.3's default Linux backend for these targets calls the libc
+/// getrandom 0.3/0.4's default Linux backend for these targets calls the libc
 /// `getrandom()` wrapper, which the cross-toolchain's pre-2.25 glibc does not
 /// export — so the binary fails to link (`undefined reference to getrandom`).
 /// We point getrandom at its `custom` backend for these triples (see

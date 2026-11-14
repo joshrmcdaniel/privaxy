@@ -151,7 +151,7 @@ impl Component for UserScriptEditModal {
         let body_editor = match &self.body {
             Some(body) => html! {
                 <textarea rows="20"
-                    class="mt-1 w-full font-mono text-xs bg-white border border-gray-300 text-gray-700 py-2 px-4 rounded leading-tight focus:outline-none focus:border-gray-500"
+                    class="mt-1 w-full font-mono text-xs bg-white border border-gray-300 text-gray-700 py-2 px-4 rounded-sm leading-tight focus:outline-hidden focus:border-gray-500"
                     value={body.clone()} oninput={on_body_input} />
             },
             None => html! { <p class="text-gray-500 text-sm py-4">{ "Loading script..." }</p> },
@@ -246,11 +246,11 @@ impl UserScriptEditModal {
                     <span class="text-sm text-gray-700">{ "Uninstall this userscript?" }</span>
                     <button onclick={ctx.link().callback(|_| Message::ConfirmDelete)}
                         disabled={self.busy}
-                        class="bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-4 rounded z-60 disabled:opacity-50">
+                        class="bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-4 rounded-sm z-60 disabled:opacity-50">
                         { "Uninstall" }
                     </button>
                     <button onclick={ctx.link().callback(|_| Message::CancelDelete)}
-                        class="bg-gray-500 hover:bg-gray-700 text-white font-bold py-2 px-4 rounded z-60">
+                        class="bg-gray-500 hover:bg-gray-700 text-white font-bold py-2 px-4 rounded-sm z-60">
                         { "Keep" }
                     </button>
                 </div>
@@ -263,15 +263,15 @@ impl UserScriptEditModal {
             <div class="flex space-x-4">
                 <button onclick={ctx.link().callback(|_| Message::Save)}
                     disabled={self.busy || self.body.is_none()}
-                    class="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded z-60 disabled:opacity-50">
+                    class="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-sm z-60 disabled:opacity-50">
                     { if self.busy { "Saving..." } else { "Save" } }
                 </button>
                 <button onclick={Callback::from(move |_| on_close.emit(()))}
-                    class="bg-gray-500 hover:bg-gray-700 text-white font-bold py-2 px-4 rounded z-60">
+                    class="bg-gray-500 hover:bg-gray-700 text-white font-bold py-2 px-4 rounded-sm z-60">
                     { "Cancel" }
                 </button>
                 <button onclick={ctx.link().callback(|_| Message::Delete)}
-                    class="ml-auto text-red-600 hover:text-red-800 font-medium py-2 px-4 rounded z-60">
+                    class="ml-auto text-red-600 hover:text-red-800 font-medium py-2 px-4 rounded-sm z-60">
                     { "Uninstall" }
                 </button>
             </div>

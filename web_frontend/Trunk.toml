@@ -7,5 +7,5 @@ stage = "pre_build"
 command = "sh"
 command_arguments = [
   "-c",
-  "npx tailwindcss build -i src/tailwind.css -o dist/.stage/tailwind.css",
+  "npx @tailwindcss/cli -i src/tailwind.css -o dist/.stage/tailwind.css",
 ]
