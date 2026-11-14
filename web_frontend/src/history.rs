@@ -1,4 +1,5 @@
 use crate::button::{get_css, ButtonColor};
+use crate::dashboard::DashboardHeader;
 use crate::{api, statistics_settings::HistoryStatus};
 use gloo_timers::callback::Interval;
 use num_format::{Locale, ToFormattedString};
@@ -128,16 +129,14 @@ impl Component for HistoryPage {
             Message::Filter(e.target_unchecked_into::<HtmlSelectElement>().value())
         });
         html! { <>
-            <div class="flex flex-wrap justify-between items-center gap-3">
-                <h1 class="text-2xl font-bold text-gray-900">{"History"}</h1>
-                <div class="flex flex-wrap items-center gap-3">
-                    <label for="history-range" class="text-sm text-gray-600">{"Time range"}</label>
-                    <select id="history-range" class="rounded-md border-gray-300 text-sm" onchange={on_hours}>
-                        {for [(24, "Last 24 hours"), (168, "Last 7 days"), (720, "Last 30 days"), (8760, "All retained history")].into_iter().map(|(hours, label)| html!{<option value={hours.to_string()} selected={self.hours == hours}>{label}</option>})}
-                    </select>
-                    <button type="button" disabled={self.loading} onclick={ctx.link().callback(|_| Message::Load)} class={classes!(get_css(ButtonColor::Gray), "disabled:opacity-50", "disabled:cursor-not-allowed")}>{"Refresh"}</button>
-                    <a href="/settings/statistics" class={get_css(ButtonColor::Blue)}>{"Statistics settings"}</a>
-                </div>
+            <DashboardHeader />
+            <div class="mt-5 flex flex-wrap items-center gap-3">
+                <label for="history-range" class="text-sm text-gray-600">{"Time range"}</label>
+                <select id="history-range" class="rounded-md border-gray-300 text-sm" onchange={on_hours}>
+                    {for [(24, "Last 24 hours"), (168, "Last 7 days"), (720, "Last 30 days"), (8760, "All retained history")].into_iter().map(|(hours, label)| html!{<option value={hours.to_string()} selected={self.hours == hours}>{label}</option>})}
+                </select>
+                <button type="button" disabled={self.loading} onclick={ctx.link().callback(|_| Message::Load)} class={classes!(get_css(ButtonColor::Gray), "disabled:opacity-50", "disabled:cursor-not-allowed")}>{"Refresh"}</button>
+                <a href="/settings/statistics" class={get_css(ButtonColor::Blue)}>{"Statistics settings"}</a>
             </div>
             <p class="mt-3 text-sm text-gray-600">{"Saved statistics survive restarts. Totals and top lists cover retained requests in this window; the request filter and pagination only affect the log. Times are UTC. The latest page refreshes every 30 seconds."}</p>
             if let Some(error) = &self.error { <p role="alert" class="mt-4 text-red-700 text-sm">{format!("Could not load or save history: {error}")}</p> }

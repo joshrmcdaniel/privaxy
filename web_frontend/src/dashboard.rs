@@ -1,9 +1,86 @@
 use crate::blocking_enabled::BlockingEnabled;
 use crate::live_stream;
-use futures::future::AbortHandle;
+use crate::{api, history::HistoryPage, statistics_settings::StatisticsSettings};
+use futures::future::{AbortHandle, Abortable};
 use num_format::{Locale, ToFormattedString};
 use serde::Deserialize;
-use yew::{html, Component, Context, Html};
+use wasm_bindgen_futures::spawn_local;
+use yew::prelude::*;
+
+#[function_component(Dashboard)]
+pub fn dashboard() -> Html {
+    let detailed = use_state(|| None::<Result<bool, String>>);
+    let reload = use_state(|| 0_u32);
+    {
+        let detailed = detailed.clone();
+        use_effect_with(*reload, move |_| {
+            let (handle, registration) = AbortHandle::new_pair();
+            spawn_local(async move {
+                if let Ok(result) = Abortable::new(
+                    api::get_json::<StatisticsSettings>("/api/settings/statistics"),
+                    registration,
+                )
+                .await
+                {
+                    detailed.set(Some(result.map(|settings| {
+                        settings.config.enabled && settings.config.privacy != "anonymous"
+                    })));
+                }
+            });
+            move || handle.abort()
+        });
+    }
+
+    match &*detailed {
+        Some(Ok(true)) => html! { <HistoryPage /> },
+        Some(Ok(false)) => html! { <LiveDashboard /> },
+        result => {
+            let retry = {
+                let detailed = detailed.clone();
+                Callback::from(move |_| {
+                    detailed.set(None);
+                    reload.set(*reload + 1);
+                })
+            };
+            html! { <>
+                <DashboardHeader />
+                if let Some(Err(error)) = result {
+                    <p role="alert" class="mt-4 text-sm text-red-700">{format!("Could not load statistics settings: {error}")}</p>
+                    <button type="button" onclick={retry} class="mt-2 text-sm text-blue-600 underline">{"Retry loading dashboard"}</button>
+                } else {
+                    <p role="status" class="mt-4 text-sm text-gray-600">{"Loading statistics…"}</p>
+                }
+            </> }
+        }
+    }
+}
+
+#[derive(Properties, PartialEq)]
+pub struct DashboardHeaderProps {
+    #[prop_or_default]
+    pub connected: bool,
+}
+
+#[function_component(DashboardHeader)]
+pub fn dashboard_header(props: &DashboardHeaderProps) -> Html {
+    html! {
+        <div class="md:flex md:justify-between md:space-x-5">
+            <div class="pt-1.5">
+                <h1 class="text-2xl font-bold text-gray-900">{ "Dashboard" } if props.connected { <div class="mt-3 ml-3 inline pulsating-circle"></div> }</h1>
+            </div>
+            <div class="mt-6 flex flex-col-reverse justify-stretch space-y-4 space-y-reverse sm:flex-row-reverse sm:justify-end sm:space-x-reverse sm:space-y-0 sm:space-x-3 md:mt-0 md:flex-row md:space-x-3">
+                <a href="/api/settings/ca-certificate"
+                    class="inline-flex items-center justify-center px-4 py-2 border border-gray-300 shadow-sm text-sm font-medium rounded-md text-white bg-gray-800 hover:bg-gray-900 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-gray-100 focus:ring-gray-500">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="ml-0.5 mr-2 h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                    </svg>
+                    {"Download CA certificate"}
+                </a>
+                <BlockingEnabled />
+            </div>
+        </div>
+    }
+}
 
 #[derive(Debug, Deserialize, PartialEq, Eq)]
 pub struct Statistics {
@@ -21,13 +98,13 @@ pub enum Message {
     Connection(bool),
 }
 
-pub struct Dashboard {
+pub struct LiveDashboard {
     message: Statistics,
     connected: bool,
     ws_abort_handle: AbortHandle,
 }
 
-impl Component for Dashboard {
+impl Component for LiveDashboard {
     type Message = Message;
     type Properties = ();
 
@@ -89,30 +166,12 @@ impl Component for Dashboard {
 
         html! {
             <>
-                <div class="md:flex md:justify-between md:space-x-5">
-                    <div class="pt-1.5">
-                        <h1 class="text-2xl font-bold text-gray-900">{ "Dashboard" } if self.connected { <div class="mt-3 ml-3 inline pulsating-circle"></div> }
-                        </h1>
-                    </div>
-                    <div
-                        class="mt-6 flex flex-col-reverse justify-stretch space-y-4 space-y-reverse sm:flex-row-reverse sm:justify-end sm:space-x-reverse sm:space-y-0 sm:space-x-3 md:mt-0 md:flex-row md:space-x-3">
-                        <a href="/api/settings/ca-certificate"
-                        class="inline-flex items-center justify-center px-4 py-2 border border-gray-300 shadow-sm text-sm font-medium rounded-md text-white bg-gray-800 hover:bg-gray-900 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-gray-100 focus:ring-gray-500">
-                        <svg xmlns="http://www.w3.org/2000/svg" class="ml-0.5 mr-2 h-5 w-5" fill="none"
-                            viewBox="0 0 24 24" stroke="currentColor">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                        </svg>
-                        {"Download CA certificate"}
-                    </a>
-                        <BlockingEnabled />
-                    </div>
-                </div>
+                <DashboardHeader connected={self.connected} />
 
                 if !self.connected {
                     <p role="status" class="mt-4 text-sm text-gray-600">{"Connecting to statistics… Retrying automatically. Displayed counts may be out of date."}</p>
                 }
-                <p class="mt-4 text-sm text-gray-600">{"Live statistics since this process started. "}<a href="/history" class="text-blue-600 underline">{"View saved history and trends"}</a></p>
+                <p class="mt-4 text-sm text-gray-600">{"Live statistics since this process started. "}<a href="/settings/statistics" class="text-blue-600 underline">{"Statistics settings"}</a></p>
                 <dl
                     class="mt-5 grid grid-cols-1 rounded-lg bg-white overflow-hidden shadow divide-y divide-gray-200 md:grid-cols-3 md:divide-y-0 md:divide-x">
                     <div class="px-4 py-5 sm:p-6">

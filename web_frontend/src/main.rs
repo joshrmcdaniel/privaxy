@@ -77,6 +77,17 @@ fn not_found() -> Html {
      }
 }
 
+#[function_component(HistoryRedirect)]
+fn history_redirect() -> Html {
+    let navigator = use_navigator().unwrap();
+    use_effect_with((), move |_| {
+        // Replace the old URL so Back does not revisit the redirect.
+        navigator.replace(&Route::Dashboard);
+        || ()
+    });
+    Html::default()
+}
+
 fn switch(route: Route) -> Html {
     fn get_classes(current_route: Route, for_route_link: Route) -> Classes {
         if current_route == for_route_link {
@@ -113,7 +124,6 @@ fn switch(route: Route) -> Html {
               <div class="order-last flex w-full justify-between sm:order-none sm:ml-4 sm:mr-auto sm:w-auto sm:justify-start sm:space-x-4">
               <Link<Route> classes={ get_classes(route, Route::Dashboard) } to={Route::Dashboard}>{ "Dashboard" }</Link<Route>>
                <Link<Route> classes={ get_classes(route, Route::Requests) } to={Route::Requests}>{ "Requests" }</Link<Route>>
-               <Link<Route> classes={ get_classes(route, Route::History) } to={Route::History}>{ "History" }</Link<Route>>
                <Link<settings::SettingsRoute> classes={ get_classes(route, Route::Settings) } to={settings::SettingsRoute::Filters}>{ "Settings" }</Link<settings::SettingsRoute>>
                </div>
           <LogoutButton />
@@ -135,8 +145,7 @@ fn switch(route: Route) -> Html {
             html! {<>{navigation} <div class={"container mt-4 mb-10 mx-auto px-4 sm:px-6 lg:px-8"}> <Switch<settings::SettingsRoute> render={settings::switch_settings} /> </div> </>}
         }
         Route::History => {
-            set_title("History");
-            html! { <>{navigation}<div class="container mt-4 mb-10 mx-auto px-4 sm:px-6 lg:px-8"><history::HistoryPage /></div></> }
+            html! { <HistoryRedirect /> }
         }
         Route::Exclude => {
             set_title("Exclude host");

@@ -267,7 +267,7 @@ impl Component for StatisticsSettingsPage {
         });
         html! { <>
             <h1 class="text-2xl font-bold text-gray-900 mb-4">{"Statistics"}</h1>
-            <p class="text-sm text-gray-600 mb-4">{"History is off by default. When enabled, it stays on this server and survives restarts. It records request times, hostnames, client IPs, and blocking decisions according to your privacy level. Full URLs, query strings, headers, and bodies are never saved in statistics."}</p>
+            <p class="text-sm text-gray-600 mb-4">{"History is off by default. When enabled, the Dashboard shows saved totals, trends, and request history. With persistence off or Anonymous mode selected, it shows live session statistics. Saved history stays on this server and survives restarts. It records request times, hostnames, client IPs, and blocking decisions according to your privacy level. Full URLs, query strings, headers, and bodies are never saved in statistics."}</p>
             if let Some(error) = &self.error { <p role="alert" class="mb-4 text-sm text-red-700">{error}</p> }
             <fieldset disabled={self.busy} class="border-t border-gray-200 divide-y divide-gray-200">
                 <div class="settings-field">

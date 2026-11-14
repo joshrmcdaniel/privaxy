@@ -348,9 +348,11 @@ for those steps.
 
 ### 7. Persistent statistics and privacy
 
-Enable collection under **Settings → Statistics**, then open **History** for
-saved totals, hourly/daily trends, top domains/clients, and a paginated request
-log. The Dashboard continues to show the current process's live counters.
+Enable collection under **Settings → Statistics** to show saved totals,
+hourly/daily trends, top domains/clients, and a paginated request log directly
+on the **Dashboard**. With persistence off or Anonymous mode selected, the
+Dashboard keeps its original layout with the current process's live counters.
+Old `/history` bookmarks redirect to the Dashboard.
 Persistence is **off by default**; enabling it starts collecting new activity,
 without importing the live Requests feed.
 
