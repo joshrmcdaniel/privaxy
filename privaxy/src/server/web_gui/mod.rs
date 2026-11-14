@@ -31,6 +31,7 @@ pub(crate) mod settings;
 pub(crate) mod statistics;
 pub(crate) mod tls_failures;
 pub(crate) mod userscripts;
+mod version;
 
 #[derive(Debug, Serialize)]
 pub(crate) struct ApiError {
@@ -147,6 +148,15 @@ fn create_api_routes(
     ));
 
     let require_auth = auth::require_auth(configuration_save_lock.clone());
+
+    let version_route = warp::path!("version")
+        .and(warp::get())
+        .and(require_auth.clone())
+        .map(version::version);
+    let updates_route = warp::path("updates")
+        .and(require_auth.clone())
+        .and(version::updates(http_client.clone()));
+    let version_routes = version_route.or(updates_route).boxed();
 
     let events_route = warp::path("events")
         .and(require_auth.clone())
@@ -270,6 +280,7 @@ fn create_api_routes(
     // a request to `/`), turning every non-API request into a JSON 404
     // and preventing the static-files branch from serving the SPA.
     let api_inner = auth_routes
+        .or(version_routes)
         .or(events_route)
         .or(statistics_route)
         .or(history_route)

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Add a shared footer with the running server version linked to the project.
+  Check for stable releases automatically when opened and hourly thereafter,
+  showing an "Update available" release link only when a newer version is found.
+  Update checks are authenticated and time-limited, with successful checks cached
+  for one hour and failures for one minute.
 - Added opt-in persistent statistics and individual request history using redb.
   History includes time ranges, trends, top domains/clients, and pagination, with
   privacy levels that remove identifiers before collection. URL paths, query

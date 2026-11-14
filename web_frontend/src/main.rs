@@ -18,6 +18,7 @@ mod filter_edit;
 mod filter_failures;
 mod filterlists;
 mod filters;
+mod footer;
 mod general;
 mod history;
 mod inclusions;
@@ -162,9 +163,14 @@ fn switch(route: Route) -> Html {
 fn app() -> Html {
     html! {
         <auth::AuthGate>
-            <BrowserRouter>
-                <Switch<Route> render={switch} />
-            </BrowserRouter>
+            <div class="min-h-screen flex flex-col">
+                <div class="flex-1">
+                    <BrowserRouter>
+                        <Switch<Route> render={switch} />
+                    </BrowserRouter>
+                </div>
+                <footer::Footer />
+            </div>
         </auth::AuthGate>
     }
 }

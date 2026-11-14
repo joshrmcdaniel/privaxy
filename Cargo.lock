@@ -2197,6 +2197,7 @@ dependencies = [
  "regex",
  "reqwest",
  "rustls",
+ "semver",
  "serde",
  "serde-tuple-vec-map",
  "serde_json",
