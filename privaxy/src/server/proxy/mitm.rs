@@ -2,7 +2,10 @@ use super::client_hello::{read_client_hello, HANDSHAKE_TIMEOUT};
 use super::tls_failures::TlsFailureStore;
 use super::upstream::UpstreamClients;
 use super::userscripts::UserScriptContext;
-use super::{empty_body, exclusions::LocalExclusionStore, serve::serve, ProxyBody};
+use super::{
+    empty_body, exclusions::LocalExclusionStore, serve::serve, ProxyBody,
+    MAX_HTTP2_HEADER_LIST_SIZE,
+};
 use crate::{
     blocker::AdblockRequester, cert::CertCache, configuration::DohConfig, statistics::Statistics,
     Event,
@@ -201,7 +204,12 @@ pub(crate) async fn serve_mitm_session(
             // path. Bind requests to the selected identity and the CONNECT
             // destination; an inner Host header/URI cannot redirect the socket.
             let session_authority = raw_authority.clone();
-            let result = auto::Builder::new(TokioExecutor::new())
+            let mut builder = auto::Builder::new(TokioExecutor::new());
+            builder
+                .http2()
+                .adaptive_window(true)
+                .max_header_list_size(MAX_HTTP2_HEADER_LIST_SIZE);
+            let result = builder
                 .serve_connection_with_upgrades(
                     TokioIo::new(stream),
                     service_fn(move |req| {
@@ -396,6 +404,7 @@ async fn bridge_http_upgrade(
     // `TokioIo` bridges hyper 1.0's `Upgraded` to tokio's IO traits.
     let mut client = TokioIo::new(upgraded);
     let mut upstream = TcpStream::connect((host, port)).await?;
+    let _ = upstream.set_nodelay(true);
     upstream.write_all(head.as_bytes()).await?;
 
     let leftover = read_past_response_headers(&mut upstream).await?;
@@ -465,6 +474,7 @@ async fn tunnel(
         }
     };
 
+    let _ = server.set_nodelay(true);
     log::debug!("Started tunneling host: {}", authority);
     server.write_all(prefix).await?;
 

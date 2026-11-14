@@ -49,10 +49,13 @@ impl SignedWithCaCert {
         // (ring) is installed once as the process default at startup.
         let private_key =
             PrivateKeyDer::try_from(private_key.private_key_to_der().unwrap()).unwrap();
-        let server_configuration = ServerConfig::builder()
+        let mut server_configuration = ServerConfig::builder()
             .with_no_client_auth()
             .with_single_cert(certs, private_key)
             .unwrap();
+        // The CONNECT service supports both versions. Advertise HTTP/2 so
+        // browsers can multiplex page resources on one intercepted session.
+        server_configuration.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
 
         Self {
             authority,

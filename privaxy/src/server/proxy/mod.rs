@@ -15,6 +15,10 @@ use http_body_util::{combinators::BoxBody, BodyExt, Empty, Full, StreamBody};
 use hyper::body::Frame;
 use tokio_stream::wrappers::ReceiverStream;
 
+/// Bound decoded HTTP/2 headers on both sides of intercepted connections.
+/// Allow cookie-heavy requests and large CSP/Set-Cookie responses.
+pub(crate) const MAX_HTTP2_HEADER_LIST_SIZE: u32 = 64 * 1024;
+
 /// Response body type used throughout the proxy. hyper 1.0 removed the built-in
 /// `hyper::Body`, so we standardize on a boxed body of `Bytes` with an
 /// `io::Error` error type (the channel/stream bodies below can surface IO

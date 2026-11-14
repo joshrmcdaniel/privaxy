@@ -241,6 +241,7 @@ async fn read_headers(stream: &mut (impl AsyncRead + Unpin)) -> io::Result<Vec<u
 enum Protocol {
     Http,
     HttpKeepAlive,
+    HttpWaitForPeer,
     Http2RefuseOnce,
     Http2ResponseHeaders(usize),
     Dns,
@@ -271,23 +272,34 @@ impl Origin {
             .map(|(name, config)| (name.to_owned(), config))
             .collect();
         let (tx, requests) = mpsc::unbounded_channel();
+        let response_gate = Arc::new(tokio::sync::Notify::new());
         let task = tokio::spawn(async move {
             let mut sessions = JoinSet::new();
             while let Ok((tcp, _)) = listener.accept().await {
                 let configs = configs.clone();
                 let fallback = fallback.clone();
                 let tx = tx.clone();
+                let response_gate = response_gate.clone();
                 sessions.spawn(async move {
                     let Ok(hello) = LazyConfigAcceptor::new(Default::default(), tcp).await else { return; };
                     let name = hello.client_hello().server_name().map(str::to_owned);
                     let config = name.as_ref().and_then(|name| configs.get(name)).unwrap_or(&fallback).clone();
                     let Ok(mut tls) = hello.into_stream(config).await else { return; };
                     match protocol {
-                        Protocol::Http | Protocol::HttpKeepAlive => {
+                        Protocol::Http | Protocol::HttpKeepAlive | Protocol::HttpWaitForPeer => {
                             let keep_alive = matches!(protocol, Protocol::HttpKeepAlive);
                             loop {
                                 let Ok(request) = read_headers(&mut tls).await else { return; };
+                                let slow = request.starts_with(b"GET /slow ");
+                                let fast = request.starts_with(b"GET /fast ");
                                 tx.send((name.clone(), request)).unwrap();
+                                if matches!(protocol, Protocol::HttpWaitForPeer) {
+                                    if slow {
+                                        response_gate.notified().await;
+                                    } else if fast {
+                                        response_gate.notify_one();
+                                    }
+                                }
                                 let body = format!("upstream:{}", name.as_deref().unwrap_or("no-sni"));
                                 let connection = if keep_alive { "keep-alive" } else { "close" };
                                 tls.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: {connection}\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
@@ -616,6 +628,86 @@ async fn include_only_rules_are_evaluated_after_ip_sni_and_exclusions_win() {
         }
         assert_eq!(http_get(tls).await.0, http::StatusCode::OK);
     }
+}
+
+#[tokio::test]
+async fn browser_alpn_enables_parallel_http2_requests_and_keeps_http1() {
+    let host = "multiplex.test";
+    let mut origin = Origin::start(
+        vec![(host, origin_config(host, true, false))],
+        Protocol::HttpWaitForPeer,
+    )
+    .await;
+    let proxy = Proxy::start(LocalExclusionStore::new(vec![])).await;
+    let mut config = (*client_config(true, true)).clone();
+    config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+    let tls = proxy
+        .connect(&origin.addr.to_string(), Arc::new(config), host)
+        .await;
+    assert_eq!(tls.get_ref().1.alpn_protocol(), Some(b"h2".as_slice()));
+    let (mut sender, connection) =
+        hyper::client::conn::http2::handshake(TokioExecutor::new(), TokioIo::new(tls))
+            .await
+            .unwrap();
+    let _task = Task(tokio::spawn(async {
+        let _ = connection.await;
+    }));
+
+    // The first origin response is held until the second request arrives.
+    // Both requests must share this one browser-side TLS connection.
+    let slow = tokio::spawn(
+        sender.send_request(
+            Request::builder()
+                .uri("https://unrelated.invalid/slow")
+                .body(empty_body())
+                .unwrap(),
+        ),
+    );
+    let (sni, request) = origin.request().await;
+    assert_eq!(sni.as_deref(), Some(host));
+    assert!(request.starts_with(b"GET /slow "));
+    let response = timeout(
+        TEST_TIMEOUT,
+        sender.send_request(
+            Request::builder()
+                .uri("https://unrelated.invalid/fast")
+                // Cookie-heavy browsers must not hit hyper's 16 KiB default
+                // when they start negotiating HTTP/2 with the proxy.
+                .header("cookie", format!("padding={}", "a".repeat(24 * 1024)))
+                .body(empty_body())
+                .unwrap(),
+        ),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let slow_response = timeout(TEST_TIMEOUT, slow).await.unwrap().unwrap().unwrap();
+    for response in [response, slow_response] {
+        assert_eq!(response.status(), http::StatusCode::OK);
+        let body = timeout(TEST_TIMEOUT, response.into_body().collect())
+            .await
+            .unwrap()
+            .unwrap()
+            .to_bytes();
+        assert_eq!(body, format!("upstream:{host}"));
+    }
+    let (sni, request) = origin.request().await;
+    assert_eq!(sni.as_deref(), Some(host));
+    assert!(request.starts_with(b"GET /fast "));
+    assert!(String::from_utf8(request)
+        .unwrap()
+        .contains(&format!("host: {host}:{}", origin.addr.port())));
+
+    let mut config = (*client_config(true, true)).clone();
+    config.alpn_protocols = vec![b"http/1.1".to_vec()];
+    let tls = proxy
+        .connect(&origin.addr.to_string(), Arc::new(config), host)
+        .await;
+    assert_eq!(
+        tls.get_ref().1.alpn_protocol(),
+        Some(b"http/1.1".as_slice())
+    );
+    assert_eq!(http_get(tls).await.0, http::StatusCode::OK);
 }
 
 #[tokio::test]

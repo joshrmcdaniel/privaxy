@@ -1,5 +1,5 @@
 //! Keep the HTTP/TLS identity separate from an IP CONNECT's TCP destination.
-use super::ProxyBody;
+use super::{ProxyBody, MAX_HTTP2_HEADER_LIST_SIZE};
 use http::{uri::Authority, Uri};
 use hyper_rustls::{ConfigBuilderExt, HttpsConnector};
 use hyper_util::{
@@ -37,7 +37,7 @@ pub(crate) fn http_client_builder() -> reqwest::ClientBuilder {
         // default, which h2 reports as a generic stream PROTOCOL_ERROR. Allow
         // 64 KiB of decoded headers (including per-field overhead) while
         // retaining a finite limit for both shared and IP-pinned clients.
-        .http2_max_header_list_size(64 * 1024)
+        .http2_max_header_list_size(MAX_HTTP2_HEADER_LIST_SIZE)
 }
 
 #[derive(Clone)]
@@ -132,6 +132,7 @@ fn upgrade_client(
 ) -> UpgradeClient {
     let mut http = HttpConnector::new();
     http.enforce_http(false);
+    http.set_nodelay(true);
     http.set_connect_timeout(Some(Duration::from_secs(10)));
     http.set_keepalive(Some(Duration::from_secs(60)));
     let https = hyper_rustls::HttpsConnectorBuilder::new()

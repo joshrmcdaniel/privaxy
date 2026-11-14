@@ -799,6 +799,9 @@ async fn privaxy_backend(
                     }
                 };
 
+                // Flush small TLS records and streamed response chunks promptly;
+                // Nagle plus delayed ACKs otherwise introduces avoidable stalls.
+                let _ = stream.set_nodelay(true);
                 // Reproduce the old `Server::tcp_keepalive(600s)`: enable
                 // OS-level keepalive on each accepted socket.
                 let _ = socket2::SockRef::from(&stream).set_tcp_keepalive(
