@@ -353,7 +353,7 @@ pub(crate) async fn serve(
     let req = Request::from_parts(parts, body);
 
     log::debug!("{} {}", req.method(), req.uri());
-    let statistics = statistics.for_domain(uri.host());
+    let statistics = statistics.for_request(uri.host(), client_ip_address);
 
     if !intercept {
         let mut req = req;
@@ -388,7 +388,7 @@ pub(crate) async fn serve(
                 }
             }
         };
-        statistics.record_request(uri.host(), client_ip_address, false);
+        statistics.record_request(&uri, client_ip_address, false);
         return Ok(response);
     }
 
@@ -414,7 +414,7 @@ pub(crate) async fn serve(
                 is_request_blocked: true,
             });
         }
-        statistics.record_request(uri.host(), client_ip_address, true);
+        statistics.record_request(&uri, client_ip_address, true);
         return Ok(get_empty_response(StatusCode::BAD_GATEWAY));
     }
 
@@ -439,7 +439,7 @@ pub(crate) async fn serve(
     }
 
     if is_request_blocked {
-        statistics.record_request(uri.host(), client_ip_address, true);
+        statistics.record_request(&uri, client_ip_address, true);
 
         // adblock-rust fuses many same-option patterns into one filter and
         // reports the union as the matched filter, which can be enormous; cap
@@ -480,7 +480,7 @@ pub(crate) async fn serve(
             return Ok(get_empty_response(StatusCode::BAD_GATEWAY));
         };
         let response = perform_two_ends_upgrade(req, outbound_uri, hyper_client).await;
-        statistics.record_request(uri.host(), client_ip_address, false);
+        statistics.record_request(&uri, client_ip_address, false);
         return Ok(response);
     }
 
@@ -537,7 +537,7 @@ pub(crate) async fn serve(
         }
     };
 
-    statistics.record_request(uri.host(), client_ip_address, false);
+    statistics.record_request(&uri, client_ip_address, false);
 
     *new_response.headers_mut() = response.headers().clone();
 

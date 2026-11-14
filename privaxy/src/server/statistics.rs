@@ -2,7 +2,7 @@ use crate::configuration::{StatisticsConfig, StatisticsPrivacy};
 use portable_atomic::{AtomicU64, Ordering};
 use serde::Serialize;
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     net::IpAddr,
     sync::{atomic::AtomicBool, Arc, Mutex},
 };
@@ -21,6 +21,7 @@ pub struct SerializableStatistics {
     pub top_blocked_paths: Vec<(String, u64)>,
     #[serde(with = "tuple_vec_map")]
     pub top_clients: Vec<(String, u64)>,
+    pub client_names: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone)]
@@ -67,22 +68,33 @@ impl Statistics {
         let Some(history) = &self.history else {
             return Ok(());
         };
-        if config == history.config() && history.status().error.is_none() {
+        let previous = history.config();
+        if config == previous && history.status().error.is_none() {
             return Ok(());
         }
+        let reset_identifiers = config.enabled != previous.enabled
+            || config.privacy != previous.privacy
+            || config.excluded_domains != previous.excluded_domains
+            || config.excluded_clients != previous.excluded_clients;
         let result = history.configure(config).await;
         // Discard session identifiers too. Lowering privacy later must not
         // resurrect identifiers from before the change.
-        self.top_blocked_paths.lock().unwrap().clear();
-        self.top_clients.lock().unwrap().clear();
+        if reset_identifiers {
+            self.top_blocked_paths.lock().unwrap().clear();
+            self.top_clients.lock().unwrap().clear();
+        }
         result
     }
 
-    /// Carry one domain's collection decision through response rewriting too.
+    /// Carry a request's collection decision through response rewriting too.
     /// Statistics exclusions never change interception or blocking decisions.
-    pub fn for_domain(&self, domain: Option<&str>) -> Self {
+    pub fn for_request(&self, domain: Option<&str>, client: IpAddr) -> Self {
         Self {
-            collect: self.collect && !self.history.as_ref().is_some_and(|h| h.is_excluded(domain)),
+            collect: self.collect
+                && !self
+                    .history
+                    .as_ref()
+                    .is_some_and(|h| h.is_excluded(domain, client)),
             ..self.clone()
         }
     }
@@ -98,8 +110,14 @@ impl Statistics {
         }
     }
 
-    pub fn record_request(&self, domain: Option<&str>, client: IpAddr, blocked: bool) {
-        if !self.collect || self.history.as_ref().is_some_and(|h| h.is_excluded(domain)) {
+    pub fn record_request(&self, uri: &http::Uri, client: IpAddr, blocked: bool) {
+        let domain = uri.host();
+        if !self.collect
+            || self
+                .history
+                .as_ref()
+                .is_some_and(|h| h.is_excluded(domain, client))
+        {
             return;
         }
         let privacy = self
@@ -121,7 +139,7 @@ impl Statistics {
             self.increment_proxied_requests();
         }
         if let Some(history) = &self.history {
-            history.request(domain, client, blocked);
+            history.request(uri, client, blocked);
         }
     }
 
@@ -170,6 +188,7 @@ impl Statistics {
 
     pub fn get_serialized(&self) -> SerializableStatistics {
         let mut serialized = SerializableStatistics {
+            client_names: BTreeMap::new(),
             proxied_requests: self.proxied_requests.load(Ordering::Relaxed),
             blocked_requests: self.blocked_requests.load(Ordering::Relaxed),
             modified_responses: self.modified_responses.load(Ordering::Relaxed),
@@ -202,6 +221,12 @@ impl Statistics {
             if privacy >= StatisticsPrivacy::HideDomainsAndClients {
                 serialized.top_clients.clear();
             }
+            serialized.client_names = history.client_names(
+                serialized
+                    .top_clients
+                    .iter()
+                    .map(|(client, _)| client.as_str()),
+            );
         }
         serialized
     }
