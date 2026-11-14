@@ -1,6 +1,7 @@
 use crate::api;
 use gloo_net::http::Request;
 use serde::{Deserialize, Serialize};
+use std::{collections::BTreeMap, net::IpAddr};
 use wasm_bindgen_futures::spawn_local;
 use web_sys::{HtmlInputElement, HtmlSelectElement, HtmlTextAreaElement};
 use yew::prelude::*;
@@ -13,6 +14,10 @@ pub struct StatisticsConfig {
     pub max_entries: u32,
     #[serde(default)]
     pub excluded_domains: Vec<String>,
+    #[serde(default)]
+    pub excluded_clients: Vec<String>,
+    #[serde(default)]
+    pub client_names: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
@@ -38,6 +43,11 @@ pub enum Message {
     Days(String),
     Limit(String),
     Exclusions(String),
+    ClientExclusions(String),
+    ClientAddress(usize, String),
+    ClientName(usize, String),
+    AddClient,
+    RemoveClient(usize),
     Save,
     Saved(Result<StatisticsSettings, String>),
     ConfirmClear(bool),
@@ -50,6 +60,8 @@ pub struct StatisticsSettingsPage {
     days: String,
     limit: String,
     exclusions: String,
+    client_exclusions: String,
+    client_names: Vec<(String, String)>,
     busy: bool,
     confirm_clear: bool,
     error: Option<String>,
@@ -67,6 +79,8 @@ impl Component for StatisticsSettingsPage {
             days: String::new(),
             limit: String::new(),
             exclusions: String::new(),
+            client_exclusions: String::new(),
+            client_names: Vec::new(),
             busy: false,
             confirm_clear: false,
             error: None,
@@ -93,6 +107,13 @@ impl Component for StatisticsSettingsPage {
                         self.days = settings.config.retention_days.to_string();
                         self.limit = settings.config.max_entries.to_string();
                         self.exclusions = settings.config.excluded_domains.join("\n");
+                        self.client_exclusions = settings.config.excluded_clients.join("\n");
+                        self.client_names = settings
+                            .config
+                            .client_names
+                            .iter()
+                            .map(|(ip, name)| (ip.clone(), name.clone()))
+                            .collect();
                         self.error = settings.status.error.clone();
                         self.settings = Some(settings);
                     }
@@ -141,6 +162,47 @@ impl Component for StatisticsSettingsPage {
                 self.exclusions = value;
                 self.notice = None;
             }
+            Message::ClientExclusions(value) => {
+                if self.busy {
+                    return false;
+                }
+                self.client_exclusions = value;
+                self.notice = None;
+            }
+            Message::ClientAddress(index, value) => {
+                if self.busy {
+                    return false;
+                }
+                if let Some(client) = self.client_names.get_mut(index) {
+                    client.0 = value;
+                }
+                self.notice = None;
+            }
+            Message::ClientName(index, value) => {
+                if self.busy {
+                    return false;
+                }
+                if let Some(client) = self.client_names.get_mut(index) {
+                    client.1 = value;
+                }
+                self.notice = None;
+            }
+            Message::AddClient => {
+                if self.busy || self.client_names.len() >= 1000 {
+                    return false;
+                }
+                self.client_names.push((String::new(), String::new()));
+                self.notice = None;
+            }
+            Message::RemoveClient(index) => {
+                if self.busy {
+                    return false;
+                }
+                if index < self.client_names.len() {
+                    self.client_names.remove(index);
+                }
+                self.notice = None;
+            }
             Message::Save => {
                 if self.busy {
                     return false;
@@ -164,6 +226,48 @@ impl Component for StatisticsSettingsPage {
                     .filter(|s| !s.is_empty())
                     .map(|s| s.trim_end_matches('.').to_ascii_lowercase())
                     .collect();
+                let clients: Result<Vec<_>, _> = self
+                    .client_exclusions
+                    .lines()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(|address| address.parse::<IpAddr>().map(|ip| ip.to_string()))
+                    .collect();
+                let Ok(clients) = clients else {
+                    self.error = Some(
+                        "Client exclusions must contain one IPv4 or IPv6 address per line.".into(),
+                    );
+                    return true;
+                };
+                config.excluded_clients = clients;
+                config.client_names.clear();
+                for (index, (address, name)) in self.client_names.iter().enumerate() {
+                    let name = name.trim();
+                    if address.trim().is_empty() && name.is_empty() {
+                        continue;
+                    }
+                    let address = address.trim().parse::<IpAddr>();
+                    if address.is_err()
+                        || name.is_empty()
+                        || name.chars().count() > 64
+                        || name.chars().any(char::is_control)
+                    {
+                        self.error = Some(format!(
+                            "Client {} needs a valid IP address and a name of 1–64 characters.",
+                            index + 1
+                        ));
+                        return true;
+                    }
+                    let address = address.unwrap().to_string();
+                    if config
+                        .client_names
+                        .insert(address.clone(), name.to_owned())
+                        .is_some()
+                    {
+                        self.error = Some(format!("Client {address} has more than one name. Keep one entry per IP address."));
+                        return true;
+                    }
+                }
                 self.busy = true;
                 self.error = None;
                 self.notice = None;
@@ -265,9 +369,12 @@ impl Component for StatisticsSettingsPage {
         let on_exclusions = ctx.link().callback(|e: InputEvent| {
             Message::Exclusions(e.target_unchecked_into::<HtmlTextAreaElement>().value())
         });
+        let on_client_exclusions = ctx.link().callback(|e: InputEvent| {
+            Message::ClientExclusions(e.target_unchecked_into::<HtmlTextAreaElement>().value())
+        });
         html! { <>
             <h1 class="text-2xl font-bold text-gray-900 mb-4">{"Statistics"}</h1>
-            <p class="text-sm text-gray-600 mb-4">{"History is off by default. When enabled, the Dashboard shows saved totals, trends, and request history. With persistence off or Anonymous mode selected, it shows live session statistics. Saved history stays on this server and survives restarts. It records request times, hostnames, client IPs, and blocking decisions according to your privacy level. Full URLs, query strings, headers, and bodies are never saved in statistics."}</p>
+            <p class="text-sm text-gray-600 mb-4">{"History is off by default. When enabled, the Dashboard shows saved totals, trends, and request history. With persistence off or Anonymous mode selected, it shows live session statistics. Saved history stays on this server and survives restarts. It records request times, hostnames, endpoint paths, client IPs, and blocking decisions according to your privacy level. The Endpoint column shows the path separately from the domain. Query strings, URL credentials, headers, and bodies are never saved in statistics."}</p>
             if let Some(error) = &self.error { <p role="alert" class="mb-4 text-sm text-red-700">{error}</p> }
             <fieldset disabled={self.busy} class="border-t border-gray-200 divide-y divide-gray-200">
                 <div class="settings-field">
@@ -284,7 +391,7 @@ impl Component for StatisticsSettingsPage {
                             {for [("full", "Show domains and clients"), ("hide_domains", "Hide domains"), ("hide_domains_and_clients", "Hide domains and clients"), ("anonymous", "Anonymous — no saved history")].into_iter().map(|(value, label)| html! {<option value={value} selected={config.privacy == value}>{label}</option>})}
                         </select>
                     </div>
-                    <p class="settings-field-help text-sm text-gray-500">{"Hidden identifiers are removed before collection. While enabled, increasing privacy also removes those identifiers from saved history. They cannot be recovered by lowering privacy. Anonymous mode keeps only session counters and does not record history."}</p>
+                    <p class="settings-field-help text-sm text-gray-500">{"Hiding domains also hides endpoints. Hidden identifiers are removed before collection. While enabled, increasing privacy also removes those identifiers from saved history. They cannot be recovered by lowering privacy. Anonymous mode keeps only session counters and does not record history."}</p>
                 </div>
                 <div class="settings-field"><div class="settings-field-row">
                     <label for="history-days" class="settings-field-label">{"Retention (days)"}</label>
@@ -298,6 +405,27 @@ impl Component for StatisticsSettingsPage {
                     <label for="statistics-exclusions" class="block text-sm font-medium text-gray-700 mb-2">{"Exclude domains from statistics and request logs"}</label>
                     <textarea id="statistics-exclusions" rows="5" value={self.exclusions.clone()} oninput={on_exclusions} placeholder={"example.com\n*.example.com"} class="w-full rounded-md border-gray-300 text-sm font-mono" />
                     <p class="mt-2 text-sm text-gray-500">{"One domain or wildcard pattern per line, without a scheme, port, or path. An exact domain matches only that domain; *.example.com matches its subdomains. Matching new requests are omitted from session statistics, saved history, and the live Requests log, even when persistence is off. Filtering still applies. Existing history and diagnostic logs are unaffected."}</p>
+                </div>
+                <div class="settings-field">
+                    <label for="statistics-client-exclusions" class="block text-sm font-medium text-gray-700 mb-2">{"Exclude clients from statistics and request logs"}</label>
+                    <textarea id="statistics-client-exclusions" rows="3" value={self.client_exclusions.clone()} oninput={on_client_exclusions} placeholder={"192.0.2.10\n2001:db8::10"} class="w-full rounded-md border-gray-300 text-sm font-mono" />
+                    <p class="mt-2 text-sm text-gray-500">{"One IPv4 or IPv6 address per line. Matching new requests are omitted from session statistics, saved history, and the live Requests log, even when persistence is off. Filtering still applies. Existing history and diagnostic logs are unaffected. Clients behind another proxy share that proxy's address."}</p>
+                </div>
+                <div class="settings-field">
+                    <h2 class="text-sm font-medium text-gray-700 mb-2">{"Client names"}</h2>
+                    <p class="text-sm text-gray-500 mb-3">{"Give client IP addresses names such as Living room TV. Names appear on the Dashboard wherever client addresses are visible; hover to see the IP. Renaming a client also updates its existing history. Names remain saved when history is cleared."}</p>
+                    <div class="space-y-3">{for self.client_names.iter().enumerate().map(|(index, (address, name))| {
+                        let address_id = format!("client-address-{index}");
+                        let name_id = format!("client-name-{index}");
+                        let on_address = ctx.link().callback(move |e: InputEvent| Message::ClientAddress(index, e.target_unchecked_into::<HtmlInputElement>().value()));
+                        let on_name = ctx.link().callback(move |e: InputEvent| Message::ClientName(index, e.target_unchecked_into::<HtmlInputElement>().value()));
+                        html! {<div class="flex flex-col sm:flex-row sm:items-end gap-3" key={index}>
+                            <div class="flex-1 min-w-0"><label for={address_id.clone()} class="block text-sm text-gray-600 mb-1">{"Client IP address"}</label><input id={address_id} type="text" value={address.clone()} oninput={on_address} placeholder="192.0.2.10" class="w-full rounded-md border-gray-300 text-sm" /></div>
+                            <div class="flex-1 min-w-0"><label for={name_id.clone()} class="block text-sm text-gray-600 mb-1">{"Client name"}</label><input id={name_id} type="text" value={name.clone()} oninput={on_name} maxlength="64" placeholder="Living room TV" class="w-full rounded-md border-gray-300 text-sm" /></div>
+                            <button type="button" onclick={ctx.link().callback(move |_| Message::RemoveClient(index))} aria-label={format!("Remove client name {}", index + 1)} class="self-start sm:self-auto px-3 py-2 text-sm text-red-700 underline">{"Remove"}</button>
+                        </div>}
+                    })}</div>
+                    <button type="button" disabled={self.client_names.len() >= 1000} onclick={ctx.link().callback(|_| Message::AddClient)} class="mt-3 text-sm text-blue-600 underline disabled:opacity-50">{"Add client name"}</button>
                 </div>
             </fieldset>
             <div class="mt-4 flex items-center gap-3">

@@ -4,6 +4,7 @@ use crate::{api, history::HistoryPage, statistics_settings::StatisticsSettings};
 use futures::future::{AbortHandle, Abortable};
 use num_format::{Locale, ToFormattedString};
 use serde::Deserialize;
+use std::collections::BTreeMap;
 use wasm_bindgen_futures::spawn_local;
 use yew::prelude::*;
 
@@ -91,6 +92,8 @@ pub struct Statistics {
     top_blocked_paths: Vec<(String, u64)>,
     #[serde(with = "tuple_vec_map")]
     top_clients: Vec<(String, u64)>,
+    #[serde(default)]
+    client_names: BTreeMap<String, String>,
 }
 
 pub enum Message {
@@ -124,6 +127,7 @@ impl Component for LiveDashboard {
                 modified_responses: None,
                 top_blocked_paths: Vec::new(),
                 top_clients: Vec::new(),
+                client_names: BTreeMap::new(),
             },
         }
     }
@@ -150,13 +154,17 @@ impl Component for LiveDashboard {
             }
         }
 
-        fn render_list_element(key: &str, count: u64) -> Html {
+        fn render_list_element(
+            key: &str,
+            count: u64,
+            names: Option<&BTreeMap<String, String>>,
+        ) -> Html {
             html! {
             <li class="relative bg-white py-5 px-4">
                 <div class="flex justify-between space-x-3">
                     <div class="min-w-0 flex-1">
 
-                        <p class="text-sm font-medium text-gray-900 truncate">{ key }</p>
+                        <p class="text-sm font-medium text-gray-900 truncate">{if let Some(names) = names {crate::history::client_label(Some(key), names)} else {html!{<span title={key.to_owned()}>{key}</span>}}}</p>
                     </div>
                     <div class="flex-shrink-0 whitespace-nowrap text-sm text-gray-500">{ count.to_formatted_string(&Locale::en) }</div>
                 </div>
@@ -215,7 +223,7 @@ impl Component for LiveDashboard {
                         <div class="px-4 py-5 sm:p-6">
                             <ol role="list" class="divide-y divide-gray-200">
                                 { for self.message.top_blocked_paths.iter().map(|(path,
-                                count)|render_list_element(path, *count)) }
+                                count)|render_list_element(path, *count, None)) }
                             </ol>
 
                         </div>
@@ -227,7 +235,7 @@ impl Component for LiveDashboard {
                         <div class="px-4 py-5 sm:p-6">
                             <ol role="list" class="divide-y divide-gray-200">
                                 { for self.message.top_clients.iter().map(|(client,
-                                count)|render_list_element(client, *count)) }
+                                count)|render_list_element(client, *count, Some(&self.message.client_names))) }
                             </ol>
                         </div>
                     </div>

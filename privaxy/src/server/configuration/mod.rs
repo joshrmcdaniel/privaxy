@@ -148,7 +148,8 @@ impl Configuration {
             Ok(bytes) => {
                 let mut configuration: Configuration =
                     toml::from_str(std::str::from_utf8(&bytes)?)?;
-                if configuration.ensure_auth_keys() {
+                let migrated_filters = migrate_ublock_sources(&mut configuration.filters);
+                if configuration.ensure_auth_keys() || migrated_filters {
                     configuration.save().await?;
                 }
                 Ok(configuration)

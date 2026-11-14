@@ -216,8 +216,11 @@ impl Rewriter {
             // silently no-op. Defining it once at the top of the payload (the
             // scriptlet bodies use dot-access, so it must be an object)
             // so the scriptlets actually work.
-            payload.push_str("const scriptletGlobals = {};\n");
+            // Function-style resources share helpers with one another, but must
+            // not publish/overwrite names such as safeSelf or JSONPath on the page.
+            payload.push_str("(() => {\nconst scriptletGlobals = {};\n");
             payload.push_str(&script);
+            payload.push_str("\n})();\n");
         }
 
         if shim_needed {

@@ -19,7 +19,7 @@ use warp::{
 #[derive(Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum HistoryUpdate {
-    Snapshot { snapshot: HistorySnapshot },
+    Snapshot { snapshot: Box<HistorySnapshot> },
     Error { error: String },
 }
 
@@ -128,7 +128,9 @@ async fn stream_history(socket: WebSocket, history: HistoryStore, query: History
         loop {
             updates.borrow_and_update();
             let update = match history.query_committed(query.clone()).await {
-                Ok(snapshot) => HistoryUpdate::Snapshot { snapshot },
+                Ok(snapshot) => HistoryUpdate::Snapshot {
+                    snapshot: Box::new(snapshot),
+                },
                 Err(error) => HistoryUpdate::Error { error },
             };
             let Ok(json) = serde_json::to_string(&update) else {

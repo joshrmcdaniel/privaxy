@@ -91,6 +91,34 @@ blocker more than it strictly replaces one.
 - [filterlists.com](https://filterlists.com) integration
 - Ability to add custom filters
 
+Privaxy uses the combined uBlock Origin CDN lists for Ads, Badware risks,
+Privacy, Quick fixes, and Unbreak. Existing source-list subscriptions migrate
+automatically, preserving their enabled state. An already configured CDN
+subscription takes precedence over its old source-list duplicate. Separate
+mobile and resource-abuse subscriptions are retained for existing choices,
+although their rules are also included in the combined Ads and Privacy lists.
+
+Filter-list `!#if`, `!#else`, and `!#endif` directives use a portable uBO syntax
+profile (`ext_ublock` enabled, browser-specific flags and unsupported capabilities
+disabled). This selects scriptlet fallbacks for `!cap_html_filtering`; proxy HTML
+injection does not implement uBO's HTML-filtering or `$replace` syntax. Unknown
+conditions retain both branches, matching uBO, and are reported in the logs.
+Active `!#include` directives load relative sub-lists from the same directory or
+its descendants, following uBO's subscription format. Includes are expanded
+before caching; inactive branches are not downloaded. Failed downloads,
+malformed conditions, cycles, and includes outside the permitted source leave
+the previous complete cache untouched. Downloads are limited to 64 files,
+16 include levels, and 64 MiB per subscription. Custom filters have no source URL
+and cannot use includes.
+
+Bundled scriptlets come from uBlock Origin 1.76.2. Scriptlets marked
+`requiresTrust` are available to the official uBO filter repositories and manually
+entered Custom filters, but not arbitrary remote subscriptions. Unsupported
+filter rules are counted by rejection reason alongside the number loaded. These
+warnings do not mean the whole list failed to load. Filter syntax and browser
+integration still differ from the uBO extension, so list compatibility does not
+guarantee identical results on every video site.
+
 ## Installation
 
 You can either utilize the docker image, binary, or the deb avaiable in releases.
@@ -356,23 +384,35 @@ Old `/history` bookmarks redirect to the Dashboard.
 Persistence is **off by default**; enabling it starts collecting new activity,
 without importing the live Requests feed.
 
-History records timestamps, destination hostnames, client IP addresses, and
-whether a request was blocked or successfully forwarded. It never stores URL
-paths, query strings, headers, cookies, or request/response bodies. Raw CONNECT
-tunnels and requests that fail before being forwarded are not counted. Clients
-behind another proxy share that proxy's client address.
+History records timestamps, destination hostnames, endpoint paths, client IP
+addresses, and whether a request was blocked or successfully forwarded, according
+to the selected privacy level. The Endpoint column shows only the path, such as
+`/204`, beside the separate domain. The database saves `204`, without duplicating
+the domain or the first `/`; that separator is restored for display. Query
+strings, URL credentials, headers, cookies, and request/response bodies are never
+stored. Long paths are shortened visually; hover over one to see its full value.
+Older records without an endpoint show "Not recorded". Domains, endpoints, and
+clients each have a shared lookup table: repeated values are saved once and
+request rows reference their IDs. Unused values are removed when their last
+request expires. Existing history migrates automatically to storage version 3
+and is compacted, converting older hostname-prefixed endpoints to paths too.
+Earlier builds that only support versions 1 or 2 cannot read the upgraded
+history database.
+Raw CONNECT tunnels and requests that fail before being forwarded are not
+counted. Clients behind another proxy share that proxy's client address.
 
 The privacy levels follow [Pi-hole's approach](https://docs.pi-hole.net/ftldns/privacylevels/):
 
 | Level | Saved identifiers |
 | --- | --- |
-| Show domains and clients | Hostname and client IP |
+| Show domains and clients | Hostname, endpoint path, and client IP |
 | Hide domains | Client IP only |
 | Hide domains and clients (default) | Neither; request times and outcomes remain |
 | Anonymous | No new history; session counters only |
 
-Hidden identifiers are removed **before queueing or storage**, without retaining
-a reversible mapping or a hash. While collection is enabled, raising privacy
+Hiding domains also hides endpoints. Hidden identifiers are removed **before
+queueing or storage**, without retaining a reversible mapping or a hash. While
+collection is enabled, raising privacy
 also redacts identifiers in existing history, including when entering anonymous
 mode. Lowering privacy cannot restore them. These controls apply to statistics;
 the separate live Requests feed and diagnostic logs can still contain full URLs.
@@ -384,6 +424,17 @@ apply. Use one case-insensitive hostname or wildcard pattern per line:
 `example.com` matches exactly; `*.example.com` matches its subdomains. Do not
 include schemes, ports, or paths. Existing history and diagnostic logs are
 unaffected.
+
+**Exclude clients from statistics and request logs** applies the same exclusions
+to one exact IPv4 or IPv6 address per line. This works with persistence off too;
+it does not bypass ad blocking or delete previously saved requests.
+
+**Client names** assigns friendly names to IP addresses. Names appear in both
+dashboard layouts and saved history wherever client addresses are visible;
+hover over a name to see its IP. Renaming updates existing history without
+changing counts or merging different clients. Names are saved in configuration,
+so clearing history keeps them. Privacy settings that hide clients also hide
+their names on the Dashboard.
 
 Defaults are **7 days** and **100,000 saved requests**. The oldest records expire
 when either limit is reached; valid limits are 1–365 days and 100–1,000,000
@@ -403,6 +454,10 @@ privacy = "hide_domains_and_clients" # full, hide_domains, hide_domains_and_clie
 retention_days = 7
 max_entries = 100000
 excluded_domains = ["example.com", "*.example.com"]
+excluded_clients = ["192.0.2.10", "2001:db8::10"]
+
+[statistics.client_names]
+"192.0.2.20" = "Living room TV"
 ```
 
 UI changes apply immediately; file edits also apply on SIGHUP. Data stays local

@@ -20,6 +20,8 @@ struct Record {
     id: u64,
     timestamp: u64,
     domain: Option<String>,
+    #[serde(default)]
+    endpoint: Option<String>,
     client: Option<String>,
     blocked: bool,
 }
@@ -32,6 +34,8 @@ pub struct Snapshot {
     top_domains: Vec<(String, u64)>,
     top_blocked_domains: Vec<(String, u64)>,
     top_clients: Vec<(String, u64)>,
+    #[serde(default)]
+    client_names: BTreeMap<String, String>,
     requests: Vec<Record>,
     next_before: Option<u64>,
 }
@@ -39,13 +43,13 @@ pub struct Snapshot {
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum HistoryUpdate {
-    Snapshot { snapshot: Snapshot },
+    Snapshot { snapshot: Box<Snapshot> },
     Error { error: String },
 }
 
 pub enum Message {
     Load,
-    Loaded(u64, Result<Snapshot, String>),
+    Loaded(u64, Result<Box<Snapshot>, String>),
     Connection(u64, bool),
     Hours(String),
     Filter(String),
@@ -54,7 +58,7 @@ pub enum Message {
 }
 
 pub struct HistoryPage {
-    snapshot: Option<Snapshot>,
+    snapshot: Option<Box<Snapshot>>,
     hours: u16,
     filter: String,
     before: Option<u64>,
@@ -176,9 +180,9 @@ impl Component for HistoryPage {
                         {self.chart(snapshot)}
                     </div>
                     <div class="mt-5 grid grid-cols-1 lg:grid-cols-3 gap-4">
-                        {top_list("Top domains", &snapshot.top_domains)}
-                        {top_list("Top blocked domains", &snapshot.top_blocked_domains)}
-                        {top_list("Top clients", &snapshot.top_clients)}
+                        {top_list("Top domains", &snapshot.top_domains, None)}
+                        {top_list("Top blocked domains", &snapshot.top_blocked_domains, None)}
+                        {top_list("Top clients", &snapshot.top_clients, Some(&snapshot.client_names))}
                     </div>
                     <div class="mt-5 p-4 sm:p-5 bg-white rounded-lg shadow">
                         <div class="flex flex-wrap justify-between items-center gap-3 mb-4">
@@ -194,16 +198,19 @@ impl Component for HistoryPage {
                         }
                         if snapshot.requests.is_empty() { <p class="py-4 text-sm text-gray-500">{"No saved requests in this window."}</p> }
                         <div class="overflow-x-auto">
-                            <table class="w-full text-sm text-left" style="min-width: 640px">
-                                <thead class="border-b text-gray-500"><tr><th scope="col" class="py-2 pr-4">{"Time (UTC)"}</th><th scope="col" class="pr-4">{"Domain"}</th><th scope="col" class="pr-4">{"Client"}</th><th scope="col">{"Result"}</th></tr></thead>
-                                <tbody class="divide-y divide-gray-100">{for snapshot.requests.iter().map(|record| html! {
+                            <table class="w-full table-fixed text-sm text-left" style="min-width: 800px">
+                                <thead class="border-b text-gray-500"><tr><th scope="col" class="w-44 py-2 pr-4">{"Time (UTC)"}</th><th scope="col" class="w-40 pr-4">{"Domain"}</th><th scope="col" class="pr-4">{"Endpoint"}</th><th scope="col" class="w-36 pr-4">{"Client"}</th><th scope="col" class="w-20">{"Result"}</th></tr></thead>
+                                <tbody class="divide-y divide-gray-100">{for snapshot.requests.iter().map(|record| {
+                                    let endpoint = record.endpoint.as_ref().map(|path| format!("/{path}"));
+                                    html! {
                                     <tr key={record.id}>
                                         <td class="py-3 pr-4 whitespace-nowrap text-gray-600">{timestamp(record.timestamp)}</td>
-                                        <td class="pr-4 whitespace-nowrap">{record.domain.as_deref().unwrap_or("Hidden")}</td>
-                                        <td class="pr-4 whitespace-nowrap">{record.client.as_deref().unwrap_or("Hidden")}</td>
+                                        <td class="pr-4"><span class="block truncate" title={record.domain.clone()}>{record.domain.as_deref().unwrap_or("Hidden")}</span></td>
+                                        <td class="pr-4"><span class="block truncate" title={endpoint.clone()}>{endpoint.as_deref().unwrap_or(if record.domain.is_some() {"Not recorded"} else {"Hidden"})}</span></td>
+                                        <td class="pr-4">{client_label(record.client.as_deref(), &snapshot.client_names)}</td>
                                         <td class={if record.blocked {"text-red-700"} else {"text-gray-700"}}>{if record.blocked {"Blocked"} else {"Proxied"}}</td>
                                     </tr>
-                                })}</tbody>
+                                }})}</tbody>
                             </table>
                         </div>
                         <div class="flex justify-between gap-3 mt-4">
@@ -298,14 +305,33 @@ impl HistoryPage {
     }
 }
 
-fn top_list(title: &str, entries: &[(String, u64)]) -> Html {
+fn top_list(
+    title: &str,
+    entries: &[(String, u64)],
+    names: Option<&BTreeMap<String, String>>,
+) -> Html {
     html! {<section class="p-5 bg-white rounded-lg shadow min-w-0">
         <h2 class="text-lg font-medium mb-3">{title}</h2>
         if entries.is_empty() {<p class="text-sm text-gray-500">{"No visible data at this privacy level or in this window."}</p>}
         <ol class="divide-y divide-gray-100">{for entries.iter().take(10).map(|(label, count)| html! {
-            <li class="flex justify-between gap-3 py-2 text-sm"><span class="truncate" title={label.clone()}>{label}</span><span>{count.to_formatted_string(&Locale::en)}</span></li>
+            <li class="flex justify-between gap-3 py-2 text-sm"><span class="min-w-0">{if let Some(names) = names {client_label(Some(label), names)} else {html!{<span class="block truncate" title={label.clone()}>{label}</span>}}}</span><span>{count.to_formatted_string(&Locale::en)}</span></li>
         })}</ol>
     </section>}
+}
+
+pub(crate) fn client_label(address: Option<&str>, names: &BTreeMap<String, String>) -> Html {
+    match address {
+        Some(address) => {
+            let name = names.get(address).map(String::as_str).unwrap_or(address);
+            let title = if name == address {
+                address.to_owned()
+            } else {
+                format!("{name} ({address})")
+            };
+            html! {<span class="block truncate" title={title}>{name}</span>}
+        }
+        None => html! {<span>{"Hidden"}</span>},
+    }
 }
 
 fn timestamp(value: u64) -> String {

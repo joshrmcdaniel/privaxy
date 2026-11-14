@@ -5,7 +5,7 @@ use portable_atomic::{AtomicU64, Ordering};
 use redb::{Database, ReadableDatabase, ReadableTable, ReadableTableMetadata, TableDefinition};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet},
     fs::OpenOptions,
     net::IpAddr,
     path::PathBuf,
@@ -14,9 +14,12 @@ use std::{
 };
 use tokio::sync::{oneshot, watch};
 
-const REQUESTS: TableDefinition<u64, &[u8]> = TableDefinition::new("requests_v1");
+mod storage;
+use storage::{Dictionaries, DictionaryReader, LEGACY_REQUESTS, REQUESTS};
 const MODIFIED: TableDefinition<u64, u64> = TableDefinition::new("modified_hours_v1");
 const META: TableDefinition<&str, u64> = TableDefinition::new("metadata");
+// v1: JSON with full endpoints; v2: JSON with compact paths; v3: ID references.
+const DATABASE_VERSION: u64 = 3;
 const FLUSH_INTERVAL: Duration = Duration::from_secs(5);
 const QUEUE_CAPACITY: usize = 4096;
 const BATCH_SIZE: usize = 512;
@@ -38,14 +41,30 @@ pub struct RequestRecord {
     pub id: u64,
     pub timestamp: u64,
     pub domain: Option<String>,
+    /// Path without its first slash; absent in older saved records.
+    #[serde(default)]
+    pub endpoint: Option<String>,
     pub client: Option<String>,
     pub blocked: bool,
 }
 
 impl RequestRecord {
+    fn migrate_endpoint(&mut self) -> bool {
+        let Some(endpoint) = &mut self.endpoint else {
+            return false;
+        };
+        *endpoint = endpoint
+            .split_once('/')
+            .map(|(_, path)| path)
+            .unwrap_or_default()
+            .to_owned();
+        true
+    }
+
     fn redact(&mut self, privacy: StatisticsPrivacy) {
         if privacy >= StatisticsPrivacy::HideDomains {
             self.domain = None;
+            self.endpoint = None;
         }
         if privacy >= StatisticsPrivacy::HideDomainsAndClients {
             self.client = None;
@@ -89,6 +108,7 @@ pub struct HistorySnapshot {
     pub top_domains: Vec<(String, u64)>,
     pub top_blocked_domains: Vec<(String, u64)>,
     pub top_clients: Vec<(String, u64)>,
+    pub client_names: BTreeMap<String, String>,
     pub requests: Vec<RequestRecord>,
     pub next_before: Option<u64>,
 }
@@ -99,6 +119,7 @@ struct Policy {
     generation: u64,
     stopped: bool,
     exclusions: Vec<wildmatch::WildMatch>,
+    excluded_clients: HashSet<IpAddr>,
 }
 
 enum Event {
@@ -190,21 +211,32 @@ impl HistoryStore {
         status
     }
 
-    pub fn is_excluded(&self, domain: Option<&str>) -> bool {
+    pub fn is_excluded(&self, domain: Option<&str>, client: IpAddr) -> bool {
         let policy = self.policy.read().unwrap();
-        domain.is_some_and(|domain| matches_exclusion(&policy, domain))
+        policy.excluded_clients.contains(&client)
+            || domain.is_some_and(|domain| matches_exclusion(&policy, domain))
     }
 
-    pub fn request(&self, domain: Option<&str>, client: IpAddr, blocked: bool) {
+    pub(crate) fn client_names<'a>(
+        &self,
+        clients: impl Iterator<Item = &'a str>,
+    ) -> BTreeMap<String, String> {
+        client_names(&self.policy.read().unwrap().config, clients)
+    }
+
+    pub fn request(&self, uri: &http::Uri, client: IpAddr, blocked: bool) {
+        let domain = uri.host();
         let policy = self.policy.read().unwrap();
         if policy.stopped
             || !policy.config.persists()
+            || policy.excluded_clients.contains(&client)
             || domain.is_some_and(|domain| matches_exclusion(&policy, domain))
         {
             return;
         }
-        // No URL, path, query string, headers, request body, or client/domain hash
-        // is ever queued. Hidden values cannot be restored by changing settings.
+        // Strip query strings and credentials before queueing. Endpoint paths
+        // follow domain privacy; hidden values cannot be restored by changing
+        // settings. Headers and bodies never enter the statistics queue.
         let record = RequestRecord {
             id: 0,
             timestamp: now_ms(),
@@ -215,6 +247,9 @@ impl HistoryStore {
             } else {
                 None
             },
+            endpoint: (policy.config.privacy == StatisticsPrivacy::Full)
+                .then(|| request_endpoint(uri))
+                .flatten(),
             client: (policy.config.privacy < StatisticsPrivacy::HideDomainsAndClients)
                 .then(|| client.to_string()),
             blocked,
@@ -279,6 +314,7 @@ impl HistoryStore {
                 )
             })
             .collect();
+        policy.excluded_clients = config.excluded_clients.iter().copied().collect();
         policy.config = config;
         policy.stopped = result.is_err();
         result
@@ -487,36 +523,60 @@ impl Worker {
             .set_cache_size(8 * 1024 * 1024)
             .create_file(file)?;
         let tx = database.begin_write()?;
-        let redact;
-        {
+        let (version, redact) = {
             let mut meta = tx.open_table(META)?;
-            if meta.get("version")?.is_some_and(|v| v.value() != 1) {
+            let version = meta
+                .get("version")?
+                .map(|v| v.value())
+                .unwrap_or(DATABASE_VERSION);
+            if !(1..=DATABASE_VERSION).contains(&version) {
                 return Err("Unsupported statistics database version".into());
             }
-            meta.insert("version", 1)?;
             let previous = meta.get("privacy")?.map(|v| v.value()).unwrap_or(0);
-            redact = (self.config.privacy as u64) > previous;
+            meta.insert("version", DATABASE_VERSION)?;
             meta.insert("privacy", self.config.privacy as u64)?;
-        }
+            (version, (self.config.privacy as u64) > previous)
+        };
         {
-            let mut table = tx.open_table(REQUESTS)?;
-            self.last_id = table.last()?.map(|(id, _)| id.value()).unwrap_or(0);
-            if redact {
-                let ids = table
+            let mut dictionaries = Dictionaries::open(&tx)?;
+            let mut requests = tx.open_table(REQUESTS)?;
+            if version < DATABASE_VERSION {
+                let legacy = tx.open_table(LEGACY_REQUESTS)?;
+                for entry in legacy.iter()? {
+                    let (id, bytes) = entry?;
+                    let mut record: RequestRecord = serde_json::from_slice(bytes.value())?;
+                    if version == 1 {
+                        record.migrate_endpoint();
+                    }
+                    record.redact(self.config.privacy);
+                    requests.insert(id.value(), dictionaries.intern(&record)?)?;
+                }
+            } else if redact {
+                let ids = requests
                     .iter()?
-                    .map(|r| r.map(|(k, _)| k.value()))
+                    .map(|r| r.map(|(id, _)| id.value()))
                     .collect::<Result<Vec<_>, _>>()?;
                 for id in ids {
-                    let mut record: RequestRecord =
-                        serde_json::from_slice(table.get(id)?.unwrap().value())?;
-                    record.redact(self.config.privacy);
-                    table.insert(id, serde_json::to_vec(&record)?.as_slice())?;
+                    let mut record = requests.get(id)?.unwrap().value();
+                    if self.config.privacy >= StatisticsPrivacy::HideDomains {
+                        record.1 = 0;
+                        record.2 = 0;
+                    }
+                    if self.config.privacy >= StatisticsPrivacy::HideDomainsAndClients {
+                        record.3 = 0;
+                    }
+                    requests.insert(id, record)?;
                 }
+                dictionaries.redact(self.config.privacy)?;
             }
+            self.last_id = requests.last()?.map(|(id, _)| id.value()).unwrap_or(0);
+        }
+        if version < DATABASE_VERSION {
+            tx.delete_table(LEGACY_REQUESTS)?;
         }
         tx.open_table(MODIFIED)?;
         tx.commit()?;
-        if redact {
+        if redact || version < DATABASE_VERSION {
             database.compact()?;
         }
         self.database = Some(database);
@@ -557,15 +617,14 @@ impl Worker {
         {
             let mut requests = tx.open_table(REQUESTS)?;
             let mut modified = tx.open_table(MODIFIED)?;
+            let mut dictionaries = Dictionaries::open(&tx)?;
             for event in &self.pending {
                 match event {
                     Event::Request(record) => {
-                        let mut record = record.clone();
                         // Microsecond-sized IDs remain ordered and fit exactly in
                         // JavaScript numbers for centuries. The clock may step back.
                         self.last_id = (record.timestamp * 1000).max(self.last_id + 1);
-                        record.id = self.last_id;
-                        requests.insert(record.id, serde_json::to_vec(&record)?.as_slice())?;
+                        requests.insert(self.last_id, dictionaries.intern(record)?)?;
                     }
                     Event::Modified(timestamp) => {
                         let hour = timestamp / HOUR_MS * HOUR_MS;
@@ -577,23 +636,15 @@ impl Worker {
             // Also inspect stored timestamps: an NTP clock adjustment must not
             // make old rows immortal merely because their IDs are monotonic.
             if prune {
-                let mut invalid_row = false;
-                requests.retain(|_, bytes| {
-                    match serde_json::from_slice::<RequestRecord>(bytes) {
-                        Ok(record) => record.timestamp >= cutoff,
-                        Err(_) => {
-                            invalid_row = true;
-                            true
-                        }
-                    }
-                })?;
-                if invalid_row {
-                    return Err("Invalid record in statistics database; recording paused".into());
+                for entry in requests.extract_if(|_, record| record.0 < cutoff)? {
+                    let (_, record) = entry?;
+                    dictionaries.release(record.value())?;
                 }
             }
             while requests.len()? > u64::from(self.config.max_entries) {
                 let first = requests.first()?.unwrap().0.value();
-                requests.remove(first)?;
+                let record = requests.remove(first)?.unwrap().value();
+                dictionaries.release(record)?;
             }
             modified.retain(|hour, _| hour + HOUR_MS > cutoff)?;
             stored = requests.len()?;
@@ -635,6 +686,7 @@ impl Worker {
         let limit = query.limit.unwrap_or(50);
         let tx = database.begin_read()?;
         let table = tx.open_table(REQUESTS)?;
+        let dictionaries = DictionaryReader::open(&tx)?;
         let mut hourly: BTreeMap<u64, Counts> = BTreeMap::new();
         let mut domains = HashMap::new();
         let mut blocked_domains = HashMap::new();
@@ -642,35 +694,34 @@ impl Worker {
         // IDs are at least timestamp * 1000, even after a clock correction,
         // so this range skips older pages without losing in-window records.
         for entry in table.range(cutoff.saturating_mul(1000)..)?.rev() {
-            let (_, bytes) = entry?;
-            let record: RequestRecord = serde_json::from_slice(bytes.value())?;
-            if record.timestamp < cutoff {
+            let (id, record) = entry?;
+            let id = id.value();
+            let record = record.value();
+            if record.0 < cutoff {
                 continue;
             }
-            let counts = hourly
-                .entry(record.timestamp / HOUR_MS * HOUR_MS)
-                .or_default();
-            if record.blocked {
+            let counts = hourly.entry(record.0 / HOUR_MS * HOUR_MS).or_default();
+            if record.4 {
                 snapshot.totals.blocked_requests += 1;
                 counts.blocked_requests += 1;
             } else {
                 snapshot.totals.proxied_requests += 1;
                 counts.proxied_requests += 1;
             }
-            if let Some(ref domain) = record.domain {
-                *domains.entry(domain.clone()).or_insert(0) += 1;
-                if record.blocked {
-                    *blocked_domains.entry(domain.clone()).or_insert(0) += 1;
+            if record.1 != 0 {
+                *domains.entry(record.1).or_insert(0) += 1;
+                if record.4 {
+                    *blocked_domains.entry(record.1).or_insert(0) += 1;
                 }
             }
-            if let Some(ref client) = record.client {
-                *clients.entry(client.clone()).or_insert(0) += 1;
+            if record.3 != 0 {
+                *clients.entry(record.3).or_insert(0) += 1;
             }
-            if query.before.is_none_or(|id| record.id < id)
-                && query.blocked.is_none_or(|v| record.blocked == v)
+            if query.before.is_none_or(|before| id < before)
+                && query.blocked.is_none_or(|v| record.4 == v)
             {
                 if snapshot.requests.len() < limit {
-                    snapshot.requests.push(record);
+                    snapshot.requests.push(dictionaries.record(id, record)?);
                 } else if snapshot.next_before.is_none() {
                     snapshot.next_before = snapshot.requests.last().map(|r| r.id);
                 }
@@ -686,18 +737,52 @@ impl Worker {
             hourly.entry(hour.value()).or_default().modified_responses = count;
         }
         snapshot.hourly = hourly.into_iter().collect();
-        snapshot.top_domains = top_entries(domains);
-        snapshot.top_blocked_domains = top_entries(blocked_domains);
-        snapshot.top_clients = top_entries(clients);
+        snapshot.top_domains = storage::top_entries(&dictionaries.domains, domains)?;
+        snapshot.top_blocked_domains =
+            storage::top_entries(&dictionaries.domains, blocked_domains)?;
+        snapshot.top_clients = storage::top_entries(&dictionaries.clients, clients)?;
+        snapshot.client_names = client_names(
+            &self.config,
+            snapshot
+                .top_clients
+                .iter()
+                .map(|(client, _)| client.as_str())
+                .chain(
+                    snapshot
+                        .requests
+                        .iter()
+                        .filter_map(|record| record.client.as_deref()),
+                ),
+        );
         Ok(snapshot)
     }
 }
 
-fn top_entries(entries: HashMap<String, u64>) -> Vec<(String, u64)> {
-    let mut entries: Vec<_> = entries.into_iter().collect();
-    entries.sort_unstable_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-    entries.truncate(50);
-    entries
+fn client_names<'a>(
+    config: &StatisticsConfig,
+    clients: impl Iterator<Item = &'a str>,
+) -> BTreeMap<String, String> {
+    clients
+        .filter_map(|client| {
+            let address = client.parse::<IpAddr>().ok()?;
+            config
+                .client_names
+                .get(&address)
+                .map(|name| (client.to_owned(), name.trim().to_owned()))
+        })
+        .collect()
+}
+
+fn request_endpoint(uri: &http::Uri) -> Option<String> {
+    uri.authority()?;
+    // Remove exactly one separator so //path still renders as //path. Query
+    // strings, credentials, and the authority never enter this field.
+    Some(
+        uri.path()
+            .strip_prefix('/')
+            .unwrap_or(uri.path())
+            .to_owned(),
+    )
 }
 
 fn now_ms() -> u64 {

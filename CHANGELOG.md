@@ -1,7 +1,19 @@
 # Changelog
 
-## Unreleased
+## v0.8.1
 
+- Use the combined uBlock Origin CDN lists for Ads, Badware risks, Privacy, Quick
+  fixes, and Unbreak. Migrate existing subscriptions without changing enabled
+  states, and retain an existing CDN subscription when an old source duplicates it.
+- Update bundled uBO scriptlets to 1.76.2, including JSON-edit and newer video
+  response hooks. Preserve shared dependencies and all scriptlet arguments,
+  isolate helpers from page globals, and honor trusted-scriptlet permissions.
+- Evaluate nested filter-list conditions before rule parsing using a portable
+  capability profile. Expand active relative `!#include` sub-lists, including the
+  uBO-specific rules in EasyList Cookie and Fanboy's Annoyance. Bound downloads,
+  reject cycles and paths outside the permitted source, and preserve the last
+  complete cache if a sub-list fails. Report malformed directives and unknown
+  conditions; log loaded-rule counts and reasons for unsupported or invalid rules.
 - Add a shared footer with the running server version linked to the project.
   Check for stable releases automatically when opened and hourly thereafter,
   showing an "Update available" release link only when a newer version is found.
@@ -9,10 +21,22 @@
   for one hour and failures for one minute.
 - Added opt-in persistent statistics and individual request history using redb.
   History includes time ranges, trends, top domains/clients, and pagination, with
-  privacy levels that remove identifiers before collection. URL paths, query
-  strings, headers, and bodies are never saved in statistics.
+  privacy levels that remove identifiers before collection. Query strings, URL
+  credentials, headers, and bodies are never saved in statistics.
+- Add an Endpoint column to Dashboard request history with the path separate
+  from the domain, visual truncation for long values, and the full path on hover.
+  Store paths without the first slash and restore it for display. Migrate existing
+  endpoint values to compact paths when upgrading the statistics database.
+  Endpoints follow domain privacy settings; older saved records remain readable.
+- Deduplicate domains, endpoints, and clients in shared lookup tables, with
+  compact ID references in each request. Upgrade existing history atomically to
+  storage version 3 and compact it. Remove unused values when requests expire;
+  privacy changes remove the corresponding values and lookup indexes.
+- Add client names in Statistics settings, shown in both dashboard layouts and
+  request history with the IP available on hover. Renaming preserves counts and
+  updates existing history; client privacy also hides names.
 - Added Statistics settings for retention, a request-count limit, clearing saved
-  history, and excluding domain patterns from both statistics and the live
+  history, and excluding domain patterns or client IPs from statistics and the live
   Requests log. Exclusions do not change filtering behavior and work even when
   persistence is disabled.
 - Bounded statistics buffering, batched transactional writes, visible storage
@@ -84,7 +108,8 @@
 
 ## v0.8.0 - 2026-10-02
 
-Release highlights and upgrade notes are in [RELEASE.md](RELEASE.md).
+Release highlights and upgrade notes are in the
+[v0.8.0 release notes](https://github.com/joshrmcdaniel/privaxy/blob/v0.8.0/RELEASE.md).
 
 - Support both plain HTTP and HTTPS inside CONNECT tunnels, allowing compatible
   HTTP proxies and adapters to chain into Privaxy. Detect HTTP versus TLS on any
