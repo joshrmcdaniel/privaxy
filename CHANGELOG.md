@@ -75,6 +75,12 @@
   truncating it.
 - Include [RELEASE.md](RELEASE.md) in generated GitHub release notes and discard cached
   Debian/RPM packages before packaging to avoid publishing stale versions.
+- Keep Docker builds on pull requests while restricting image and manifest
+  publishing to pushes. Validate release tags against the server package version
+  before building, and use that version in release artifact names.
+- Correct the frontend cache path and key Rust caches by toolchain, dependencies,
+  and target. Use pinned prebuilt packaging tools and reuse compiled binaries
+  when creating Debian packages.
 
 ## v0.8.0 - 2026-10-02
 
