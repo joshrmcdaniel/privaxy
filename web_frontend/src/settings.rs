@@ -6,6 +6,7 @@ use crate::general::GeneralSettings;
 use crate::pac::PacSettingsPage;
 use crate::set_title;
 use crate::settings_textarea::SettingsTextarea;
+use crate::statistics_settings::StatisticsSettingsPage;
 use crate::userscripts::UserScriptsPage;
 use yew::prelude::*;
 use yew::{html, Html};
@@ -29,6 +30,8 @@ pub enum SettingsRoute {
     Account,
     #[at("/settings/debug")]
     Debug,
+    #[at("/settings/statistics")]
+    Statistics,
 }
 
 pub fn switch_settings(route: SettingsRoute) -> Html {
@@ -112,6 +115,10 @@ pub fn switch_settings(route: SettingsRoute) -> Html {
 
             html! { <DebugSettingsPage /> }
         }
+        SettingsRoute::Statistics => {
+            set_title("Settings - Statistics");
+            html! { <StatisticsSettingsPage /> }
+        }
     };
 
     html! {<div class="md:grid md:grid-cols-8">
@@ -124,6 +131,7 @@ pub fn switch_settings(route: SettingsRoute) -> Html {
         <Link<SettingsRoute> classes={get_classes(route, SettingsRoute::Pac)} to={SettingsRoute::Pac}> <span class="truncate">{ "PAC" }</span></Link<SettingsRoute>>
         <Link<SettingsRoute> classes={get_classes(route, SettingsRoute::Account)} to={SettingsRoute::Account}> <span class="truncate">{ "Account" }</span></Link<SettingsRoute>>
         <Link<SettingsRoute> classes={get_classes(route, SettingsRoute::Debug)} to={SettingsRoute::Debug}> <span class="truncate">{ "Debug" }</span></Link<SettingsRoute>>
+        <Link<SettingsRoute> classes={get_classes(route, SettingsRoute::Statistics)} to={SettingsRoute::Statistics}> <span class="truncate">{ "Statistics" }</span></Link<SettingsRoute>>
     </nav>
         <div class="min-w-0 mt-4 md:pl-6 lg:pl-8 md:col-span-6 lg:col-span-7">{ content }</div>
     </div>

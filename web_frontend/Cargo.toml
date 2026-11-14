@@ -12,6 +12,7 @@ num-format = "0.4.0"
 serde = { version = "1.0.137", features = ["derive"] }
 gloo-utils = "0.3"
 wasm-bindgen = "0.2.125"
+js-sys = "0.3"
 wasm-bindgen-futures = "0.4"
 futures = "0.3.21"
 log = "0.4.17"

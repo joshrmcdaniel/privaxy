@@ -298,12 +298,30 @@ impl From<&crate::configuration::Configuration> for InterceptionRules {
 pub struct LocalExclusionStore(Arc<RwLock<InterceptionRules>>);
 
 impl LocalExclusionStore {
+    /// Unlike an include-only miss, an explicit exclusion can be honored
+    /// before looking for SNI on an IP CONNECT (including server-first flows).
+    pub fn is_excluded(&self, host: &str, raw_host: &str) -> bool {
+        let rules = self.0.read().unwrap();
+        [host, raw_host]
+            .iter()
+            .any(|host| DEFAULT_EXCLUSIONS.is_match(host) || rules.exclusions.is_match(host))
+    }
+
     #[cfg(test)]
     pub fn new(exclusions: Vec<String>) -> Self {
+        Self::with_rules(false, Vec::new(), exclusions)
+    }
+
+    #[cfg(test)]
+    pub(super) fn with_rules(
+        include_only: bool,
+        inclusions: Vec<String>,
+        exclusions: Vec<String>,
+    ) -> Self {
         Self(Arc::new(RwLock::new(InterceptionRules {
             exclusions: WildMatchCollection::new(exclusions),
-            inclusions: WildMatchCollection::new(Vec::new()),
-            include_only: false,
+            inclusions: WildMatchCollection::new(inclusions),
+            include_only,
         })))
     }
 

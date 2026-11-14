@@ -1,6 +1,7 @@
 use super::doh::{self, DohAction};
 use super::gm::endpoint as gm_endpoint;
 use super::html_rewriter::Rewriter;
+use super::upstream::{UpgradeClient, UpstreamClients};
 use super::userscripts::UserScriptContext;
 use super::{body_channel, boxed_incoming, empty_body, full_body, BodySender, ProxyBody};
 use crate::blocker::AdblockRequester;
@@ -13,23 +14,23 @@ use futures::TryStreamExt;
 use http::uri::{Authority, Scheme};
 use http::{HeaderMap, HeaderValue, Request, Response, StatusCode, Uri};
 use http_body_util::{BodyExt, BodyStream, Limited};
-use hyper::body::{Frame, Incoming};
-use hyper_rustls::HttpsConnector;
-use hyper_util::client::legacy::connect::HttpConnector;
-use hyper_util::client::legacy::Client as HyperClient;
+use hyper::body::{Body, Frame, Incoming};
 use hyper_util::rt::TokioIo;
 use std::net::IpAddr;
 use tokio::sync::broadcast;
 use url::Url;
-
-/// Type of the hyper client used for upgrade tunneling (websockets, etc.).
-pub(crate) type UpgradeClient = HyperClient<HttpsConnector<HttpConnector>, ProxyBody>;
 
 /// Adapt an incoming request body into a `reqwest::Body`, preserving streaming
 /// (hyper 1.0 + reqwest 0.13 no longer share a body type, so we bridge via a
 /// `Bytes` stream). Trailer frames are dropped — proxied request bodies don't
 /// carry meaningful trailers.
 fn incoming_to_reqwest_body(incoming: Incoming) -> reqwest::Body {
+    // Even an empty wrap_stream body cannot be cloned. Preserve a known-empty
+    // body so reqwest can retry an HTTP/2 REFUSED_STREAM or graceful GOAWAY.
+    // Nonempty/unknown bodies still stream without buffering or replaying them.
+    if incoming.is_end_stream() {
+        return reqwest::Body::default();
+    }
     let stream =
         BodyStream::new(incoming).try_filter_map(|frame| async move { Ok(frame.into_data().ok()) });
     reqwest::Body::wrap_stream(stream)
@@ -289,8 +290,7 @@ fn url_for_matching(uri: &Uri) -> String {
 pub(crate) async fn serve(
     adblock_requester: AdblockRequester,
     request: Request<Incoming>,
-    hyper_client: UpgradeClient,
-    client: reqwest::Client,
+    clients: UpstreamClients,
     authority: Authority,
     scheme: Scheme,
     broadcast_sender: broadcast::Sender<Event>,
@@ -302,8 +302,7 @@ pub(crate) async fn serve(
     user_scripts: UserScriptContext,
     intercept: bool,
 ) -> Result<Response<ProxyBody>, hyper::Error> {
-    let scheme_string = scheme.to_string();
-
+    let (client, hyper_client) = clients.proxy_clients();
     let uri = match http::uri::Builder::new()
         .scheme(scheme)
         .authority(authority)
@@ -338,9 +337,14 @@ pub(crate) async fn serve(
             .map(|collected| collected.to_bytes())
             .unwrap_or_default();
 
-        return Ok(
-            gm_endpoint::handle(&uri, &parts.method, &collected, &user_scripts, &client).await,
-        );
+        return Ok(gm_endpoint::handle(
+            &uri,
+            &parts.method,
+            &collected,
+            &user_scripts,
+            &clients.http,
+        )
+        .await);
     }
 
     let (mut parts, body) = request.into_parts();
@@ -349,14 +353,13 @@ pub(crate) async fn serve(
     let req = Request::from_parts(parts, body);
 
     log::debug!("{} {}", req.method(), req.uri());
-
-    statistics.increment_top_clients(client_ip_address);
+    let statistics = statistics.for_domain(uri.host());
 
     if !intercept {
         let mut req = req;
         req.headers_mut().remove(http::header::PROXY_AUTHORIZATION);
         req.headers_mut().remove("proxy-connection");
-        if broadcast_sender.receiver_count() > 0 {
+        if statistics.should_collect() && broadcast_sender.receiver_count() > 0 {
             let _ = broadcast_sender.send(Event {
                 now: chrono::Utc::now(),
                 method: req.method().to_string(),
@@ -367,7 +370,7 @@ pub(crate) async fn serve(
         // Forward with hyper so bodies, compression and CSP remain untouched.
         // This path skips adblock, DoH policy and all HTML/userscript injection.
         let response = if req.headers().contains_key(http::header::UPGRADE) {
-            perform_two_ends_upgrade(req, uri, hyper_client).await
+            perform_two_ends_upgrade(req, uri.clone(), hyper_client).await
         } else {
             let (mut parts, body) = req.into_parts();
             parts.headers.remove(http::header::HOST);
@@ -385,7 +388,7 @@ pub(crate) async fn serve(
                 }
             }
         };
-        statistics.increment_proxied_requests();
+        statistics.record_request(uri.host(), client_ip_address, false);
         return Ok(response);
     }
 
@@ -403,7 +406,7 @@ pub(crate) async fn serve(
         log::debug!("Refusing DoH request: {}", uri);
         // Events only feed the live requests view; when nobody is subscribed,
         // building one (two Strings and a timestamp) is wasted work.
-        if broadcast_sender.receiver_count() > 0 {
+        if statistics.should_collect() && broadcast_sender.receiver_count() > 0 {
             let _result = broadcast_sender.send(Event {
                 now: chrono::Utc::now(),
                 method: req.method().to_string(),
@@ -411,7 +414,7 @@ pub(crate) async fn serve(
                 is_request_blocked: true,
             });
         }
-        statistics.increment_blocked_requests();
+        statistics.record_request(uri.host(), client_ip_address, true);
         return Ok(get_empty_response(StatusCode::BAD_GATEWAY));
     }
 
@@ -426,7 +429,7 @@ pub(crate) async fn serve(
         request_type,
     );
 
-    if broadcast_sender.receiver_count() > 0 {
+    if statistics.should_collect() && broadcast_sender.receiver_count() > 0 {
         let _result = broadcast_sender.send(Event {
             now: chrono::Utc::now(),
             method: req.method().to_string(),
@@ -436,13 +439,7 @@ pub(crate) async fn serve(
     }
 
     if is_request_blocked {
-        statistics.increment_blocked_requests();
-        statistics.increment_top_blocked_paths(format!(
-            "{}://{}{}",
-            scheme_string,
-            uri.host().unwrap(),
-            uri.path()
-        ));
+        statistics.record_request(uri.host(), client_ip_address, true);
 
         // adblock-rust fuses many same-option patterns into one filter and
         // reports the union as the matched filter, which can be enormous; cap
@@ -471,12 +468,19 @@ pub(crate) async fn serve(
         }
         _ => req.uri().to_string(),
     };
+    // A configured resolver is a separate destination and must use its usual
+    // DNS/TLS checks rather than inheriting this CONNECT session's IP pin.
+    let (client, hyper_client) = if matches!(doh_action, DohAction::Redirect(_)) {
+        (clients.http, clients.upgrade)
+    } else {
+        (client, hyper_client)
+    };
     if req.headers().contains_key(http::header::UPGRADE) {
         let Ok(outbound_uri) = outbound_url.parse() else {
             return Ok(get_empty_response(StatusCode::BAD_GATEWAY));
         };
         let response = perform_two_ends_upgrade(req, outbound_uri, hyper_client).await;
-        statistics.increment_proxied_requests();
+        statistics.record_request(uri.host(), client_ip_address, false);
         return Ok(response);
     }
 
@@ -519,20 +523,21 @@ pub(crate) async fn serve(
     {
         Ok(response) => response,
         Err(err) => {
-            log::error!("Failed to send request: {}", err);
+            let reason = format_error_chain(&err);
+            log::error!("Failed to send request: {reason}");
             // `authority` was moved into the uri builder above; the host of
             // the rebuilt `uri` is the same portless hostname.
             let failing_host = uri.host();
             let exclude_url = build_exclude_url(failing_host, gui_base_url.as_deref());
             return Ok(get_informative_error_response(
-                &err.to_string(),
+                &reason,
                 failing_host,
                 exclude_url.as_deref(),
             ));
         }
     };
 
-    statistics.increment_proxied_requests();
+    statistics.record_request(uri.host(), client_ip_address, false);
 
     *new_response.headers_mut() = response.headers().clone();
 
@@ -671,6 +676,19 @@ pub(crate) async fn serve(
     tokio::spawn(write_proxied_body(response, sender));
 
     Ok(new_response)
+}
+
+/// reqwest's Display only says "error sending request"; its sources contain
+/// the actual DNS, TLS, socket or HTTP/2 failure needed to diagnose a 502.
+fn format_error_chain(error: &(dyn std::error::Error + 'static)) -> String {
+    let mut reason = error.to_string();
+    let mut source = error.source();
+    while let Some(error) = source {
+        reason.push_str(": ");
+        reason.push_str(&error.to_string());
+        source = error.source();
+    }
+    reason
 }
 
 /// Minimal HTML escaping for text interpolated into the proxy's error page.

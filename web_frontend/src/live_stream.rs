@@ -9,15 +9,16 @@ use yew::Callback;
 /// Reconnect live views after a server restart or network interruption. The
 /// caller aborts this task when its component is destroyed.
 pub fn subscribe<T: DeserializeOwned + 'static>(
-    url: &'static str,
+    url: impl Into<String>,
     on_message: Callback<T>,
     on_connection: Callback<bool>,
 ) -> AbortHandle {
+    let url = url.into();
     let (handle, registration) = AbortHandle::new_pair();
     let future = Abortable::new(
         async move {
             loop {
-                if let Ok(mut ws) = WebSocket::open(url) {
+                if let Ok(mut ws) = WebSocket::open(&url) {
                     while matches!(ws.state(), State::Connecting) {
                         TimeoutFuture::new(50).await;
                     }
