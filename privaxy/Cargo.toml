@@ -138,7 +138,10 @@ tera = { version = "1", default-features = false }
 argon2 = { version = "0.5", features = ["std"] }
 hmac = "0.12"
 filterlists-api = { path = "../filterlists-api", features = ["reqwest"] }
-redb = "4.3.0"
+# redb 4.3+ unconditionally imports libc::flock64 on GNU/Linux, but libc
+# does not expose that type on MIPS. Keep the last compatible release until
+# upstream fixes the range-lock backend; 4.2 retains the v3 database format.
+redb = "=4.2.0"
 
 [dev-dependencies]
 h2 = "0.4"
