@@ -13,11 +13,63 @@
 - Bounded statistics buffering, batched transactional writes, visible storage
   errors, and shutdown flushing keep storage failures off the proxy request path.
   Existing installations retain memory-only statistics until explicitly enabled.
-- Dashboard top blocked entries now use domains and select the top 50 after
-  sorting; client tracking is bounded. Dashboard counters remain per-process;
-  the new History page shows statistics retained across restarts.
+- Show saved statistics directly on the Dashboard when persistence is enabled.
+  With persistence off or Anonymous mode selected, keep the original live,
+  per-process dashboard. Remove the separate History tab and redirect old
+  `/history` bookmarks to `/`. Both layouts retain the blocking toggle and CA
+  certificate download.
+- Live dashboard top blocked entries now use domains and select the top 50 after
+  sorting; client tracking is bounded.
 - Count each modified HTML response once when both head scripts and cosmetic
   styles are injected, instead of counting the two injection stages separately.
+- Use TLS ClientHello SNI for IP-address CONNECT requests when choosing
+  interception certificates, applying hostname inclusions and exclusions, and
+  verifying upstream TLS. HTTP requests and WebSocket upgrades still connect to
+  the original CONNECT IP and port. Named CONNECT requests retain their existing
+  identity; DoH redirects and userscript fetches keep their own routing.
+- Tunnel CONNECT traffic to port 853 without interception, preserving end-to-end
+  DNS-over-TLS. The DoH policy continues to apply only to HTTP traffic. Explicit
+  CONNECT-host/IP exclusions bypass protocol probing.
+- Bound CONNECT protocol detection, ClientHello reading, and intercepted TLS
+  handshakes to 10 seconds each, with a 64 KiB ClientHello limit. Reject malformed,
+  truncated, oversized, or stalled handshakes while preserving fragmented TLS
+  records and buffered bytes, including when SNI selects a bypass tunnel.
+- Increase the upstream HTTP/2 response header limit from 16 KiB to 64 KiB and
+  allow 64 KiB of headers on intercepted HTTP/2 requests. This fixes 502 stream
+  protocol errors from responses with large CSP or Set-Cookie headers.
+- Advertise HTTP/2 and HTTP/1.1 through ALPN on intercepted TLS connections so
+  browsers can multiplex page resources. Enable adaptive HTTP/2 flow control on
+  those connections and TCP_NODELAY on accepted proxy sockets, tunnel sockets,
+  and upstream upgrade connections to reduce delays for small writes.
+- Preserve known-empty request bodies so the upstream client can retry HTTP/2
+  REFUSED_STREAM and graceful GOAWAY failures. Nonempty or unknown-length bodies
+  continue to stream without buffering or replay.
+- Include underlying DNS, TLS, socket, and HTTP/2 failure causes in proxy 502
+  pages and logs instead of only reporting "error sending request".
+- Improve live statistics, Requests, and log streams with visible connection
+  status, automatic reconnection, and handling for malformed or unexpected
+  frames. Leaving a live view cancels its connection and reconnect attempts.
+- Show retryable loading errors in settings, filter catalogs, API-key loading,
+  and userscript management. A failed sign-in status check now offers a retry
+  instead of incorrectly showing the login form.
+- Fix settings save feedback: acknowledge only successfully submitted values,
+  preserve text drafts after failures and edits made during a save, and disable
+  unchanged Save buttons and duplicate submissions. Ignore stale responses from
+  previously visited text-settings pages, and preserve pending exclusion edits
+  without restoring previously removed hosts.
+- Keep blocking controls at their confirmed state after failed updates, and
+  restore the confirmed Debug settings after failed automatic saves. Lock
+  Network and PAC fields while saving so later edits cannot be marked saved by
+  an earlier response.
+- Refresh installed filter lists after additions and removals while preserving
+  pending selections. Reset catalog pagination when searching, bound Next to
+  matching results, and keep failed removals visible. Built-in lists cannot be
+  removed through the catalog.
+- Make navigation, settings forms, and dialogs fit phone screens. Improve form
+  labels and error/status announcements, and wrap notification text instead of
+  truncating it.
+- Include [RELEASE.md](RELEASE.md) in generated GitHub release notes and discard cached
+  Debian/RPM packages before packaging to avoid publishing stale versions.
 
 ## v0.8.0 - 2026-10-02
 
